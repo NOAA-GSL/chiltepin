@@ -40,13 +40,13 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/NOAA-GSL/ExascaleWorkflowSandbox"
-Documentation = "https://exascaleworkflowsandbox.readthedocs.io"
-Repository = "https://github.com/NOAA-GSL/ExascaleWorkflowSandbox"
-"Source Code" = "https://github.com/NOAA-GSL/ExascaleWorkflowSandbox"
-Issues = "https://github.com/NOAA-GSL/ExascaleWorkflowSandbox/issues"
-"Bug Tracker" = "https://github.com/NOAA-GSL/ExascaleWorkflowSandbox/issues"
-Changelog = "https://github.com/NOAA-GSL/ExascaleWorkflowSandbox/releases"
+Homepage = "https://github.com/NOAA-GSL/chiltepin"
+Documentation = "https://chiltepin.readthedocs.io"
+Repository = "https://github.com/NOAA-GSL/chiltepin"
+"Source Code" = "https://github.com/NOAA-GSL/chiltepin"
+Issues = "https://github.com/NOAA-GSL/chiltepin/issues"
+"Bug Tracker" = "https://github.com/NOAA-GSL/chiltepin/issues"
+Changelog = "https://github.com/NOAA-GSL/chiltepin/releases"
 
 [project.optional-dependencies]
 test = [
