@@ -1,5 +1,5 @@
-[![ExascaleSandboxTests](https://github.com/NOAA-GSL/ExascaleWorkflowSandbox/actions/workflows/test-suite.yaml/badge.svg)](https://github.com/NOAA-GSL/ExascaleWorkflowSandbox/actions/workflows/test-suite.yaml)
-[![Documentation](https://github.com/NOAA-GSL/ExascaleWorkflowSandbox/actions/workflows/docs.yaml/badge.svg)](https://github.com/NOAA-GSL/ExascaleWorkflowSandbox/actions/workflows/docs.yaml)
+[![ExascaleSandboxTests](https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml/badge.svg)](https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml)
+[![Documentation](https://github.com/NOAA-GSL/chiltepin/actions/workflows/docs.yaml/badge.svg)](https://github.com/NOAA-GSL/chiltepin/actions/workflows/docs.yaml)
 
 # Chiltepin
 
@@ -16,16 +16,16 @@ and [Globus](https://www.globus.org/) services.
 
 ## Documentation
 
-**📚 Full documentation is available at [Read the Docs](https://exascaleworkflowsandbox.readthedocs.io/)**
+**📚 Full documentation is available at [Read the Docs](https://chiltepin.readthedocs.io/)**
 
 Key documentation sections:
-- [Installation Guide](https://exascaleworkflowsandbox.readthedocs.io/en/latest/installation.html) - Installing Chiltepin on Linux and via Docker on macOS and Windows
-- [Quick Start](https://exascaleworkflowsandbox.readthedocs.io/en/latest/quickstart.html) - Your first Chiltepin workflow
-- [Tasks](https://exascaleworkflowsandbox.readthedocs.io/en/latest/tasks.html) - Python, Bash, and Join task decorators
-- [Configuration](https://exascaleworkflowsandbox.readthedocs.io/en/latest/configuration.html) - Configuring compute resources
-- [Endpoints](https://exascaleworkflowsandbox.readthedocs.io/en/latest/endpoints.html) - Managing Globus Compute endpoints
-- [Data Transfer](https://exascaleworkflowsandbox.readthedocs.io/en/latest/data.html) - Using Globus for data movement
-- [Testing Guide](https://exascaleworkflowsandbox.readthedocs.io/en/latest/testing.html) - Running the test suite
+- [Installation Guide](https://chiltepin.readthedocs.io/en/latest/installation.html) - Installing Chiltepin on Linux and via Docker on macOS and Windows
+- [Quick Start](https://chiltepin.readthedocs.io/en/latest/quickstart.html) - Your first Chiltepin workflow
+- [Tasks](https://chiltepin.readthedocs.io/en/latest/tasks.html) - Python, Bash, and Join task decorators
+- [Configuration](https://chiltepin.readthedocs.io/en/latest/configuration.html) - Configuring compute resources
+- [Endpoints](https://chiltepin.readthedocs.io/en/latest/endpoints.html) - Managing Globus Compute endpoints
+- [Data Transfer](https://chiltepin.readthedocs.io/en/latest/data.html) - Using Globus for data movement
+- [Testing Guide](https://chiltepin.readthedocs.io/en/latest/testing.html) - Running the test suite
 
 ## Quick Start
 
@@ -38,12 +38,12 @@ pip install -e .
 ```
 
 For detailed installation instructions including conda, Docker, and platform-specific guidance,
-see the [Installation Guide](https://exascaleworkflowsandbox.readthedocs.io/en/latest/installation.html).
+see the [Installation Guide](https://chiltepin.readthedocs.io/en/latest/installation.html).
 
 ## Contributing
 
 Contributions are welcome! For information on running tests and contributing to development,
-see the [Testing Guide](https://exascaleworkflowsandbox.readthedocs.io/en/latest/testing.html).
+see the [Testing Guide](https://chiltepin.readthedocs.io/en/latest/testing.html).
 
 ## License
 
