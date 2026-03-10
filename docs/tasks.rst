@@ -377,7 +377,7 @@ MPI applications:
        import shlex
 
        # Get the MPI prefix from environment
-       mpi_prefix = os.environ.get("PARSL_MPI_PREFIX", "mpirun -n 1")
+       mpi_prefix = os.environ.get("PARSL_MPI_PREFIX", "mpiexec -n 1")
 
        # Parse the MPI prefix safely and construct command as list
        mpi_command = shlex.split(mpi_prefix)
@@ -431,7 +431,8 @@ Best Practices for MPI Tasks
    capabilities defined in your resource configuration.
 
 3. **Consider oversubscription**: For testing on local systems, you may need to allow
-   oversubscription with ``--overcommit`` or similar MPI runtime flags.
+   oversubscription with an appropriate flag, such as Open MPI's ``--oversubscribe`` or Slurm's
+   ``--overcommit``.
 
 4. **Capture output appropriately**: Use ``stdout`` and ``stderr`` parameters to capture
    MPI application output for debugging.

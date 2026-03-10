@@ -141,8 +141,8 @@ def python_task(function: Callable) -> Callable:
         stand-alone function or a class method. If it is a class method, it can make use of
         `self` to access object state.
 
-    Wrapped Function Parameters
-    ---------------------------
+    Other Parameters
+    ----------------
     The decorated function accepts the following additional parameters at call time:
 
     executor: str or list of str, default="all"
@@ -161,9 +161,9 @@ def python_task(function: Callable) -> Callable:
         Example::
 
             task_geometry={
-                \"num_nodes\": 4,
-                \"num_ranks\": 16,
-                \"ranks_per_node\": 4
+                "num_nodes": 4,
+                "num_ranks": 16,
+                "ranks_per_node": 4
             }
 
     Returns
@@ -179,7 +179,7 @@ def python_task(function: Callable) -> Callable:
         def compute(x):
             return x ** 2
 
-        result = compute(5, executor=[\"compute\"]).result()
+        result = compute(5, executor=["compute"]).result()
 
     MPI task with task geometry::
 
@@ -190,8 +190,8 @@ def python_task(function: Callable) -> Callable:
 
         future = run_mpi_code(
             params,
-            executor=[\"mpi\"],
-            task_geometry={\"num_nodes\": 2, \"num_ranks\": 8, \"ranks_per_node\": 4}
+            executor=["mpi"],
+            task_geometry={"num_nodes": 2, "num_ranks": 8, "ranks_per_node": 4}
         )
 
     """
@@ -227,8 +227,8 @@ def bash_task(function: Callable) -> Callable:
         `self` to access object state. The function must return a string that contains a
         series of bash commands to be executed.
 
-    Wrapped Function Parameters
-    ---------------------------
+    Other Parameters
+    ----------------
     The decorated function accepts the following additional parameters at call time:
 
     executor: str or list of str, default="all"
@@ -247,9 +247,9 @@ def bash_task(function: Callable) -> Callable:
         Example::
 
             task_geometry={
-                \"num_nodes\": 4,
-                \"num_ranks\": 16,
-                \"ranks_per_node\": 4
+                "num_nodes": 4,
+                "num_ranks": 16,
+                "ranks_per_node": 4
             }
 
     stdout: str or tuple, optional
@@ -272,21 +272,21 @@ def bash_task(function: Callable) -> Callable:
 
         @bash_task
         def compile_code():
-            return \"gcc -o program program.c\"
+            return "gcc -o program program.c"
 
-        exit_code = compile_code(executor=[\"compute\"]).result()
+        exit_code = compile_code(executor=["compute"]).result()
 
     MPI task with task geometry::
 
         @bash_task
         def run_mpi_simulation(input_file):
-            return f\"$PARSL_MPI_PREFIX ./simulation {input_file}\"
+            return f"$PARSL_MPI_PREFIX ./simulation {input_file}"
 
         exit_code = run_mpi_simulation(
-            \"config.in\",
-            executor=[\"mpi\"],
-            task_geometry={\"num_nodes\": 4, \"num_ranks\": 16, \"ranks_per_node\": 4},
-            stdout=\"output.log\"
+            "config.in",
+            executor=["mpi"],
+            task_geometry={"num_nodes": 4, "num_ranks": 16, "ranks_per_node": 4},
+            stdout="output.log"
         ).result()
 
     """
