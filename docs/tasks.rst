@@ -278,6 +278,14 @@ Here's a simple example of running an MPI application:
    ``$PARSL_RANKS_PER_NODE``). For a complete reference, see Parsl's
    `MPI Apps documentation <https://parsl.readthedocs.io/en/latest/userguide/apps/mpi_apps.html#writing-an-mpi-app>`_.
 
+.. tip::
+   **Combining with parsl_resource_specification**: The ``task_geometry`` parameter
+   is a convenience wrapper around Parsl's ``parsl_resource_specification``. For advanced
+   use cases, you can provide both parameters. When both are present, Chiltepin merges
+   them with ``task_geometry`` taking precedence for overlapping keys. This allows you to
+   specify MPI geometry via ``task_geometry`` while including additional fields in
+   ``parsl_resource_specification`` if needed.
+
 Compile and Run MPI Code
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 

@@ -203,8 +203,16 @@ def python_task(function: Callable) -> Callable:
         **kwargs,
     ):
         # Map task_geometry to Parsl's parsl_resource_specification
+        # If both task_geometry and parsl_resource_specification are provided,
+        # merge them with task_geometry taking precedence
         if task_geometry is not None:
-            kwargs["parsl_resource_specification"] = task_geometry
+            if "parsl_resource_specification" in kwargs:
+                # Merge: start with existing spec, update with geometry
+                merged_spec = kwargs["parsl_resource_specification"].copy()
+                merged_spec.update(task_geometry)
+                kwargs["parsl_resource_specification"] = merged_spec
+            else:
+                kwargs["parsl_resource_specification"] = task_geometry
 
         return python_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs
@@ -298,8 +306,16 @@ def bash_task(function: Callable) -> Callable:
         **kwargs,
     ):
         # Map task_geometry to Parsl's parsl_resource_specification
+        # If both task_geometry and parsl_resource_specification are provided,
+        # merge them with task_geometry taking precedence
         if task_geometry is not None:
-            kwargs["parsl_resource_specification"] = task_geometry
+            if "parsl_resource_specification" in kwargs:
+                # Merge: start with existing spec, update with geometry
+                merged_spec = kwargs["parsl_resource_specification"].copy()
+                merged_spec.update(task_geometry)
+                kwargs["parsl_resource_specification"] = merged_spec
+            else:
+                kwargs["parsl_resource_specification"] = task_geometry
 
         return bash_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs

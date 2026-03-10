@@ -896,3 +896,97 @@ class TestTaskGeometryMapping:
         # Check stdout and stderr were preserved
         assert call_kwargs["stdout"] == "output.txt"
         assert call_kwargs["stderr"] == "error.txt"
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_python_task_geometry_merges_with_parsl_spec(self, mock_python_app):
+        """Test that task_geometry merges with existing parsl_resource_specification."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Define existing parsl_resource_specification with walltime
+        parsl_spec = {
+            "walltime": "01:00:00",
+            "num_nodes": 1,  # This should be overridden
+        }
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 4,
+            "num_ranks": 16,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with both parameters
+        test_func(
+            executor=["test"],
+            task_geometry=geometry,
+            parsl_resource_specification=parsl_spec,
+        )
+
+        # Verify the app instance was called with merged specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+
+        merged_spec = call_kwargs["parsl_resource_specification"]
+        # Check that walltime from parsl_spec is preserved
+        assert merged_spec["walltime"] == "01:00:00"
+        # Check that num_nodes from task_geometry takes precedence
+        assert merged_spec["num_nodes"] == 4
+        # Check that geometry keys are present
+        assert merged_spec["num_ranks"] == 16
+        assert merged_spec["ranks_per_node"] == 4
+
+    @mock.patch("chiltepin.tasks.bash_app")
+    def test_bash_task_geometry_merges_with_parsl_spec(self, mock_bash_app):
+        """Test that task_geometry merges with existing parsl_resource_specification."""
+        # Create a mock future that bash_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_bash_app.return_value = mock_app_instance
+
+        @bash_task
+        def test_bash_func():
+            return "echo test"
+
+        # Define existing parsl_resource_specification with walltime
+        parsl_spec = {
+            "walltime": "02:00:00",
+            "ranks_per_node": 2,  # This should be overridden
+        }
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with both parameters
+        test_bash_func(
+            executor=["test"],
+            task_geometry=geometry,
+            parsl_resource_specification=parsl_spec,
+        )
+
+        # Verify the app instance was called with merged specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+
+        merged_spec = call_kwargs["parsl_resource_specification"]
+        # Check that walltime from parsl_spec is preserved
+        assert merged_spec["walltime"] == "02:00:00"
+        # Check that ranks_per_node from task_geometry takes precedence
+        assert merged_spec["ranks_per_node"] == 4
+        # Check that geometry keys are present
+        assert merged_spec["num_nodes"] == 2
+        assert merged_spec["num_ranks"] == 8
