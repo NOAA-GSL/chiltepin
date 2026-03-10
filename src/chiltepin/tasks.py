@@ -44,7 +44,7 @@ Define an MPI task using task geometry::
         return f"$PARSL_MPI_PREFIX ./simulation {input_file}"
 
     # Specify parallel resource requirements
-    result = run_mpi_simulation(
+    exit_code = run_mpi_simulation(
         "config.in",
         executor=["mpi"],
         task_geometry={

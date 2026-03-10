@@ -824,7 +824,7 @@ class TestTaskGeometryMapping:
 
     @mock.patch("chiltepin.tasks.python_app")
     def test_python_task_geometry_with_other_kwargs(self, mock_python_app):
-        """Test that task_geometry works alongside other kwargs like stdout."""
+        """Test that task_geometry works alongside other kwargs like inputs."""
         # Create a mock future that python_app call will return
         mock_app_instance = mock.MagicMock()
         mock_future = mock.MagicMock()
@@ -842,8 +842,13 @@ class TestTaskGeometryMapping:
             "ranks_per_node": 4,
         }
 
-        # Call the task with task_geometry and other parameters
-        test_func(5, executor=["test"], task_geometry=geometry)
+        # Create a mock future to use as input dependency
+        mock_input_future = mock.MagicMock()
+
+        # Call the task with task_geometry and other Parsl parameters
+        test_func(
+            5, executor=["test"], task_geometry=geometry, inputs=[mock_input_future]
+        )
 
         # Verify the app instance was called with parsl_resource_specification
         mock_app_instance.assert_called_once()
@@ -856,6 +861,10 @@ class TestTaskGeometryMapping:
         # Check task_geometry was mapped to parsl_resource_specification
         assert "parsl_resource_specification" in call_kwargs
         assert call_kwargs["parsl_resource_specification"] == geometry
+
+        # Check inputs was preserved
+        assert "inputs" in call_kwargs
+        assert call_kwargs["inputs"] == [mock_input_future]
 
     @mock.patch("chiltepin.tasks.bash_app")
     def test_bash_task_geometry_with_stdout_stderr(self, mock_bash_app):
@@ -1025,27 +1034,3 @@ class TestTaskGeometryMapping:
         assert original_parsl_spec == {"walltime": "01:00:00"}
         assert "walltime" not in original_geometry
         assert "num_nodes" not in original_parsl_spec
-
-    @mock.patch("chiltepin.tasks.python_app")
-    def test_task_geometry_dict_conversion(self, mock_python_app):
-        """Test that non-dict dict-like objects are converted properly."""
-        # Create a mock future that python_app call will return
-        mock_app_instance = mock.MagicMock()
-        mock_future = mock.MagicMock()
-        mock_app_instance.return_value = mock_future
-        mock_python_app.return_value = mock_app_instance
-
-        @python_task
-        def test_func():
-            return "test"
-
-        # Use a dict-like object (dict should work)
-        geometry = {"num_nodes": 1, "num_ranks": 4}
-
-        # This should work fine
-        test_func(executor=["test"], task_geometry=geometry)
-
-        # Verify it was passed through
-        mock_app_instance.assert_called_once()
-        call_kwargs = mock_app_instance.call_args[1]
-        assert "parsl_resource_specification" in call_kwargs
