@@ -223,7 +223,7 @@ MPI Tasks and Task Geometry
 ----------------------------
 
 For tasks that run MPI (Message Passing Interface) applications, Chiltepin provides
-the ``task_geometry`` parameter to specify parallel resource requirements. This parameter
+the ``chiltepin_task_geometry`` parameter to specify parallel resource requirements. This parameter
 tells the scheduler how many nodes, MPI ranks, and ranks per node your task needs.
 
 What is Task Geometry?
@@ -257,7 +257,7 @@ Here's a simple example of running an MPI application:
    # Run on 2 nodes with 8 total ranks (4 ranks per node)
    exit_code = run_mpi_hello(
        executor=["mpi"],
-       task_geometry={
+       chiltepin_task_geometry={
            "num_nodes": 2,
            "num_ranks": 8,
            "ranks_per_node": 4
@@ -279,11 +279,11 @@ Here's a simple example of running an MPI application:
    `MPI Apps documentation <https://parsl.readthedocs.io/en/latest/userguide/apps/mpi_apps.html#writing-an-mpi-app>`_.
 
 .. tip::
-   **Combining with parsl_resource_specification**: The ``task_geometry`` parameter
+   **Combining with parsl_resource_specification**: The ``chiltepin_task_geometry`` parameter
    is a convenience wrapper around Parsl's ``parsl_resource_specification``. For advanced
    use cases, you can provide both parameters. When both are present, Chiltepin merges
-   them with ``task_geometry`` taking precedence for overlapping keys. This allows you to
-   specify MPI geometry via ``task_geometry`` while including additional fields in
+   them with ``chiltepin_task_geometry`` taking precedence for overlapping keys. This allows you to
+   specify MPI geometry via ``chiltepin_task_geometry`` while including additional fields in
    ``parsl_resource_specification`` if needed.
 
 Compile and Run MPI Code
@@ -300,7 +300,7 @@ resources with specific geometry:
    def compile_mpi_code(source_dir):
        return f"""
        cd {source_dir}
-       $CHILTEPIN_MPIF90 -o simulation.exe simulation.f90
+       $MPIF90 -o simulation.exe simulation.f90
        """
 
    @bash_task
@@ -321,7 +321,7 @@ resources with specific geometry:
        "/path/to/source",
        "config.in",
        executor=["mpi"],
-       task_geometry={
+       chiltepin_task_geometry={
            "num_nodes": 4,
            "num_ranks": 16,
            "ranks_per_node": 4
@@ -346,7 +346,7 @@ based on resource availability:
    small = mpi_task(
        "small.cfg",
        executor=["mpi"],
-       task_geometry={
+       chiltepin_task_geometry={
            "num_nodes": 1,
            "num_ranks": 8,
            "ranks_per_node": 8
@@ -357,7 +357,7 @@ based on resource availability:
    large = mpi_task(
        "large.cfg",
        executor=["mpi"],
-       task_geometry={
+       chiltepin_task_geometry={
            "num_nodes": 8,
            "num_ranks": 64,
            "ranks_per_node": 8
@@ -371,7 +371,7 @@ based on resource availability:
 Task Geometry with Python Tasks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-While less common, you can also use ``task_geometry`` with Python tasks that launch
+While less common, you can also use ``chiltepin_task_geometry`` with Python tasks that launch
 MPI applications:
 
 .. code-block:: python
@@ -402,7 +402,7 @@ MPI applications:
    exit_code = run_mpi_analysis(
        "dataset.h5",
        executor=["mpi"],
-       task_geometry={
+       chiltepin_task_geometry={
            "num_nodes": 2,
            "num_ranks": 16,
            "ranks_per_node": 8
@@ -433,9 +433,9 @@ Best Practices for MPI Tasks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 1. **Always use $PARSL_MPI_PREFIX**: This ensures your MPI applications receive the
-   correct number of processes specified in ``task_geometry``.
+   correct number of processes specified in ``chiltepin_task_geometry``.
 
-2. **Match geometry to resource**: Ensure your ``task_geometry`` doesn't exceed the
+2. **Match geometry to resource**: Ensure your ``chiltepin_task_geometry`` doesn't exceed the
    capabilities defined in your resource configuration.
 
 3. **Consider oversubscription**: For testing on local systems, you may need to allow

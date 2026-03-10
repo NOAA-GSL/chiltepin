@@ -47,7 +47,7 @@ Define an MPI task using task geometry::
     exit_code = run_mpi_simulation(
         "config.in",
         executor=["mpi"],
-        task_geometry={
+        chiltepin_task_geometry={
             "num_nodes": 4,
             "num_ranks": 16,
             "ranks_per_node": 4
@@ -57,7 +57,7 @@ Define an MPI task using task geometry::
 
 from functools import wraps
 from inspect import Parameter, signature
-from typing import Callable
+from typing import Callable, Optional
 
 from parsl.app.app import bash_app, join_app, python_app
 
@@ -100,16 +100,19 @@ def _create_filtered_wrapper(function: Callable) -> Callable:
     return wrapper
 
 
-def _merge_task_geometry(task_geometry, kwargs):
-    """Merge task_geometry into parsl_resource_specification in kwargs.
+def _merge_chiltepin_task_geometry(
+    chiltepin_task_geometry: Optional[dict], kwargs: dict
+) -> None:
+    """Merge chiltepin_task_geometry into parsl_resource_specification in kwargs.
 
-    This helper function handles the merging of task_geometry into the
+    This helper function handles the merging of chiltepin_task_geometry into the
     parsl_resource_specification parameter. If both are provided, they are merged
-    with task_geometry taking precedence for overlapping keys.
+    with chiltepin_task_geometry taking precedence for overlapping keys. If
+    parsl_resource_specification is None, it is treated as an empty dict.
 
     Parameters
     ----------
-    task_geometry: dict or None
+    chiltepin_task_geometry: dict or None
         Task geometry specification to merge
     kwargs: dict
         Keyword arguments dictionary to modify in place
@@ -118,14 +121,28 @@ def _merge_task_geometry(task_geometry, kwargs):
     -------
     None
         Modifies kwargs in place
+
+    Raises
+    ------
+    TypeError
+        If chiltepin_task_geometry is not None and not a dict
     """
-    if task_geometry is not None:
+    if chiltepin_task_geometry is not None:
+        # Validate that chiltepin_task_geometry is a dict
+        if not isinstance(chiltepin_task_geometry, dict):
+            raise TypeError(
+                f"chiltepin_task_geometry must be a dict, got {type(chiltepin_task_geometry).__name__}"
+            )
+
         # Make a defensive copy to prevent mutations
-        geometry_copy = dict(task_geometry)
+        geometry_copy = dict(chiltepin_task_geometry)
 
         if "parsl_resource_specification" in kwargs:
-            # Merge: start with existing spec, update with geometry
             existing_spec = kwargs["parsl_resource_specification"]
+            # Treat None as an empty dict
+            if existing_spec is None:
+                existing_spec = {}
+            # Merge: start with existing spec, update with geometry
             merged_spec = dict(existing_spec)
             merged_spec.update(geometry_copy)
             kwargs["parsl_resource_specification"] = merged_spec
@@ -183,7 +200,7 @@ def python_task(function: Callable) -> Callable:
         a list of resource names. Defaults to "all" which allows execution on any configured
         resource.
 
-    task_geometry: dict, optional
+    chiltepin_task_geometry: dict, optional
         Specification of parallel task geometry for MPI applications. This parameter is
         mapped to Parsl's ``parsl_resource_specification``. The dictionary should contain:
 
@@ -193,7 +210,7 @@ def python_task(function: Callable) -> Callable:
 
         Example::
 
-            task_geometry={
+            chiltepin_task_geometry={
                 "num_nodes": 4,
                 "num_ranks": 16,
                 "ranks_per_node": 4
@@ -234,7 +251,7 @@ def python_task(function: Callable) -> Callable:
         future = run_mpi_code(
             params,
             executor=["mpi"],
-            task_geometry={"num_nodes": 2, "num_ranks": 8, "ranks_per_node": 4}
+            chiltepin_task_geometry={"num_nodes": 2, "num_ranks": 8, "ranks_per_node": 4}
         )
 
     """
@@ -242,11 +259,11 @@ def python_task(function: Callable) -> Callable:
     def function_wrapper(
         *args,
         executor="all",
-        task_geometry=None,
+        chiltepin_task_geometry=None,
         **kwargs,
     ):
-        # Map task_geometry to Parsl's parsl_resource_specification
-        _merge_task_geometry(task_geometry, kwargs)
+        # Map chiltepin_task_geometry to Parsl's parsl_resource_specification
+        _merge_chiltepin_task_geometry(chiltepin_task_geometry, kwargs)
 
         return python_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs
@@ -278,7 +295,7 @@ def bash_task(function: Callable) -> Callable:
         a list of resource names. Defaults to "all" which allows execution on any configured
         resource.
 
-    task_geometry: dict, optional
+    chiltepin_task_geometry: dict, optional
         Specification of parallel task geometry for MPI applications. This parameter is
         mapped to Parsl's ``parsl_resource_specification``. The dictionary should contain:
 
@@ -288,7 +305,7 @@ def bash_task(function: Callable) -> Callable:
 
         Example::
 
-            task_geometry={
+            chiltepin_task_geometry={
                 "num_nodes": 4,
                 "num_ranks": 16,
                 "ranks_per_node": 4
@@ -337,7 +354,7 @@ def bash_task(function: Callable) -> Callable:
         exit_code = run_mpi_simulation(
             "config.in",
             executor=["mpi"],
-            task_geometry={"num_nodes": 4, "num_ranks": 16, "ranks_per_node": 4},
+            chiltepin_task_geometry={"num_nodes": 4, "num_ranks": 16, "ranks_per_node": 4},
             stdout="output.log"
         ).result()
 
@@ -346,11 +363,11 @@ def bash_task(function: Callable) -> Callable:
     def function_wrapper(
         *args,
         executor="all",
-        task_geometry=None,
+        chiltepin_task_geometry=None,
         **kwargs,
     ):
-        # Map task_geometry to Parsl's parsl_resource_specification
-        _merge_task_geometry(task_geometry, kwargs)
+        # Map chiltepin_task_geometry to Parsl's parsl_resource_specification
+        _merge_chiltepin_task_geometry(chiltepin_task_geometry, kwargs)
 
         return bash_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs

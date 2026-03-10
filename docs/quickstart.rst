@@ -283,21 +283,21 @@ MPI Workflow
            # Small run: 1 node, 4 ranks
            result1 = run_mpi(
                executor=["mpi-resource-name"],
-               task_geometry={"num_nodes": 1, "num_ranks": 4, "ranks_per_node": 4}
+               chiltepin_task_geometry={"num_nodes": 1, "num_ranks": 4, "ranks_per_node": 4}
            ).result()
            print(f"Small run exit code: {result1}")
 
            # Medium run: 2 nodes, 16 ranks
            result2 = run_mpi(
                executor=["mpi-resource-name"],
-               task_geometry={"num_nodes": 2, "num_ranks": 16, "ranks_per_node": 8}
+               chiltepin_task_geometry={"num_nodes": 2, "num_ranks": 16, "ranks_per_node": 8}
            ).result()
            print(f"Medium run exit code: {result2}")
 
            # Large run: 4 nodes, 64 ranks
            result3 = run_mpi(
                executor=["mpi-resource-name"],
-               task_geometry={"num_nodes": 4, "num_ranks": 64, "ranks_per_node": 16}
+               chiltepin_task_geometry={"num_nodes": 4, "num_ranks": 64, "ranks_per_node": 16}
            ).result()
            print(f"Large run exit code: {result3}")
 
@@ -337,7 +337,7 @@ When calling a task, use the ``executor`` parameter to specify which resource to
 
 The ``executor`` value must match a resource name from your configuration file.
 
-For MPI tasks, you can also use the ``task_geometry`` parameter to specify parallel
+For MPI tasks, you can also use the ``chiltepin_task_geometry`` parameter to specify parallel
 resource requirements:
 
 .. code-block:: python
@@ -349,7 +349,7 @@ resource requirements:
    # Specify MPI geometry (nodes, ranks, ranks per node)
    result = run_mpi_app(
        executor=["mpi-resource"],
-       task_geometry={"num_nodes": 2, "num_ranks": 16, "ranks_per_node": 8}
+       chiltepin_task_geometry={"num_nodes": 2, "num_ranks": 16, "ranks_per_node": 8}
    ).result()
 
 .. seealso::
