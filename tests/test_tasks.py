@@ -10,6 +10,7 @@ import logging
 import pathlib
 import tempfile
 from typing import List
+from unittest import mock
 
 import parsl
 import pytest
@@ -710,3 +711,392 @@ class TestTaskMetadata:
         # Call the wrapper with extra kwargs that should be filtered out
         result = wrapped(5, y=20, ignored_kwarg="should_be_filtered")
         assert result == 25  # 5 + 20 = 25
+
+
+class TestChiltepinTaskGeometryMapping:
+    """Test that chiltepin_task_geometry parameter is properly mapped to parsl_resource_specification."""
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_python_chiltepin_task_geometry_mapping(self, mock_python_app):
+        """Test that chiltepin_task_geometry is mapped to parsl_resource_specification for python_task."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with chiltepin_task_geometry
+        test_func(executor=["test"], chiltepin_task_geometry=geometry)
+
+        # Verify python_app was called to create the app
+        assert mock_python_app.called
+
+        # Verify the app instance was called with parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_python_task_without_geometry(self, mock_python_app):
+        """Test that python_task works without chiltepin_task_geometry."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Call the task without chiltepin_task_geometry
+        test_func(executor=["test"])
+
+        # Verify the app instance was called without parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" not in call_kwargs
+
+    @mock.patch("chiltepin.tasks.bash_app")
+    def test_bash_chiltepin_task_geometry_mapping(self, mock_bash_app):
+        """Test that chiltepin_task_geometry is mapped to parsl_resource_specification for bash_task."""
+        # Create a mock future that bash_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_bash_app.return_value = mock_app_instance
+
+        @bash_task
+        def test_bash_func():
+            return "echo test"
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 4,
+            "num_ranks": 16,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with chiltepin_task_geometry
+        test_bash_func(executor=["test"], chiltepin_task_geometry=geometry)
+
+        # Verify bash_app was called to create the app
+        assert mock_bash_app.called
+
+        # Verify the app instance was called with parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry
+
+    @mock.patch("chiltepin.tasks.bash_app")
+    def test_bash_task_without_geometry(self, mock_bash_app):
+        """Test that bash_task works without chiltepin_task_geometry."""
+        # Create a mock future that bash_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_bash_app.return_value = mock_app_instance
+
+        @bash_task
+        def test_bash_func():
+            return "echo test"
+
+        # Call the task without chiltepin_task_geometry
+        test_bash_func(executor=["test"])
+
+        # Verify the app instance was called without parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" not in call_kwargs
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_python_chiltepin_task_geometry_with_other_kwargs(self, mock_python_app):
+        """Test that chiltepin_task_geometry works alongside other kwargs like inputs."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func(x):
+            return x * 2
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 1,
+            "num_ranks": 4,
+            "ranks_per_node": 4,
+        }
+
+        # Create a mock future to use as input dependency
+        mock_input_future = mock.MagicMock()
+
+        # Call the task with chiltepin_task_geometry and other Parsl parameters
+        test_func(
+            5,
+            executor=["test"],
+            chiltepin_task_geometry=geometry,
+            inputs=[mock_input_future],
+        )
+
+        # Verify the app instance was called with parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_args = mock_app_instance.call_args[0]
+        call_kwargs = mock_app_instance.call_args[1]
+
+        # Check positional arg is passed
+        assert 5 in call_args
+
+        # Check chiltepin_task_geometry was mapped to parsl_resource_specification
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry
+
+        # Check inputs was preserved
+        assert "inputs" in call_kwargs
+        assert call_kwargs["inputs"] == [mock_input_future]
+
+    @mock.patch("chiltepin.tasks.bash_app")
+    def test_bash_chiltepin_task_geometry_with_stdout_stderr(self, mock_bash_app):
+        """Test that chiltepin_task_geometry works alongside stdout/stderr parameters."""
+        # Create a mock future that bash_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_bash_app.return_value = mock_app_instance
+
+        @bash_task
+        def test_bash_func():
+            return "echo test"
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with chiltepin_task_geometry and stdout/stderr
+        test_bash_func(
+            executor=["test"],
+            chiltepin_task_geometry=geometry,
+            stdout="output.txt",
+            stderr="error.txt",
+        )
+
+        # Verify the app instance was called with all parameters
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+
+        # Check chiltepin_task_geometry was mapped to parsl_resource_specification
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry
+
+        # Check stdout and stderr were preserved
+        assert call_kwargs["stdout"] == "output.txt"
+        assert call_kwargs["stderr"] == "error.txt"
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_python_chiltepin_task_geometry_merges_with_parsl_spec(
+        self, mock_python_app
+    ):
+        """Test that chiltepin_task_geometry merges with existing parsl_resource_specification."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Define existing parsl_resource_specification with walltime
+        parsl_spec = {
+            "walltime": "01:00:00",
+            "num_nodes": 1,  # This should be overridden
+        }
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 4,
+            "num_ranks": 16,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with both parameters
+        test_func(
+            executor=["test"],
+            chiltepin_task_geometry=geometry,
+            parsl_resource_specification=parsl_spec,
+        )
+
+        # Verify the app instance was called with merged specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+
+        merged_spec = call_kwargs["parsl_resource_specification"]
+        # Check that walltime from parsl_spec is preserved
+        assert merged_spec["walltime"] == "01:00:00"
+        # Check that num_nodes from chiltepin_task_geometry takes precedence
+        assert merged_spec["num_nodes"] == 4
+        # Check that geometry keys are present
+        assert merged_spec["num_ranks"] == 16
+        assert merged_spec["ranks_per_node"] == 4
+
+    @mock.patch("chiltepin.tasks.bash_app")
+    def test_bash_chiltepin_task_geometry_merges_with_parsl_spec(self, mock_bash_app):
+        """Test that chiltepin_task_geometry merges with existing parsl_resource_specification."""
+        # Create a mock future that bash_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_bash_app.return_value = mock_app_instance
+
+        @bash_task
+        def test_bash_func():
+            return "echo test"
+
+        # Define existing parsl_resource_specification with walltime
+        parsl_spec = {
+            "walltime": "02:00:00",
+            "ranks_per_node": 2,  # This should be overridden
+        }
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with both parameters
+        test_bash_func(
+            executor=["test"],
+            chiltepin_task_geometry=geometry,
+            parsl_resource_specification=parsl_spec,
+        )
+
+        # Verify the app instance was called with merged specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+
+        merged_spec = call_kwargs["parsl_resource_specification"]
+        # Check that walltime from parsl_spec is preserved
+        assert merged_spec["walltime"] == "02:00:00"
+        # Check that ranks_per_node from chiltepin_task_geometry takes precedence
+        assert merged_spec["ranks_per_node"] == 4
+        # Check that geometry keys are present
+        assert merged_spec["num_nodes"] == 2
+        assert merged_spec["num_ranks"] == 8
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_chiltepin_task_geometry_creates_copy(self, mock_python_app):
+        """Test that chiltepin_task_geometry dicts are copied to prevent mutations."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Define task geometry and parsl_spec that we'll verify aren't mutated
+        original_geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+        }
+        original_parsl_spec = {
+            "walltime": "01:00:00",
+        }
+
+        # Call the task
+        test_func(
+            executor=["test"],
+            chiltepin_task_geometry=original_geometry,
+            parsl_resource_specification=original_parsl_spec,
+        )
+
+        # Verify the originals were not modified
+        assert original_geometry == {"num_nodes": 2, "num_ranks": 8}
+        assert original_parsl_spec == {"walltime": "01:00:00"}
+        assert "walltime" not in original_geometry
+        assert "num_nodes" not in original_parsl_spec
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_chiltepin_task_geometry_with_invalid_type_raises_error(
+        self, mock_python_app
+    ):
+        """Test that passing non-dict chiltepin_task_geometry raises TypeError."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Test with various invalid types
+        invalid_geometries = [
+            "not a dict",
+            123,
+            ["list", "of", "items"],
+            ("tuple", "of", "items"),
+        ]
+
+        for invalid_geometry in invalid_geometries:
+            with pytest.raises(
+                TypeError, match="chiltepin_task_geometry must be a dict"
+            ):
+                test_func(executor=["test"], chiltepin_task_geometry=invalid_geometry)
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_chiltepin_task_geometry_with_none_parsl_spec(self, mock_python_app):
+        """Test that chiltepin_task_geometry works when parsl_resource_specification is None."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+        }
+
+        # Call with chiltepin_task_geometry and parsl_resource_specification=None
+        test_func(
+            executor=["test"],
+            chiltepin_task_geometry=geometry,
+            parsl_resource_specification=None,
+        )
+
+        # Verify the app instance was called with parsl_resource_specification set to geometry
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry

@@ -219,6 +219,235 @@ For complex bash scripts, return multi-line strings:
        ./run_tests.sh
        """
 
+MPI Tasks and Task Geometry
+----------------------------
+
+For tasks that run MPI (Message Passing Interface) applications, Chiltepin provides
+the ``chiltepin_task_geometry`` parameter to specify parallel resource requirements. This parameter
+tells the scheduler how many nodes, MPI ranks, and ranks per node your task needs.
+
+What is Task Geometry?
+^^^^^^^^^^^^^^^^^^^^^^
+
+Task geometry defines the parallel execution layout for MPI applications:
+
+- **num_nodes**: Number of compute nodes required for the task
+- **num_ranks**: Total number of MPI processes (ranks) to launch
+- **ranks_per_node**: Number of MPI ranks to place on each node
+
+The relationship between these values is typically:
+
+.. code-block:: python
+
+   num_ranks = num_nodes * ranks_per_node
+
+Basic MPI Task Example
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Here's a simple example of running an MPI application:
+
+.. code-block:: python
+
+   from chiltepin.tasks import bash_task
+
+   @bash_task
+   def run_mpi_hello():
+       return "$PARSL_MPI_PREFIX ./mpi_hello.exe"
+
+   # Run on 2 nodes with 8 total ranks (4 ranks per node)
+   exit_code = run_mpi_hello(
+       executor=["mpi"],
+       chiltepin_task_geometry={
+           "num_nodes": 2,
+           "num_ranks": 8,
+           "ranks_per_node": 4
+       }
+   ).result()
+
+.. note::
+   The ``$PARSL_MPI_PREFIX`` environment variable is automatically set by Parsl's MPI
+   launcher and contains the appropriate ``mpirun`` or ``mpiexec`` command with the
+   correct number of processes. Always use this variable when launching MPI applications
+   to ensure the task geometry is properly applied.
+
+.. tip::
+   **Advanced MPI Environment Variables**: Parsl provides additional environment
+   variables for MPI tasks that can be useful for advanced applications. These include
+   launcher-specific variables (e.g., ``$PARSL_SRUN_PREFIX``, ``$PARSL_MPIEXEC_PREFIX``)
+   and task geometry variables (``$PARSL_NUM_RANKS``, ``$PARSL_NUM_NODES``,
+   ``$PARSL_RANKS_PER_NODE``). For a complete reference, see Parsl's
+   `MPI Apps documentation <https://parsl.readthedocs.io/en/latest/userguide/apps/mpi_apps.html#writing-an-mpi-app>`_.
+
+.. tip::
+   **Combining with parsl_resource_specification**: The ``chiltepin_task_geometry`` parameter
+   is a convenience wrapper around Parsl's ``parsl_resource_specification``. For advanced
+   use cases, you can provide both parameters. When both are present, Chiltepin merges
+   them with ``chiltepin_task_geometry`` taking precedence for overlapping keys. This allows you to
+   specify MPI geometry via ``chiltepin_task_geometry`` while including additional fields in
+   ``parsl_resource_specification`` if needed.
+
+Compile and Run MPI Code
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A common pattern is to compile MPI code on a compute resource, then run it on MPI
+resources with specific geometry:
+
+.. code-block:: python
+
+   from chiltepin.tasks import bash_task
+
+   @bash_task
+   def compile_mpi_code(source_dir):
+       return f"""
+       cd {source_dir}
+       $MPIF90 -o simulation.exe simulation.f90
+       """
+
+   @bash_task
+   def run_mpi_simulation(work_dir, input_file):
+       return f"""
+       cd {work_dir}
+       $PARSL_MPI_PREFIX ./simulation.exe {input_file}
+       """
+
+   # Compile on compute resource
+   compile_result = compile_mpi_code(
+       "/path/to/source",
+       executor=["compute"]
+   ).result()
+
+   # Run on MPI resource with specified geometry
+   sim_result = run_mpi_simulation(
+       "/path/to/source",
+       "config.in",
+       executor=["mpi"],
+       chiltepin_task_geometry={
+           "num_nodes": 4,
+           "num_ranks": 16,
+           "ranks_per_node": 4
+       },
+       stdout="simulation.out",
+       stderr="simulation.err"
+   ).result()
+
+Different Geometries for Different Tasks
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+You can run multiple MPI tasks with different geometries, and Parsl will schedule them
+based on resource availability:
+
+.. code-block:: python
+
+   @bash_task
+   def mpi_task(config):
+       return f"$PARSL_MPI_PREFIX ./app {config}"
+
+   # Small task - 1 node
+   small = mpi_task(
+       "small.cfg",
+       executor=["mpi"],
+       chiltepin_task_geometry={
+           "num_nodes": 1,
+           "num_ranks": 8,
+           "ranks_per_node": 8
+       }
+   )
+
+   # Large task - 8 nodes
+   large = mpi_task(
+       "large.cfg",
+       executor=["mpi"],
+       chiltepin_task_geometry={
+           "num_nodes": 8,
+           "num_ranks": 64,
+           "ranks_per_node": 8
+       }
+   )
+
+   # Both tasks are submitted and can run concurrently if resources allow
+   small_result = small.result()
+   large_result = large.result()
+
+Task Geometry with Python Tasks
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+While less common, you can also use ``chiltepin_task_geometry`` with Python tasks that launch
+MPI applications:
+
+.. code-block:: python
+
+   from chiltepin.tasks import python_task
+
+   @python_task
+   def run_mpi_analysis(data_file):
+       import subprocess
+       import os
+       import shlex
+
+       # Get the MPI prefix from environment
+       mpi_prefix = os.environ.get("PARSL_MPI_PREFIX", "mpiexec -n 1")
+
+       # Parse the MPI prefix safely and construct command as list
+       mpi_command = shlex.split(mpi_prefix)
+       command = mpi_command + ["python", "mpi_analysis.py", data_file]
+
+       # Run MPI application (shell=False prevents injection attacks)
+       result = subprocess.run(
+           command,
+           capture_output=True
+       )
+
+       return result.returncode
+
+   exit_code = run_mpi_analysis(
+       "dataset.h5",
+       executor=["mpi"],
+       chiltepin_task_geometry={
+           "num_nodes": 2,
+           "num_ranks": 16,
+           "ranks_per_node": 8
+       }
+   ).result()
+
+Configuring MPI Resources
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To use task geometry effectively, your configuration file must define MPI-capable
+resources. See the :doc:`configuration` documentation for details on setting up
+MPI resources.
+
+Example configuration snippet:
+
+.. code-block:: yaml
+
+   mpi:
+     mpi: True
+     provider: "slurm"
+     max_mpi_apps: 4
+     cores_per_node: 8
+     nodes_per_block: 3
+     partition: "compute"
+     walltime: "2:00:00"
+
+Best Practices for MPI Tasks
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+1. **Always use $PARSL_MPI_PREFIX**: This ensures your MPI applications receive the
+   correct number of processes specified in ``chiltepin_task_geometry``.
+
+2. **Match geometry to resource**: Ensure your ``chiltepin_task_geometry`` doesn't exceed the
+   capabilities defined in your resource configuration.
+
+3. **Consider oversubscription**: For testing on local systems, you may need to allow
+   oversubscription with an appropriate flag, such as Open MPI's ``--oversubscribe`` or Slurm's
+   ``--overcommit``.
+
+4. **Capture output appropriately**: Use ``stdout`` and ``stderr`` parameters to capture
+   MPI application output for debugging.
+
+5. **Test scaling**: Start with small geometries and scale up to ensure your application
+   runs correctly at different scales.
+
 Join Tasks
 ----------
 

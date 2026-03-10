@@ -36,11 +36,28 @@ Define a bash task::
 
     # Returns exit code (0 = success)
     exit_code = list_files("/tmp", executor=["compute"]).result()
+
+Define an MPI task using task geometry::
+
+    @bash_task
+    def run_mpi_simulation(input_file):
+        return f"$PARSL_MPI_PREFIX ./simulation {input_file}"
+
+    # Specify parallel resource requirements
+    exit_code = run_mpi_simulation(
+        "config.in",
+        executor=["mpi"],
+        chiltepin_task_geometry={
+            "num_nodes": 4,
+            "num_ranks": 16,
+            "ranks_per_node": 4
+        }
+    ).result()
 """
 
 from functools import wraps
 from inspect import Parameter, signature
-from typing import Callable
+from typing import Callable, Optional
 
 from parsl.app.app import bash_app, join_app, python_app
 
@@ -83,6 +100,56 @@ def _create_filtered_wrapper(function: Callable) -> Callable:
     return wrapper
 
 
+def _merge_chiltepin_task_geometry(
+    chiltepin_task_geometry: Optional[dict], kwargs: dict
+) -> None:
+    """Merge chiltepin_task_geometry into parsl_resource_specification in kwargs.
+
+    This helper function handles the merging of chiltepin_task_geometry into the
+    parsl_resource_specification parameter. If both are provided, they are merged
+    with chiltepin_task_geometry taking precedence for overlapping keys. If
+    parsl_resource_specification is None, it is treated as an empty dict.
+
+    Parameters
+    ----------
+    chiltepin_task_geometry: dict or None
+        Task geometry specification to merge
+    kwargs: dict
+        Keyword arguments dictionary to modify in place
+
+    Returns
+    -------
+    None
+        Modifies kwargs in place
+
+    Raises
+    ------
+    TypeError
+        If chiltepin_task_geometry is not None and not a dict
+    """
+    if chiltepin_task_geometry is not None:
+        # Validate that chiltepin_task_geometry is a dict
+        if not isinstance(chiltepin_task_geometry, dict):
+            raise TypeError(
+                f"chiltepin_task_geometry must be a dict, got {type(chiltepin_task_geometry).__name__}"
+            )
+
+        # Make a defensive copy to prevent mutations
+        geometry_copy = dict(chiltepin_task_geometry)
+
+        if "parsl_resource_specification" in kwargs:
+            existing_spec = kwargs["parsl_resource_specification"]
+            # Treat None as an empty dict
+            if existing_spec is None:
+                existing_spec = {}
+            # Merge: start with existing spec, update with geometry
+            merged_spec = dict(existing_spec)
+            merged_spec.update(geometry_copy)
+            kwargs["parsl_resource_specification"] = merged_spec
+        else:
+            kwargs["parsl_resource_specification"] = geometry_copy
+
+
 class MethodWrapper:
     """Wrapper that preserves method behavior for decorated functions.
 
@@ -119,25 +186,85 @@ def python_task(function: Callable) -> Callable:
 
     Parameters
     ----------
-
     function: Callable
         The function to be decorated to yield a Python workflow task. This function can be a
         stand-alone function or a class method. If it is a class method, it can make use of
         `self` to access object state.
 
+    Other Parameters
+    ----------------
+    The decorated function includes the following additional parameters at call time:
+
+    executor: str or list of str, default="all"
+        Resource name(s) where the task should execute. Can be a single resource name or
+        a list of resource names. Defaults to "all" which allows execution on any configured
+        resource.
+
+    chiltepin_task_geometry: dict, optional
+        Specification of parallel task geometry for MPI applications. This parameter is
+        mapped to Parsl's ``parsl_resource_specification``. The dictionary should contain:
+
+        - **num_nodes** (int): Number of nodes required for the task
+        - **num_ranks** (int): Total number of MPI ranks
+        - **ranks_per_node** (int): Number of MPI ranks per node
+
+        Example::
+
+            chiltepin_task_geometry={
+                "num_nodes": 4,
+                "num_ranks": 16,
+                "ranks_per_node": 4
+            }
+
+    inputs: list of AppFuture, optional
+        List of futures that must complete before this task starts. Used to create
+        task dependencies without passing data between tasks. See Parsl's documentation
+        for details.
+
+    .. note::
+       All keyword arguments supported by Parsl's ``python_app`` decorator (such as
+       ``outputs``, ``walltime``, etc.) are also accepted and passed through
+       to the underlying Parsl app.
 
     Returns
     -------
-
     Callable
+        The decorated function that can be called as a workflow task.
+
+    Examples
+    --------
+    Basic usage::
+
+        @python_task
+        def compute(x):
+            return x ** 2
+
+        result = compute(5, executor=["compute"]).result()
+
+    MPI task with task geometry::
+
+        @python_task
+        def run_mpi_code(params):
+            # MPI code execution
+            return "result"
+
+        future = run_mpi_code(
+            params,
+            executor=["mpi"],
+            chiltepin_task_geometry={"num_nodes": 2, "num_ranks": 8, "ranks_per_node": 4}
+        )
 
     """
 
     def function_wrapper(
         *args,
         executor="all",
+        chiltepin_task_geometry=None,
         **kwargs,
     ):
+        # Map chiltepin_task_geometry to Parsl's parsl_resource_specification
+        _merge_chiltepin_task_geometry(chiltepin_task_geometry, kwargs)
+
         return python_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs
         )
@@ -153,26 +280,95 @@ def bash_task(function: Callable) -> Callable:
 
     Parameters
     ----------
-
     function: Callable
         The function to be decorated to yield a Bash workflow task. This function can be a
         stand-alone function or a class method. If it is a class method, it can make use of
         `self` to access object state. The function must return a string that contains a
         series of bash commands to be executed.
 
+    Other Parameters
+    ----------------
+    The decorated function includes the following additional parameters at call time:
+
+    executor: str or list of str, default="all"
+        Resource name(s) where the task should execute. Can be a single resource name or
+        a list of resource names. Defaults to "all" which allows execution on any configured
+        resource.
+
+    chiltepin_task_geometry: dict, optional
+        Specification of parallel task geometry for MPI applications. This parameter is
+        mapped to Parsl's ``parsl_resource_specification``. The dictionary should contain:
+
+        - **num_nodes** (int): Number of nodes required for the task
+        - **num_ranks** (int): Total number of MPI ranks
+        - **ranks_per_node** (int): Number of MPI ranks per node
+
+        Example::
+
+            chiltepin_task_geometry={
+                "num_nodes": 4,
+                "num_ranks": 16,
+                "ranks_per_node": 4
+            }
+
+    stdout: str or tuple, optional
+        File path for capturing standard output. Can be a string path or a tuple of
+        (path, mode) where mode is typically 'w' for write or 'a' for append.
+
+    stderr: str or tuple, optional
+        File path for capturing standard error. Can be a string path or a tuple of
+        (path, mode) where mode is typically 'w' for write or 'a' for append.
+
+    inputs: list of AppFuture, optional
+        List of futures that must complete before this task starts. Used to create
+        task dependencies without passing data between tasks. See Parsl's documentation
+        for details.
+
+    .. note::
+       All keyword arguments supported by Parsl's ``bash_app`` decorator (such as
+       ``outputs``, ``walltime``, etc.) are also accepted and passed through
+       to the underlying Parsl app.
 
     Returns
     -------
-
     Callable
+        The decorated function that can be called as a workflow task. Returns the exit
+        code of the bash command (0 indicates success).
+
+    Examples
+    --------
+    Basic usage::
+
+        @bash_task
+        def compile_code():
+            return "gcc -o program program.c"
+
+        exit_code = compile_code(executor=["compute"]).result()
+
+    MPI task with task geometry::
+
+        @bash_task
+        def run_mpi_simulation(input_file):
+            return f"$PARSL_MPI_PREFIX ./simulation {input_file}"
+
+        exit_code = run_mpi_simulation(
+            "config.in",
+            executor=["mpi"],
+            chiltepin_task_geometry={"num_nodes": 4, "num_ranks": 16, "ranks_per_node": 4},
+            stdout="output.log"
+        ).result()
 
     """
 
     def function_wrapper(
         *args,
         executor="all",
+        chiltepin_task_geometry=None,
         **kwargs,
     ):
+        # Map chiltepin_task_geometry to Parsl's parsl_resource_specification
+        _merge_chiltepin_task_geometry(chiltepin_task_geometry, kwargs)
+
         return bash_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs
         )
