@@ -36,6 +36,23 @@ Define a bash task::
 
     # Returns exit code (0 = success)
     exit_code = list_files("/tmp", executor=["compute"]).result()
+
+Define an MPI task using task geometry::
+
+    @bash_task
+    def run_mpi_simulation(input_file):
+        return f"$PARSL_MPI_PREFIX ./simulation {input_file}"
+
+    # Specify parallel resource requirements
+    result = run_mpi_simulation(
+        "config.in",
+        executor=["mpi"],
+        task_geometry={
+            "num_nodes": 4,
+            "num_ranks": 16,
+            "ranks_per_node": 4
+        }
+    ).result()
 """
 
 from functools import wraps
@@ -119,25 +136,76 @@ def python_task(function: Callable) -> Callable:
 
     Parameters
     ----------
-
     function: Callable
         The function to be decorated to yield a Python workflow task. This function can be a
         stand-alone function or a class method. If it is a class method, it can make use of
         `self` to access object state.
 
+    Wrapped Function Parameters
+    ---------------------------
+    The decorated function accepts the following additional parameters at call time:
+
+    executor: str or list of str, default="all"
+        Resource name(s) where the task should execute. Can be a single resource name or
+        a list of resource names. Defaults to "all" which allows execution on any configured
+        resource.
+
+    task_geometry: dict, optional
+        Specification of parallel task geometry for MPI applications. This parameter is
+        mapped to Parsl's ``parsl_resource_specification``. The dictionary should contain:
+
+        - **num_nodes** (int): Number of nodes required for the task
+        - **num_ranks** (int): Total number of MPI ranks
+        - **ranks_per_node** (int): Number of MPI ranks per node
+
+        Example::
+
+            task_geometry={
+                \"num_nodes\": 4,
+                \"num_ranks\": 16,
+                \"ranks_per_node\": 4
+            }
 
     Returns
     -------
-
     Callable
+        The decorated function that can be called as a workflow task.
+
+    Examples
+    --------
+    Basic usage::
+
+        @python_task
+        def compute(x):
+            return x ** 2
+
+        result = compute(5, executor=[\"compute\"]).result()
+
+    MPI task with task geometry::
+
+        @python_task
+        def run_mpi_code(params):
+            # MPI code execution
+            return result
+
+        future = run_mpi_code(
+            params,
+            executor=[\"mpi\"],
+            task_geometry={\"num_nodes\": 2, \"num_ranks\": 8, \"ranks_per_node\": 4}
+        )
 
     """
 
     def function_wrapper(
         *args,
         executor="all",
+        task_geometry=None,
         **kwargs,
     ):
+        # Map task_geometry to Parsl's parsl_resource_specification
+        if task_geometry is not None:
+            kwargs["parsl_resource_specification"] = task_geometry
+
         return python_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs
         )
@@ -153,26 +221,86 @@ def bash_task(function: Callable) -> Callable:
 
     Parameters
     ----------
-
     function: Callable
         The function to be decorated to yield a Bash workflow task. This function can be a
         stand-alone function or a class method. If it is a class method, it can make use of
         `self` to access object state. The function must return a string that contains a
         series of bash commands to be executed.
 
+    Wrapped Function Parameters
+    ---------------------------
+    The decorated function accepts the following additional parameters at call time:
+
+    executor: str or list of str, default="all"
+        Resource name(s) where the task should execute. Can be a single resource name or
+        a list of resource names. Defaults to "all" which allows execution on any configured
+        resource.
+
+    task_geometry: dict, optional
+        Specification of parallel task geometry for MPI applications. This parameter is
+        mapped to Parsl's ``parsl_resource_specification``. The dictionary should contain:
+
+        - **num_nodes** (int): Number of nodes required for the task
+        - **num_ranks** (int): Total number of MPI ranks
+        - **ranks_per_node** (int): Number of MPI ranks per node
+
+        Example::
+
+            task_geometry={
+                \"num_nodes\": 4,
+                \"num_ranks\": 16,
+                \"ranks_per_node\": 4
+            }
+
+    stdout: str or tuple, optional
+        File path for capturing standard output. Can be a string path or a tuple of
+        (path, mode) where mode is typically 'w' for write or 'a' for append.
+
+    stderr: str or tuple, optional
+        File path for capturing standard error. Can be a string path or a tuple of
+        (path, mode) where mode is typically 'w' for write or 'a' for append.
 
     Returns
     -------
-
     Callable
+        The decorated function that can be called as a workflow task. Returns the exit
+        code of the bash command (0 indicates success).
+
+    Examples
+    --------
+    Basic usage::
+
+        @bash_task
+        def compile_code():
+            return \"gcc -o program program.c\"
+
+        exit_code = compile_code(executor=[\"compute\"]).result()
+
+    MPI task with task geometry::
+
+        @bash_task
+        def run_mpi_simulation(input_file):
+            return f\"$PARSL_MPI_PREFIX ./simulation {input_file}\"
+
+        exit_code = run_mpi_simulation(
+            \"config.in\",
+            executor=[\"mpi\"],
+            task_geometry={\"num_nodes\": 4, \"num_ranks\": 16, \"ranks_per_node\": 4},
+            stdout=\"output.log\"
+        ).result()
 
     """
 
     def function_wrapper(
         *args,
         executor="all",
+        task_geometry=None,
         **kwargs,
     ):
+        # Map task_geometry to Parsl's parsl_resource_specification
+        if task_geometry is not None:
+            kwargs["parsl_resource_specification"] = task_geometry
+
         return bash_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs
         )

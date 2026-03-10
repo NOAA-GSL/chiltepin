@@ -130,7 +130,7 @@ def test_endpoint_hello_mpi(config):
         stdout=os.path.join(output_dir, "test_endpoint_hello_mpi_run.out"),
         stderr=os.path.join(output_dir, "test_endpoint_hello_mpi_run.err"),
         executor=["gc-mpi"],
-        parsl_resource_specification={
+        task_geometry={
             "num_nodes": 3,  # Number of nodes required for the application instance
             "num_ranks": 6,  # Number of ranks in total
             "ranks_per_node": 2,  # Number of ranks / application elements to be launched per node
@@ -196,7 +196,7 @@ def test_endpoint_pi_mpi(config):
         stdout=os.path.join(output_dir, "test_endpoint_pi_mpi_run1.out"),
         stderr=os.path.join(output_dir, "test_endpoint_pi_mpi_run1.err"),
         executor=["gc-mpi"],
-        parsl_resource_specification={
+        task_geometry={
             "num_nodes": 2,  # Number of nodes required for the application instance
             "num_ranks": 2 * cores_per_node,  # Number of ranks in total
             "ranks_per_node": cores_per_node,  # Number of ranks / application elements to be launched per node
@@ -208,7 +208,7 @@ def test_endpoint_pi_mpi(config):
         stdout=os.path.join(output_dir, "test_endpoint_pi_mpi_run2.out"),
         stderr=os.path.join(output_dir, "test_endpoint_pi_mpi_run2.err"),
         executor=["gc-mpi"],
-        parsl_resource_specification={
+        task_geometry={
             "num_nodes": 1,  # Number of nodes required for the application instance
             "num_ranks": cores_per_node,  # Number of ranks in total
             "ranks_per_node": cores_per_node,  # Number of ranks / application elements to be launched per node

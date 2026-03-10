@@ -270,8 +270,8 @@ MPI Workflow
        return "$MPIF90 -o mpi_app mpi_app.f90"
    
    @bash_task
-   def run_mpi(ranks=4):
-       return f"srun -n {ranks} ./mpi_app"
+   def run_mpi():
+       return "$PARSL_MPI_PREFIX ./mpi_app"
    
    if __name__ == "__main__":
        with run_workflow("mpi_config.yaml", run_dir="./runinfo"):
@@ -279,14 +279,27 @@ MPI Workflow
            compile_result = compile_mpi(executor=["mpi-resource-name"]).result()
            print(f"Compilation exit code: {compile_result}")
            
-           # Run with different rank counts on the MPI resource
-           results = []
-           for ranks in [4, 8, 16]:
-               future = run_mpi(ranks, executor=["mpi-resource-name"])
-               results.append(future.result())
-           
-           for i, result in enumerate(results, 1):
-               print(f"Run {i} exit code: {result}")
+           # Run with different geometries on the MPI resource
+           # Small run: 1 node, 4 ranks
+           result1 = run_mpi(
+               executor=["mpi-resource-name"],
+               task_geometry={"num_nodes": 1, "num_ranks": 4, "ranks_per_node": 4}
+           ).result()
+           print(f"Small run exit code: {result1}")
+
+           # Medium run: 2 nodes, 16 ranks
+           result2 = run_mpi(
+               executor=["mpi-resource-name"],
+               task_geometry={"num_nodes": 2, "num_ranks": 16, "ranks_per_node": 8}
+           ).result()
+           print(f"Medium run exit code: {result2}")
+
+           # Large run: 4 nodes, 64 ranks
+           result3 = run_mpi(
+               executor=["mpi-resource-name"],
+               task_geometry={"num_nodes": 4, "num_ranks": 64, "ranks_per_node": 16}
+           ).result()
+           print(f"Large run exit code: {result3}")
 
 Key Concepts
 ------------
@@ -323,6 +336,21 @@ When calling a task, use the ``executor`` parameter to specify which resource to
    result = my_task(executor=["compute"]).result()
 
 The ``executor`` value must match a resource name from your configuration file.
+
+For MPI tasks, you can also use the ``task_geometry`` parameter to specify parallel
+resource requirements:
+
+.. code-block:: python
+
+   @bash_task
+   def run_mpi_app():
+       return "$PARSL_MPI_PREFIX ./my_app"
+
+   # Specify MPI geometry (nodes, ranks, ranks per node)
+   result = run_mpi_app(
+       executor=["mpi-resource"],
+       task_geometry={"num_nodes": 2, "num_ranks": 16, "ranks_per_node": 8}
+   ).result()
 
 .. seealso::
    For comprehensive documentation on defining and using tasks, including advanced
