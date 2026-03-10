@@ -100,6 +100,39 @@ def _create_filtered_wrapper(function: Callable) -> Callable:
     return wrapper
 
 
+def _merge_task_geometry(task_geometry, kwargs):
+    """Merge task_geometry into parsl_resource_specification in kwargs.
+
+    This helper function handles the merging of task_geometry into the
+    parsl_resource_specification parameter. If both are provided, they are merged
+    with task_geometry taking precedence for overlapping keys.
+
+    Parameters
+    ----------
+    task_geometry: dict or None
+        Task geometry specification to merge
+    kwargs: dict
+        Keyword arguments dictionary to modify in place
+
+    Returns
+    -------
+    None
+        Modifies kwargs in place
+    """
+    if task_geometry is not None:
+        # Make a defensive copy to prevent mutations
+        geometry_copy = dict(task_geometry)
+
+        if "parsl_resource_specification" in kwargs:
+            # Merge: start with existing spec, update with geometry
+            existing_spec = kwargs["parsl_resource_specification"]
+            merged_spec = dict(existing_spec)
+            merged_spec.update(geometry_copy)
+            kwargs["parsl_resource_specification"] = merged_spec
+        else:
+            kwargs["parsl_resource_specification"] = geometry_copy
+
+
 class MethodWrapper:
     """Wrapper that preserves method behavior for decorated functions.
 
@@ -143,7 +176,7 @@ def python_task(function: Callable) -> Callable:
 
     Other Parameters
     ----------------
-    The decorated function accepts the following additional parameters at call time:
+    The decorated function includes the following additional parameters at call time:
 
     executor: str or list of str, default="all"
         Resource name(s) where the task should execute. Can be a single resource name or
@@ -165,6 +198,16 @@ def python_task(function: Callable) -> Callable:
                 "num_ranks": 16,
                 "ranks_per_node": 4
             }
+
+    inputs: list of AppFuture, optional
+        List of futures that must complete before this task starts. Used to create
+        task dependencies without passing data between tasks. See Parsl's documentation
+        for details.
+
+    .. note::
+       All keyword arguments supported by Parsl's ``python_app`` decorator (such as
+       ``outputs``, ``walltime``, etc.) are also accepted and passed through
+       to the underlying Parsl app.
 
     Returns
     -------
@@ -203,16 +246,7 @@ def python_task(function: Callable) -> Callable:
         **kwargs,
     ):
         # Map task_geometry to Parsl's parsl_resource_specification
-        # If both task_geometry and parsl_resource_specification are provided,
-        # merge them with task_geometry taking precedence
-        if task_geometry is not None:
-            if "parsl_resource_specification" in kwargs:
-                # Merge: start with existing spec, update with geometry
-                merged_spec = kwargs["parsl_resource_specification"].copy()
-                merged_spec.update(task_geometry)
-                kwargs["parsl_resource_specification"] = merged_spec
-            else:
-                kwargs["parsl_resource_specification"] = task_geometry
+        _merge_task_geometry(task_geometry, kwargs)
 
         return python_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs
@@ -237,7 +271,7 @@ def bash_task(function: Callable) -> Callable:
 
     Other Parameters
     ----------------
-    The decorated function accepts the following additional parameters at call time:
+    The decorated function includes the following additional parameters at call time:
 
     executor: str or list of str, default="all"
         Resource name(s) where the task should execute. Can be a single resource name or
@@ -267,6 +301,16 @@ def bash_task(function: Callable) -> Callable:
     stderr: str or tuple, optional
         File path for capturing standard error. Can be a string path or a tuple of
         (path, mode) where mode is typically 'w' for write or 'a' for append.
+
+    inputs: list of AppFuture, optional
+        List of futures that must complete before this task starts. Used to create
+        task dependencies without passing data between tasks. See Parsl's documentation
+        for details.
+
+    .. note::
+       All keyword arguments supported by Parsl's ``bash_app`` decorator (such as
+       ``outputs``, ``walltime``, etc.) are also accepted and passed through
+       to the underlying Parsl app.
 
     Returns
     -------
@@ -306,16 +350,7 @@ def bash_task(function: Callable) -> Callable:
         **kwargs,
     ):
         # Map task_geometry to Parsl's parsl_resource_specification
-        # If both task_geometry and parsl_resource_specification are provided,
-        # merge them with task_geometry taking precedence
-        if task_geometry is not None:
-            if "parsl_resource_specification" in kwargs:
-                # Merge: start with existing spec, update with geometry
-                merged_spec = kwargs["parsl_resource_specification"].copy()
-                merged_spec.update(task_geometry)
-                kwargs["parsl_resource_specification"] = merged_spec
-            else:
-                kwargs["parsl_resource_specification"] = task_geometry
+        _merge_task_geometry(task_geometry, kwargs)
 
         return bash_app(_create_filtered_wrapper(function), executors=executor)(
             *args, **kwargs

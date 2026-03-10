@@ -990,3 +990,62 @@ class TestTaskGeometryMapping:
         # Check that geometry keys are present
         assert merged_spec["num_nodes"] == 2
         assert merged_spec["num_ranks"] == 8
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_task_geometry_creates_copy(self, mock_python_app):
+        """Test that task_geometry dicts are copied to prevent mutations."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Define task geometry and parsl_spec that we'll verify aren't mutated
+        original_geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+        }
+        original_parsl_spec = {
+            "walltime": "01:00:00",
+        }
+
+        # Call the task
+        test_func(
+            executor=["test"],
+            task_geometry=original_geometry,
+            parsl_resource_specification=original_parsl_spec,
+        )
+
+        # Verify the originals were not modified
+        assert original_geometry == {"num_nodes": 2, "num_ranks": 8}
+        assert original_parsl_spec == {"walltime": "01:00:00"}
+        assert "walltime" not in original_geometry
+        assert "num_nodes" not in original_parsl_spec
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_task_geometry_dict_conversion(self, mock_python_app):
+        """Test that non-dict dict-like objects are converted properly."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Use a dict-like object (dict should work)
+        geometry = {"num_nodes": 1, "num_ranks": 4}
+
+        # This should work fine
+        test_func(executor=["test"], task_geometry=geometry)
+
+        # Verify it was passed through
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
