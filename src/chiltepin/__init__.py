@@ -6,6 +6,13 @@ This package provides tools for building scientific workflows that can execute
 on distributed computing resources using Parsl and Globus services.
 """
 
+try:
+    from importlib.metadata import version
+    __version__ = version("chiltepin")
+except Exception:
+    # Fallback for development installs or when package is not installed
+    __version__ = "dev"
+
 __all__ = [
     "run_workflow",
     "run_workflow_from_file",

@@ -29,12 +29,10 @@ Key documentation sections:
 
 ## Quick Start
 
-Install Chiltepin in a Python virtual environment:
+Install Chiltepin using pip:
 
 ```bash
-python -m venv .chiltepin
-source .chiltepin/bin/activate
-pip install -e .
+pip install chiltepin
 ```
 
 For detailed installation instructions including conda, Docker, and platform-specific guidance,
@@ -42,8 +40,18 @@ see the [Installation Guide](https://chiltepin.readthedocs.io/en/latest/installa
 
 ## Contributing
 
-Contributions are welcome! For information on running tests and contributing to development,
-see the [Testing Guide](https://chiltepin.readthedocs.io/en/latest/testing.html).
+Contributions are welcome! For development installation and running tests, clone the repository
+and install in editable mode:
+
+```bash
+git clone https://github.com/NOAA-GSL/chiltepin.git
+cd chiltepin
+python -m venv .chiltepin
+source .chiltepin/bin/activate
+pip install -e ".[test]"
+```
+
+See the [Testing Guide](https://chiltepin.readthedocs.io/en/latest/testing.html) for more information.
 
 ## License
 
