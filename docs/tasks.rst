@@ -374,14 +374,18 @@ MPI applications:
    def run_mpi_analysis(data_file):
        import subprocess
        import os
+       import shlex
 
        # Get the MPI prefix from environment
-       mpi_prefix = os.environ.get("PARSL_MPI_PREFIX", "mpirun")
+       mpi_prefix = os.environ.get("PARSL_MPI_PREFIX", "mpirun -n 1")
 
-       # Run MPI application
+       # Parse the MPI prefix safely and construct command as list
+       mpi_command = shlex.split(mpi_prefix)
+       command = mpi_command + ["python", "mpi_analysis.py", data_file]
+
+       # Run MPI application (shell=False prevents injection attacks)
        result = subprocess.run(
-           f"{mpi_prefix} python mpi_analysis.py {data_file}",
-           shell=True,
+           command,
            capture_output=True
        )
 
@@ -408,15 +412,14 @@ Example configuration snippet:
 
 .. code-block:: yaml
 
-   resources:
-     mpi:
-       mpi: True
-       provider: "slurm"
-       max_mpi_apps: 4
-       cores_per_node: 8
-       nodes_per_block: 3
-       partition: "compute"
-       walltime: "2:00:00"
+   mpi:
+     mpi: True
+     provider: "slurm"
+     max_mpi_apps: 4
+     cores_per_node: 8
+     nodes_per_block: 3
+     partition: "compute"
+     walltime: "2:00:00"
 
 Best Practices for MPI Tasks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

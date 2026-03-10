@@ -10,6 +10,7 @@ import logging
 import pathlib
 import tempfile
 from typing import List
+from unittest import mock
 
 import parsl
 import pytest
@@ -710,3 +711,188 @@ class TestTaskMetadata:
         # Call the wrapper with extra kwargs that should be filtered out
         result = wrapped(5, y=20, ignored_kwarg="should_be_filtered")
         assert result == 25  # 5 + 20 = 25
+
+
+class TestTaskGeometryMapping:
+    """Test that task_geometry parameter is properly mapped to parsl_resource_specification."""
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_python_task_geometry_mapping(self, mock_python_app):
+        """Test that task_geometry is mapped to parsl_resource_specification for python_task."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with task_geometry
+        test_func(executor=["test"], task_geometry=geometry)
+
+        # Verify python_app was called to create the app
+        assert mock_python_app.called
+
+        # Verify the app instance was called with parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_python_task_without_geometry(self, mock_python_app):
+        """Test that python_task works without task_geometry."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func():
+            return "test"
+
+        # Call the task without task_geometry
+        test_func(executor=["test"])
+
+        # Verify the app instance was called without parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" not in call_kwargs
+
+    @mock.patch("chiltepin.tasks.bash_app")
+    def test_bash_task_geometry_mapping(self, mock_bash_app):
+        """Test that task_geometry is mapped to parsl_resource_specification for bash_task."""
+        # Create a mock future that bash_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_bash_app.return_value = mock_app_instance
+
+        @bash_task
+        def test_bash_func():
+            return "echo test"
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 4,
+            "num_ranks": 16,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with task_geometry
+        test_bash_func(executor=["test"], task_geometry=geometry)
+
+        # Verify bash_app was called to create the app
+        assert mock_bash_app.called
+
+        # Verify the app instance was called with parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry
+
+    @mock.patch("chiltepin.tasks.bash_app")
+    def test_bash_task_without_geometry(self, mock_bash_app):
+        """Test that bash_task works without task_geometry."""
+        # Create a mock future that bash_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_bash_app.return_value = mock_app_instance
+
+        @bash_task
+        def test_bash_func():
+            return "echo test"
+
+        # Call the task without task_geometry
+        test_bash_func(executor=["test"])
+
+        # Verify the app instance was called without parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+        assert "parsl_resource_specification" not in call_kwargs
+
+    @mock.patch("chiltepin.tasks.python_app")
+    def test_python_task_geometry_with_other_kwargs(self, mock_python_app):
+        """Test that task_geometry works alongside other kwargs like stdout."""
+        # Create a mock future that python_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_python_app.return_value = mock_app_instance
+
+        @python_task
+        def test_func(x):
+            return x * 2
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 1,
+            "num_ranks": 4,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with task_geometry and other parameters
+        test_func(5, executor=["test"], task_geometry=geometry)
+
+        # Verify the app instance was called with parsl_resource_specification
+        mock_app_instance.assert_called_once()
+        call_args = mock_app_instance.call_args[0]
+        call_kwargs = mock_app_instance.call_args[1]
+
+        # Check positional arg is passed
+        assert 5 in call_args
+
+        # Check task_geometry was mapped to parsl_resource_specification
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry
+
+    @mock.patch("chiltepin.tasks.bash_app")
+    def test_bash_task_geometry_with_stdout_stderr(self, mock_bash_app):
+        """Test that task_geometry works alongside stdout/stderr parameters."""
+        # Create a mock future that bash_app call will return
+        mock_app_instance = mock.MagicMock()
+        mock_future = mock.MagicMock()
+        mock_app_instance.return_value = mock_future
+        mock_bash_app.return_value = mock_app_instance
+
+        @bash_task
+        def test_bash_func():
+            return "echo test"
+
+        # Define task geometry
+        geometry = {
+            "num_nodes": 2,
+            "num_ranks": 8,
+            "ranks_per_node": 4,
+        }
+
+        # Call the task with task_geometry and stdout/stderr
+        test_bash_func(
+            executor=["test"],
+            task_geometry=geometry,
+            stdout="output.txt",
+            stderr="error.txt",
+        )
+
+        # Verify the app instance was called with all parameters
+        mock_app_instance.assert_called_once()
+        call_kwargs = mock_app_instance.call_args[1]
+
+        # Check task_geometry was mapped to parsl_resource_specification
+        assert "parsl_resource_specification" in call_kwargs
+        assert call_kwargs["parsl_resource_specification"] == geometry
+
+        # Check stdout and stderr were preserved
+        assert call_kwargs["stdout"] == "output.txt"
+        assert call_kwargs["stderr"] == "error.txt"

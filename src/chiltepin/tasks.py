@@ -186,7 +186,7 @@ def python_task(function: Callable) -> Callable:
         @python_task
         def run_mpi_code(params):
             # MPI code execution
-            return result
+            return "result"
 
         future = run_mpi_code(
             params,
