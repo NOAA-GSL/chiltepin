@@ -252,15 +252,15 @@ Here's a simple example of running an MPI application:
 
    @bash_task
    def run_mpi_hello():
-       return \"$PARSL_MPI_PREFIX ./mpi_hello.exe\"
+       return "$PARSL_MPI_PREFIX ./mpi_hello.exe"
 
    # Run on 2 nodes with 8 total ranks (4 ranks per node)
    exit_code = run_mpi_hello(
-       executor=[\"mpi\"],
+       executor=["mpi"],
        task_geometry={
-           \"num_nodes\": 2,
-           \"num_ranks\": 8,
-           \"ranks_per_node\": 4
+           "num_nodes": 2,
+           "num_ranks": 8,
+           "ranks_per_node": 4
        }
    ).result()
 
@@ -290,36 +290,36 @@ resources with specific geometry:
 
    @bash_task
    def compile_mpi_code(source_dir):
-       return f\"\"\"
+       return f"""
        cd {source_dir}
        $CHILTEPIN_MPIF90 -o simulation.exe simulation.f90
-       \"\"\"
+       """
 
    @bash_task
    def run_mpi_simulation(work_dir, input_file):
-       return f\"\"\"
+       return f"""
        cd {work_dir}
        $PARSL_MPI_PREFIX ./simulation.exe {input_file}
-       \"\"\"
+       """
 
    # Compile on compute resource
    compile_result = compile_mpi_code(
-       \"/path/to/source\",
-       executor=[\"compute\"]
+       "/path/to/source",
+       executor=["compute"]
    ).result()
 
    # Run on MPI resource with specified geometry
    sim_result = run_mpi_simulation(
-       \"/path/to/source\",
-       \"config.in\",
-       executor=[\"mpi\"],
+       "/path/to/source",
+       "config.in",
+       executor=["mpi"],
        task_geometry={
-           \"num_nodes\": 4,
-           \"num_ranks\": 16,
-           \"ranks_per_node\": 4
+           "num_nodes": 4,
+           "num_ranks": 16,
+           "ranks_per_node": 4
        },
-       stdout=\"simulation.out\",
-       stderr=\"simulation.err\"
+       stdout="simulation.out",
+       stderr="simulation.err"
    ).result()
 
 Different Geometries for Different Tasks
@@ -332,27 +332,27 @@ based on resource availability:
 
    @bash_task
    def mpi_task(config):
-       return f\"$PARSL_MPI_PREFIX ./app {config}\"
+       return f"$PARSL_MPI_PREFIX ./app {config}"
 
    # Small task - 1 node
    small = mpi_task(
-       \"small.cfg\",
-       executor=[\"mpi\"],
+       "small.cfg",
+       executor=["mpi"],
        task_geometry={
-           \"num_nodes\": 1,
-           \"num_ranks\": 8,
-           \"ranks_per_node\": 8
+           "num_nodes": 1,
+           "num_ranks": 8,
+           "ranks_per_node": 8
        }
    )
 
    # Large task - 8 nodes
    large = mpi_task(
-       \"large.cfg\",
-       executor=[\"mpi\"],
+       "large.cfg",
+       executor=["mpi"],
        task_geometry={
-           \"num_nodes\": 8,
-           \"num_ranks\": 64,
-           \"ranks_per_node\": 8
+           "num_nodes": 8,
+           "num_ranks": 64,
+           "ranks_per_node": 8
        }
    )
 
@@ -376,11 +376,11 @@ MPI applications:
        import os
 
        # Get the MPI prefix from environment
-       mpi_prefix = os.environ.get(\"PARSL_MPI_PREFIX\", \"mpirun\")
+       mpi_prefix = os.environ.get("PARSL_MPI_PREFIX", "mpirun")
 
        # Run MPI application
        result = subprocess.run(
-           f\"{mpi_prefix} python mpi_analysis.py {data_file}\",
+           f"{mpi_prefix} python mpi_analysis.py {data_file}",
            shell=True,
            capture_output=True
        )
@@ -388,12 +388,12 @@ MPI applications:
        return result.returncode
 
    exit_code = run_mpi_analysis(
-       \"dataset.h5\",
-       executor=[\"mpi\"],
+       "dataset.h5",
+       executor=["mpi"],
        task_geometry={
-           \"num_nodes\": 2,
-           \"num_ranks\": 16,
-           \"ranks_per_node\": 8
+           "num_nodes": 2,
+           "num_ranks": 16,
+           "ranks_per_node": 8
        }
    ).result()
 
