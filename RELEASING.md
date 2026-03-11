@@ -231,7 +231,7 @@ We follow [Semantic Versioning](https://semver.org/):
 ### Documentation build fails
 
 - Run `./release.sh check` locally to see detailed errors
-- Check manually: `cd docs && make clean html`
+- Check manually: `python -m sphinx -b html docs docs/_build`
 - Look for Sphinx warnings/errors in output
 - Common issues: missing imports, broken links, invalid RST syntax
 

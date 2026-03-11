@@ -53,7 +53,9 @@ jobs:
         run: ruff check src/ tests/
       -
         name: Build documentation
-        run: cd docs && make clean html
+        run: |
+          rm -rf docs/_build
+          LC_ALL=C python -m sphinx -b html docs docs/_build -W --keep-going
       -
         name: Build package
         run: python -m build
