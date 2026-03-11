@@ -38,4 +38,14 @@ def __getattr__(name):
         globals()[name] = locals()[name]
         return locals()[name]
 
+    # Try to import as a submodule
+    try:
+        import importlib
+        module = importlib.import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
+    except ImportError:
+        pass
+
+    # If not a submodule, raise AttributeError as normal
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
