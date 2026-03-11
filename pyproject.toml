@@ -51,7 +51,7 @@ Changelog = "https://github.com/NOAA-GSL/chiltepin/releases"
 test = [
     "pytest>=9.0.0",
     "pytest-cov>=7.0.0",
-    "ruff>=0.15.0,<1.0.0",
+    "ruff==0.15.4",
 ]
 docs = [
     "sphinx==7.1.2",

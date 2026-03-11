@@ -34,8 +34,8 @@ jobs:
             --limit 5 | \
             jq -e 'map(select(.status == "completed")) | .[0].conclusion == "success"' || {
               echo "❌ Test suite must pass before release!"
-              echo "   Run: gh workflow run test-suite.yaml --ref main"
-              echo "   Or wait for automatic test run on main branch"
+              echo "   Run: gh workflow run test-suite.yaml --ref ${{ github.ref_name }}"
+              echo "   Or wait for the automatic test run on the branch containing this commit"
               exit 1
             }
           echo "✓ Test suite passed on this commit"

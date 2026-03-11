@@ -103,8 +103,15 @@ except Exception:
     exit(1)
 EOF
 
-    # Fallback to grep/sed
-    grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/'
+    # Fallback to sed (no pipe needed)
+    local version
+    version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+    if [ -n "$version" ]; then
+        echo "$version"
+        return 0
+    else
+        return 1
+    fi
 }
 
 # Clean build artifacts
