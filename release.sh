@@ -46,21 +46,34 @@ check_dependencies() {
     if ! command -v python &> /dev/null; then
         missing_deps+=("python")
     fi
-    
+
+    if ! python -c "import pytest" 2>/dev/null; then
+        missing_deps+=("pytest")
+    fi
+
     if ! python -c "import build" 2>/dev/null; then
-        missing_deps+=("build (pip install build)")
+        missing_deps+=("build")
     fi
-    
+
     if ! python -c "import twine" 2>/dev/null; then
-        missing_deps+=("twine (pip install twine)")
+        missing_deps+=("twine")
     fi
-    
+
+    if ! python -c "import sphinx" 2>/dev/null; then
+        missing_deps+=("sphinx")
+    fi
+
+    # Check for toml parsing (tomllib is built-in for Python 3.11+, otherwise need toml)
+    if ! python -c "import tomllib" 2>/dev/null && ! python -c "import toml" 2>/dev/null; then
+        missing_deps+=("toml or tomllib")
+    fi
+
     if [ ${#missing_deps[@]} -ne 0 ]; then
         log_error "Missing dependencies: ${missing_deps[*]}"
-        log_info "Install with: pip install build twine"
+        log_info "Install with: pip install -e \".[test,docs,release]\""
         exit 1
     fi
-    
+
     log_success "All dependencies available"
 }
 
@@ -88,6 +101,24 @@ run_tests() {
         return 0
     else
         log_error "Tests failed"
+        return 1
+    fi
+}
+
+# Build documentation
+build_docs() {
+    log_info "Building documentation..."
+
+    # Clean old docs
+    rm -rf docs/_build
+
+    # Build docs with sphinx
+    if LC_ALL=C python -m sphinx -b html docs docs/_build -q -W --keep-going 2>&1 | tee /tmp/sphinx-build.log; then
+        log_success "Documentation built successfully"
+        return 0
+    else
+        log_error "Documentation build failed"
+        log_info "See /tmp/sphinx-build.log for details"
         return 1
     fi
 }
@@ -158,6 +189,7 @@ upload_release() {
     echo "  [ ] CHANGELOG.md is updated"
     echo "  [ ] Version number is correct in pyproject.toml"
     echo "  [ ] All tests pass"
+    echo "  [ ] Documentation builds without errors"
     echo "  [ ] Package tested on TestPyPI"
     echo "  [ ] Git tag created: git tag -a v${version} -m 'Release v${version}'"
     echo "  [ ] Changes committed and pushed"
@@ -204,53 +236,69 @@ main() {
                 log_error "Tests must pass before release"
                 exit 1
             fi
-            
+
+            if ! build_docs; then
+                log_error "Documentation must build before release"
+                exit 1
+            fi
+
             clean_build
             build_package
             check_package
             show_package_info
-            
+
             log_success "All checks passed! Package is ready for release."
             log_info "Next steps:"
             echo "  - Test on TestPyPI: ./release.sh test"
             echo "  - Release to PyPI:  ./release.sh release"
             ;;
-            
+
         test)
             log_info "Preparing TestPyPI upload..."
             check_dependencies
-            
+
             if ! run_tests; then
-                log_warning "Tests failed, but continuing with upload..."
+                log_error "Tests must pass before TestPyPI upload"
+                exit 1
             fi
-            
+
+            if ! build_docs; then
+                log_error "Documentation must build before TestPyPI upload"
+                exit 1
+            fi
+
             clean_build
             build_package
             check_package
             show_package_info
             upload_test
             ;;
-            
+
         release)
             log_info "Preparing production release..."
             check_dependencies
-            
+
             if ! run_tests; then
                 log_error "Tests must pass before release"
                 exit 1
             fi
-            
+
+            if ! build_docs; then
+                log_error "Documentation must build before release"
+                exit 1
+            fi
+
             clean_build
             build_package
             check_package
             show_package_info
             upload_release
             ;;
-            
+
         clean)
             clean_build
             ;;
-            
+
         help|--help|-h|*)
             echo "Chiltepin Release Automation"
             echo ""

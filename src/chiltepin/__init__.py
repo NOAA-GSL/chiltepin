@@ -7,9 +7,10 @@ on distributed computing resources using Parsl and Globus services.
 """
 
 try:
-    from importlib.metadata import version
+    from importlib.metadata import PackageNotFoundError, version
+
     __version__ = version("chiltepin")
-except Exception:
+except PackageNotFoundError:
     # Fallback for development installs or when package is not installed
     __version__ = "dev"
 

@@ -6,7 +6,7 @@ This guide documents the process for releasing new versions of Chiltepin to PyPI
 
 1. **Install release tools:**
    ```bash
-   pip install -e ".[release]"
+   pip install -e ".[test,docs,release]"
    ```
 
 2. **TestPyPI Account:**
@@ -59,6 +59,7 @@ Run the check command to validate everything:
 
 This will:
 - ✅ Run all tests
+- ✅ Build documentation
 - ✅ Clean old builds
 - ✅ Build new distributions
 - ✅ Validate package with twine
@@ -138,6 +139,7 @@ The script will:
 Runs all validation checks without uploading:
 - Validates dependencies
 - Runs test suite
+- Builds documentation
 - Builds package
 - Checks with twine
 - Shows package info
@@ -146,7 +148,8 @@ Runs all validation checks without uploading:
 
 ### `./release.sh test`
 Uploads to TestPyPI:
-- Runs tests (warning only)
+- Runs tests (must pass)
+- Builds documentation (must pass)
 - Builds package
 - Uploads to test.pypi.org
 
@@ -155,6 +158,7 @@ Uploads to TestPyPI:
 ### `./release.sh release`
 Uploads to production PyPI:
 - Runs tests (must pass)
+- Builds documentation (must pass)
 - Shows safety checklist
 - Requires version confirmation
 - Uploads to pypi.org
