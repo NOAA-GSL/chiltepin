@@ -130,7 +130,7 @@ run_tests() {
         return 0
     else
         log_warning "Test collection failed - check test files for syntax errors"
-        return 0  # Don't block on this
+        return 1
     fi
 }
 
@@ -203,7 +203,7 @@ show_release_guide() {
     echo "  1. Go to: https://github.com/NOAA-GSL/chiltepin/actions"
     echo "  2. Select: 'Test Release to TestPyPI' workflow"
     echo "  3. Click: 'Run workflow' button"
-    echo "  4. Test install: pip install -i https://test.pypi.org/simple/ chiltepin==${version}"
+    echo "  4. Test install: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ chiltepin==${version}"
     echo ""
 
     log_info "Production release to PyPI:"

@@ -80,13 +80,21 @@ class TestSubmoduleAccess:
 
     def test_submodule_import_via_attribute_access(self):
         """Test that submodules can be accessed as attributes."""
+        import sys
         import chiltepin
 
-        # Access submodule via attribute - should work
+        # Clean up any pre-loaded submodules to ensure __getattr__ gets called
+        # (other tests may have imported them directly, which adds them to the namespace)
+        if hasattr(chiltepin, "tasks"):
+            delattr(chiltepin, "tasks")
+        if hasattr(chiltepin, "configure"):
+            delattr(chiltepin, "configure")
+
+        # Access submodule via attribute - should trigger __getattr__
         tasks = chiltepin.tasks
         assert tasks.__name__ == "chiltepin.tasks"
 
-        # Access another submodule
+        # Access another submodule - should also trigger __getattr__
         configure = chiltepin.configure
         assert configure.__name__ == "chiltepin.configure"
 
