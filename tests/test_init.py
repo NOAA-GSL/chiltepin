@@ -26,7 +26,7 @@ class TestVersionHandling:
 
     def test_version_fallback_when_package_not_found(self):
         """Test that __version__ falls back to 'dev' when package is not installed."""
-        # Mock the version function to raise PackageNotFoundError for the chitepin package
+        # Mock the version function to raise PackageNotFoundError for the chiltepin package
         with mock.patch(
             "importlib.metadata.version", side_effect=PackageNotFoundError("chiltepin")
         ):

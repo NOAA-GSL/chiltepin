@@ -132,8 +132,11 @@ build_docs() {
     # Clean old docs
     rm -rf docs/_build
 
-    # Build docs with sphinx
-    if LC_ALL=C python -m sphinx -b html docs docs/_build -q -W --keep-going 2>&1 | tee /tmp/sphinx-build.log; then
+    # Build docs with sphinx (capture output while preserving exit code)
+    LC_ALL=C python -m sphinx -b html docs docs/_build -q -W --keep-going 2>&1 | tee /tmp/sphinx-build.log
+    local sphinx_exit_code=${PIPESTATUS[0]}
+
+    if [ $sphinx_exit_code -eq 0 ]; then
         log_success "Documentation built successfully"
         return 0
     else
