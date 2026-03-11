@@ -10,31 +10,49 @@ Prerequisites
 * Python 3.10 or higher
 * Linux operating system (or Docker for Mac/Windows)
 
-Using Python venv (Recommended)
---------------------------------
+Installing from PyPI
+--------------------
 
-The recommended method for installation is to use a Python virtual environment:
+The recommended method for users is to install Chiltepin from PyPI:
 
 .. code-block:: console
 
+   $ pip install chiltepin
+
+You can also install in a virtual environment (recommended):
+
+**Using venv:**
+
+.. code-block:: console
+
+   $ python -m venv .chiltepin
+   $ source .chiltepin/bin/activate
+   $ pip install chiltepin
+
+**Using conda:**
+
+.. code-block:: console
+
+   $ conda create -n "chiltepin" python=3.10
+   $ conda activate chiltepin
+   $ pip install chiltepin
+
+Development Installation
+------------------------
+
+For development or testing, install from a git clone in editable mode:
+
+.. code-block:: console
+
+   $ git clone https://github.com/NOAA-GSL/chiltepin.git
+   $ cd chiltepin
    $ python -m venv .chiltepin
    $ source .chiltepin/bin/activate
    $ pip install -e ".[test]"
 
 .. note::
 
-   The ``[test]`` option ensures that dependencies required for running the tests are installed.
-
-Using Conda
------------
-
-Alternatively, you can use a conda environment (anaconda3, miniconda3, miniforge, etc.):
-
-.. code-block:: console
-
-   $ conda create -n "chiltepin" python=3.10
-   $ conda activate chiltepin
-   $ pip install -e ".[test]"
+   The ``[test]`` option installs additional dependencies required for running the test suite.
 
 Activating the Environment
 ---------------------------

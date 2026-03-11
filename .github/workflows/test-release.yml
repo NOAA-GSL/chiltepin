@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Test Release to TestPyPI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write  # Required for trusted publishing to TestPyPI
+  actions: read    # Required for checking test suite status
+
+jobs:
+  test-release:
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/chiltepin
+    steps:
+      -
+        name: Checkout repository
+        uses: actions/checkout@v4
+      -
+        name: Verify test suite passed
+        run: |
+          echo "Checking if test suite passed on this commit..."
+          # Query for test-suite workflow runs on this commit
+          gh run list \
+            --workflow=test-suite.yaml \
+            --commit=${{ github.sha }} \
+            --json conclusion,status \
+            --limit 5 | \
+            jq -e 'map(select(.status == "completed")) | .[0].conclusion == "success"' || {
+              echo "❌ Test suite must pass before publishing to TestPyPI!"
+              echo "   Run: gh workflow run test-suite.yaml --ref ${{ github.ref_name }}"
+              echo "   Or wait for automatic test run if on main branch"
+              exit 1
+            }
+          echo "✓ Test suite passed on this commit"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      -
+        name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      -
+        name: Install dependencies
+        run: pip install -e ".[test,docs,release]"
+      -
+        name: Run linting
+        run: ruff check src/ tests/
+      -
+        name: Build documentation
+        run: |
+          rm -rf docs/_build
+          LC_ALL=C python -m sphinx -b html docs docs/_build -W --keep-going
+      -
+        name: Build package
+        run: python -m build
+      -
+        name: Check package metadata
+        run: twine check dist/*
+      -
+        name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+        # SECURITY: Uses OIDC (no stored secrets) - recommended by PyPI
+        # Action maintained by Python Packaging Authority (PyPA)
+        # Setup: https://test.pypi.org/manage/account/publishing/
+        # Alternative with API token:
+        #   run: twine upload --repository testpypi --skip-existing dist/*
+        #   env:
+        #     TWINE_USERNAME: __token__
+        #     TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
