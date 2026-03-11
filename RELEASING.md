@@ -191,7 +191,7 @@ We follow [Semantic Versioning](https://semver.org/):
 ### Tests fail
 - Fix issues before releasing
 - Do not skip test failures for production releases
-- TestPyPI uploads can proceed with test failures (with warning)
+- `release.sh` blocks uploads to both TestPyPI and PyPI if there are test failures
 
 ### Twine authentication fails
 - Check `~/.pypirc` configuration
@@ -227,7 +227,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
-      - run: pip install build twine
+      - run: pip install build~=1.4.0 twine~=6.2.0
       - run: python -m build
       - run: twine upload dist/*
         env:

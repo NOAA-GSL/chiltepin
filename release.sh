@@ -79,15 +79,35 @@ check_dependencies() {
 
 # Get version from pyproject.toml
 get_version() {
-    python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])" 2>/dev/null || \
-    python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])" 2>/dev/null || \
+    # Try tomllib (Python 3.11+)
+    python <<'EOF' 2>/dev/null && return
+try:
+    import tomllib
+    with open('pyproject.toml', 'rb') as f:
+        print(tomllib.load(f)['project']['version'])
+except:
+    exit(1)
+EOF
+
+    # Try toml package (Python 3.10)
+    python <<'EOF' 2>/dev/null && return
+try:
+    import toml
+    with open('pyproject.toml', 'r') as f:
+        print(toml.load(f)['project']['version'])
+except:
+    exit(1)
+EOF
+
+    # Fallback to grep/sed
     grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/'
 }
 
 # Clean build artifacts
 clean_build() {
     log_info "Cleaning build artifacts..."
-    rm -rf dist/ build/ src/*.egg-info .eggs/
+    rm -rf dist/ build/ .eggs/
+    find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
     find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
     find . -type f -name "*.pyc" -delete 2>/dev/null || true
     log_success "Build artifacts cleaned"

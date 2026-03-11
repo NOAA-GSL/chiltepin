@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python task decorator (`@python_task`) for workflow tasks
 - Bash task decorator (`@bash_task`) for shell command tasks
 - Join task decorator (`@join_task`) for task coordination
-- Support for MPI tasks via `chiltepin_task_geometry` parameter
+- Support for MPI tasks
 - Configuration management for compute resources
 - Support for Parsl executors (HTEX, MPI)
 - Support for Globus Compute executors
