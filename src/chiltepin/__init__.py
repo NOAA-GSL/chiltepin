@@ -41,6 +41,7 @@ def __getattr__(name):
     # Try to import as a submodule
     try:
         import importlib
+
         module = importlib.import_module(f".{name}", __name__)
         globals()[name] = module
         return module
