@@ -10,6 +10,7 @@ on:
 permissions:
   contents: write  # Required for creating releases
   id-token: write  # Required for trusted publishing to PyPI
+  actions: read    # Required for checking test suite status
 
 jobs:
   release:

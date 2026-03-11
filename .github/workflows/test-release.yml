@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   id-token: write  # Required for trusted publishing to TestPyPI
+  actions: read    # Required for checking test suite status
 
 jobs:
   test-release:
