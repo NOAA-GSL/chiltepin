@@ -80,7 +80,6 @@ class TestSubmoduleAccess:
 
     def test_submodule_import_via_attribute_access(self):
         """Test that submodules can be accessed as attributes."""
-        import sys
         import chiltepin
 
         # Clean up any pre-loaded submodules to ensure __getattr__ gets called
