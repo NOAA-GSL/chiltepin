@@ -84,9 +84,9 @@ class TestSubmoduleAccess:
 
         # Clean up any pre-loaded submodules to ensure __getattr__ gets called
         # (other tests may have imported them directly, which adds them to the namespace)
-        if hasattr(chiltepin, "tasks"):
+        if "tasks" in chiltepin.__dict__:
             delattr(chiltepin, "tasks")
-        if hasattr(chiltepin, "configure"):
+        if "configure" in chiltepin.__dict__:
             delattr(chiltepin, "configure")
 
         # Access submodule via attribute - should trigger __getattr__

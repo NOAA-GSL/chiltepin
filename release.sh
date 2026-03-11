@@ -89,7 +89,7 @@ try:
     import tomllib
     with open('pyproject.toml', 'rb') as f:
         print(tomllib.load(f)['project']['version'])
-except:
+except Exception:
     exit(1)
 EOF
 
@@ -99,7 +99,7 @@ try:
     import toml
     with open('pyproject.toml', 'r') as f:
         print(toml.load(f)['project']['version'])
-except:
+except Exception:
     exit(1)
 EOF
 
@@ -235,7 +235,7 @@ main() {
 
             check_dependencies
 
-            run_tests  # Informational only
+            run_tests || true  # Informational only - don't fail on error
             echo ""
 
             if ! build_docs; then
