@@ -45,8 +45,11 @@ def __getattr__(name):
         module = importlib.import_module(f".{name}", __name__)
         globals()[name] = module
         return module
-    except ImportError:
-        pass
+    except ModuleNotFoundError as e:
+        # Only suppress if the error is for the module we're trying to import,
+        # not for some dependency that module is trying to import
+        if e.name != f"{__name__}.{name}":
+            raise  # Some other module wasn't found, propagate the error
 
     # If not a submodule, raise AttributeError as normal
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

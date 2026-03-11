@@ -1,12 +1,16 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 
-# Release automation script for Chiltepin
+# Pre-release validation script for Chiltepin
+# Validates package is ready for release via GitHub Actions CI
+#
 # Usage:
-#   ./release.sh check           - Validate package without uploading
-#   ./release.sh test            - Upload to TestPyPI
-#   ./release.sh release         - Upload to production PyPI
+#   ./release.sh check           - Run all pre-release checks
 #   ./release.sh clean           - Clean build artifacts
+#
+# Release process (after checks pass):
+#   1. TestPyPI: GitHub Actions → Test Release to TestPyPI → Run workflow
+#   2. Production: git tag v0.1.0 && git push origin v0.1.0
 
 set -e  # Exit on error
 
@@ -174,135 +178,61 @@ show_package_info() {
     echo ""
     log_info "Distribution files:"
     ls -lh dist/
-    echo ""
-    log_info "Source distribution contents (first 20 files):"
-    tar -tzf dist/${PACKAGE_NAME}-${version}.tar.gz | head -20
 }
 
-# Upload to TestPyPI
-upload_test() {
-    log_warning "Uploading to TestPyPI..."
-    echo ""
-    log_info "You will need TestPyPI credentials."
-    log_info "Register at: https://test.pypi.org/account/register/"
-    log_info "Get API token at: https://test.pypi.org/manage/account/token/"
-    echo ""
-    read -p "Continue with upload? (y/N): " -r
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_info "Upload cancelled"
-        exit 0
-    fi
-    
-    python -m twine upload --repository testpypi dist/*
-    
+# Show release checklist and next steps
+show_release_guide() {
     local version=$(get_version)
-    log_success "Upload to TestPyPI complete!"
-    echo ""
-    log_info "Test installation with:"
-    echo "  pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple ${PACKAGE_NAME}==${version}"
-}
 
-# Upload to production PyPI
-upload_release() {
-    local version=$(get_version)
-    
-    log_warning "═══════════════════════════════════════════════════"
-    log_warning "   PRODUCTION RELEASE TO PYPI"
-    log_warning "═══════════════════════════════════════════════════"
     echo ""
-    log_warning "This will upload version ${version} to production PyPI!"
-    log_warning "This action CANNOT be undone!"
-    echo ""
-    log_info "Checklist before proceeding:"
-    echo "  [ ] CHANGELOG.md is updated"
-    echo "  [ ] Version number is correct in pyproject.toml"
-    echo "  [ ] All tests pass with proper config (pytest --config=...)"
-    echo "  [ ] Documentation builds without errors"
-    echo "  [ ] Package tested on TestPyPI"
-    echo "  [ ] Git tag created: git tag -a v${version} -m 'Release v${version}'"
-    echo "  [ ] Changes committed and pushed"
-    echo ""
-    read -p "Have you completed all checklist items? (y/N): " -r
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_info "Release cancelled"
-        exit 0
-    fi
-    
-    echo ""
-    log_warning "Last chance to abort!"
-    read -p "Type the version number '${version}' to confirm: " -r
-    if [[ "$REPLY" != "$version" ]]; then
-        log_error "Version mismatch. Release cancelled."
-        exit 1
-    fi
-    
-    log_info "Uploading to PyPI..."
-    python -m twine upload dist/*
-    
     log_success "═══════════════════════════════════════════════════"
-    log_success "   Release ${version} published to PyPI!"
+    log_success "   Package v${version} is ready for release!"
     log_success "═══════════════════════════════════════════════════"
     echo ""
-    log_info "Next steps:"
-    echo "  1. Push git tag: git push origin v${version}"
-    echo "  2. Create GitHub release: https://github.com/NOAA-GSL/chiltepin/releases/new"
-    echo "  3. Verify installation: pip install ${PACKAGE_NAME}==${version}"
+
+    log_info "Pre-release checklist:"
+    echo "  [ ] CHANGELOG.md is updated with release notes"
+    echo "  [ ] Version number is correct in pyproject.toml (${version})"
+    echo "  [ ] All tests pass: pytest --config=path/to/config.yaml"
+    echo "  [ ] Documentation builds without errors (✓)"
+    echo "  [ ] Package metadata is valid (✓)"
+    echo "  [ ] All changes are committed to git"
+    echo ""
+
+    log_info "Test release to TestPyPI:"
+    echo "  1. Go to: https://github.com/NOAA-GSL/chiltepin/actions"
+    echo "  2. Select: 'Test Release to TestPyPI' workflow"
+    echo "  3. Click: 'Run workflow' button"
+    echo "  4. Test install: pip install -i https://test.pypi.org/simple/ chiltepin==${version}"
+    echo ""
+
+    log_info "Production release to PyPI:"
+    echo "  1. Create and push tag:"
+    echo "     git tag -a v${version} -m \"Release v${version}\""
+    echo "     git push origin v${version}"
+    echo "  2. GitHub Actions will automatically:"
+    echo "     - Run validation checks"
+    echo "     - Build and publish to PyPI"
+    echo "     - Create GitHub release with notes"
+    echo "  3. Monitor: https://github.com/NOAA-GSL/chiltepin/actions"
+    echo ""
+
+    log_warning "Note: Ensure PyPI trusted publishing is configured"
+    echo "  https://pypi.org/manage/account/publishing/"
+    echo ""
 }
 
 # Main command dispatcher
 main() {
     cd "$SCRIPT_DIR"
     
-    local command="${1:-help}"
+    local command="${1:-check}"
     
     case "$command" in
         check)
-            log_info "Running pre-release checks..."
-            check_dependencies
-            
-            run_tests  # Informational only
+            log_info "Running pre-release validation..."
             echo ""
 
-            if ! build_docs; then
-                log_error "Documentation must build before release"
-                exit 1
-            fi
-
-            clean_build
-            build_package
-            check_package
-            show_package_info
-
-            log_success "Package validation passed!"
-            log_warning "IMPORTANT: Ensure full test suite passes with proper config before release"
-            echo ""
-            log_info "Next steps:"
-            echo "  1. Run full tests: pytest --config=path/to/config.yaml"
-            echo "  2. Test on TestPyPI: ./release.sh test"
-            echo "  3. Release to PyPI: ./release.sh release"
-            ;;
-
-        test)
-            log_info "Preparing TestPyPI upload..."
-            check_dependencies
-
-            run_tests  # Informational only
-            echo ""
-
-            if ! build_docs; then
-                log_error "Documentation must build before TestPyPI upload"
-                exit 1
-            fi
-
-            clean_build
-            build_package
-            check_package
-            show_package_info
-            upload_test
-            ;;
-
-        release)
-            log_info "Preparing production release..."
             check_dependencies
 
             run_tests  # Informational only
@@ -312,12 +242,13 @@ main() {
                 log_error "Documentation must build before release"
                 exit 1
             fi
+            echo ""
 
             clean_build
             build_package
             check_package
             show_package_info
-            upload_release
+            show_release_guide
             ;;
 
         clean)
@@ -325,21 +256,23 @@ main() {
             ;;
 
         help|--help|-h|*)
-            echo "Chiltepin Release Automation"
+            echo "Chiltepin Pre-Release Validation"
+            echo ""
+            echo "This script validates the package is ready for release."
+            echo "Actual releases are handled by GitHub Actions workflows."
             echo ""
             echo "Usage: $0 <command>"
             echo ""
             echo "Commands:"
-            echo "  check      - Run all checks and build package (no upload)"
-            echo "  test       - Upload to TestPyPI for testing"
-            echo "  release    - Upload to production PyPI (use with caution!)"
+            echo "  check      - Run all pre-release checks (default)"
             echo "  clean      - Clean build artifacts"
             echo "  help       - Show this help message"
             echo ""
-            echo "Examples:"
-            echo "  $0 check            # Validate everything locally"
-            echo "  $0 test             # Deploy to TestPyPI"
-            echo "  $0 release          # Deploy to production PyPI"
+            echo "Release workflow:"
+            echo "  1. Run: ./release.sh check"
+            echo "  2. Test: Trigger 'Test Release to TestPyPI' workflow in GitHub Actions"
+            echo "  3. Release: git tag v0.1.0 && git push origin v0.1.0"
+            echo ""
             ;;
     esac
 }

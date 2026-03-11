@@ -22,6 +22,25 @@ jobs:
         name: Checkout repository
         uses: actions/checkout@v4
       -
+        name: Verify test suite passed
+        run: |
+          echo "Checking if test suite passed on this commit..."
+          # Query for test-suite workflow runs on this commit
+          gh run list \
+            --workflow=test-suite.yaml \
+            --commit=${{ github.sha }} \
+            --json conclusion,status \
+            --limit 5 | \
+            jq -e 'map(select(.status == "completed")) | .[0].conclusion == "success"' || {
+              echo "❌ Test suite must pass before release!"
+              echo "   Run: gh workflow run test-suite.yaml --ref main"
+              echo "   Or wait for automatic test run on main branch"
+              exit 1
+            }
+          echo "✓ Test suite passed on this commit"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      -
         name: Set up Python
         uses: actions/setup-python@v5
         with:

@@ -29,21 +29,20 @@ class TestVersionHandling:
         # Import chiltepin first to ensure it exists
         import chiltepin
 
-        # Mock the version function to raise PackageNotFoundError
+        # Test 1: Mock PackageNotFoundError - should get 'dev'
         with mock.patch(
             "importlib.metadata.version", side_effect=PackageNotFoundError("chiltepin")
         ):
-            # Reload the module with the patch applied
             importlib.reload(chiltepin)
-
-            # Should have fallback version
             assert chiltepin.__version__ == "dev"
 
-        # Restore normal state by reloading without the patch
-        importlib.reload(chiltepin)
+        # Test 2: Mock normal version lookup - should get the mocked version
+        with mock.patch("importlib.metadata.version", return_value="1.2.3"):
+            importlib.reload(chiltepin)
+            assert chiltepin.__version__ == "1.2.3"
 
-        # Verify it's back to normal
-        assert chiltepin.__version__ != "dev"
+        # Restore to whatever the actual state is
+        importlib.reload(chiltepin)
 
     def test_version_raises_unexpected_errors(self):
         """Test that unexpected errors during version retrieval are not caught."""
