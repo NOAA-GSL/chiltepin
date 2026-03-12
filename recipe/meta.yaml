@@ -9,7 +9,7 @@ package:
 
 source:
   url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/chiltepin-{{ version }}.tar.gz
-  sha256: 771dbee9bcd04823a6da8d1e1fa03aeb8a44bab3ba20a65e81914e2079ace742
+  sha256: 14a9c25e2df256edeacc251a8694f2317269ccef66be7cf34ca8f46d141610ab
 
 build:
   number: 0
@@ -54,5 +54,4 @@ about:
 
 extra:
   recipe-maintainers:
-    # Add your GitHub username(s) here
     - christopherwharrop-noaa
