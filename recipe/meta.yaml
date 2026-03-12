@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 {% set name = "chiltepin" %}
-{% set version = "0.1.0" %}
+{% set version = "0.1.1" %}
 
 package:
   name: {{ name|lower }}
@@ -9,7 +9,7 @@ package:
 
 source:
   url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/chiltepin-{{ version }}.tar.gz
-  sha256: <SHA256_HASH_OF_TARBALL>
+  sha256: 771dbee9bcd04823a6da8d1e1fa03aeb8a44bab3ba20a65e81914e2079ace742
 
 build:
   number: 0
@@ -25,9 +25,9 @@ requirements:
     - setuptools >=61.0
   run:
     - python >=3.10
-    - globus-compute-sdk >=4.5.0,<4.7.0
-    - globus-compute-endpoint >=4.5.0,<4.7.0
-    - parsl >=2026.1.5
+    - globus-compute-sdk >=4.3.0,<4.7.0
+    - globus-compute-endpoint >=4.3.0,<4.7.0
+    - parsl >=2025.12.1
 
 test:
   imports:
@@ -41,7 +41,7 @@ test:
     - chiltepin --help
 
 about:
-  home: https://github.com/NOAA-GSL/ExascaleWorkflowSandbox
+  home: https://github.com/NOAA-GSL/chiltepin
   license: Apache-2.0
   license_file: LICENSE
   summary: Federated NWP Workflow Tools
@@ -49,8 +49,8 @@ about:
     Chiltepin is a Python library for exploring federated workflow capabilities
     using Parsl and Globus Compute. It provides tools and demonstrations for
     implementing distributed scientific workflows on HPC systems.
-  doc_url: https://exascaleworkflowsandbox.readthedocs.io
-  dev_url: https://github.com/NOAA-GSL/ExascaleWorkflowSandbox
+  doc_url: https://chiltepin.readthedocs.io
+  dev_url: https://github.com/NOAA-GSL/chiltepin
 
 extra:
   recipe-maintainers:

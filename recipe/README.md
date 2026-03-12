@@ -30,8 +30,8 @@ chiltepin --help
 2. **Update the SHA256 hash** in `meta.yaml`:
    ```bash
    # After publishing to PyPI, download and compute hash
-   pip download chiltepin==0.1.0 --no-deps --no-binary :all:
-   sha256sum chiltepin-0.1.0.tar.gz
+   pip download chiltepin==X.Y.Z --no-deps --no-binary :all:
+   sha256sum chiltepin-X.Y.Z.tar.gz
    # Copy the hash and update the sha256 field in meta.yaml
    ```
    

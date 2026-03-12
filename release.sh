@@ -10,7 +10,7 @@
 #
 # Release process (after checks pass):
 #   1. TestPyPI: GitHub Actions → Test Release to TestPyPI → Run workflow
-#   2. Production: git tag v0.1.0 && git push origin v0.1.0
+#   2. Production: git tag vX.Y.Z && git push origin vX.Y.Z
 
 set -e  # Exit on error
 
@@ -278,7 +278,7 @@ main() {
             echo "Release workflow:"
             echo "  1. Run: ./release.sh check"
             echo "  2. Test: Trigger 'Test Release to TestPyPI' workflow in GitHub Actions"
-            echo "  3. Release: git tag v0.1.0 && git push origin v0.1.0"
+            echo "  3. Release: git tag vX.Y.Z && git push origin vX.Y.Z"
             echo ""
             ;;
     esac
