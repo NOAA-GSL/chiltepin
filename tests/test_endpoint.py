@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import platform
 import shutil
 import tempfile
 import time
@@ -18,6 +19,10 @@ import chiltepin.endpoint as endpoint
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="Endpoint management is only supported on Linux",
+)
 class TestEndpointIntegration:
     """Integration tests for endpoint lifecycle: configure -> start -> stop -> delete.
 
@@ -366,12 +371,14 @@ class TestLogout:
 class TestConfigure:
     """Tests for configure() function."""
 
-    @patch("platform.system", return_value="Windows")
-    def test_windows_not_supported(self, mock_system):
-        """Test that configure raises NotImplementedError on Windows."""
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    @patch("platform.system")
+    def test_non_linux_not_supported(self, mock_system, platform_name):
+        """Test that configure raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
         with pytest.raises(
             NotImplementedError,
-            match="Globus Compute endpoints are not supported on Windows",
+            match="Endpoint management is only supported on Linux",
         ):
             endpoint.configure("test_endpoint")
 
@@ -535,12 +542,14 @@ class TestConfigure:
 class TestStart:
     """Tests for start() function."""
 
-    @patch("platform.system", return_value="Windows")
-    def test_windows_not_supported(self, mock_system):
-        """Test that start raises NotImplementedError on Windows."""
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    @patch("platform.system")
+    def test_non_linux_not_supported(self, mock_system, platform_name):
+        """Test that start raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
         with pytest.raises(
             NotImplementedError,
-            match="Globus Compute endpoints are not supported on Windows",
+            match="Endpoint management is only supported on Linux",
         ):
             endpoint.start("test_endpoint")
 
@@ -687,12 +696,14 @@ class TestReadStartupErrors:
 class TestStop:
     """Tests for stop() function."""
 
-    @patch("platform.system", return_value="Windows")
-    def test_windows_not_supported(self, mock_system):
-        """Test that stop raises NotImplementedError on Windows."""
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    @patch("platform.system")
+    def test_non_linux_not_supported(self, mock_system, platform_name):
+        """Test that stop raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
         with pytest.raises(
             NotImplementedError,
-            match="Globus Compute endpoints are not supported on Windows",
+            match="Endpoint management is only supported on Linux",
         ):
             endpoint.stop("test_endpoint")
 
@@ -730,12 +741,14 @@ class TestStop:
 class TestDelete:
     """Tests for delete() function."""
 
-    @patch("platform.system", return_value="Windows")
-    def test_windows_not_supported(self, mock_system):
-        """Test that delete raises NotImplementedError on Windows."""
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    @patch("platform.system")
+    def test_non_linux_not_supported(self, mock_system, platform_name):
+        """Test that delete raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
         with pytest.raises(
             NotImplementedError,
-            match="Globus Compute endpoints are not supported on Windows",
+            match="Endpoint management is only supported on Linux",
         ):
             endpoint.delete("test_endpoint")
 
@@ -778,3 +791,48 @@ class TestDelete:
                 ):
                     with pytest.raises(RuntimeError, match="Error deleting endpoint"):
                         endpoint.delete("test_endpoint", timeout=5)
+
+
+class TestShow:
+    """Tests for show() function."""
+
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    @patch("platform.system")
+    def test_non_linux_not_supported(self, mock_system, platform_name):
+        """Test that show raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.show()
+
+
+class TestExists:
+    """Tests for exists() function."""
+
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    @patch("platform.system")
+    def test_non_linux_not_supported(self, mock_system, platform_name):
+        """Test that exists raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.exists("test_endpoint")
+
+
+class TestIsRunning:
+    """Tests for is_running() function."""
+
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    @patch("platform.system")
+    def test_non_linux_not_supported(self, mock_system, platform_name):
+        """Test that is_running raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.is_running("test_endpoint")

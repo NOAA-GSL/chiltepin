@@ -78,7 +78,12 @@ Dependencies
 Chiltepin has the following core dependencies:
 
 * ``globus-compute-sdk`` (>=4.3.0,<4.7.0)
-* ``globus-compute-endpoint`` (>=4.3.0,<4.7.0)
+* ``globus-compute-endpoint`` (>=4.3.0,<4.7.0) - **Linux only**
 * ``parsl`` (>=2025.12.1)
 
 These will be automatically installed when you install Chiltepin.
+
+.. note::
+   ``globus-compute-endpoint`` is only available on Linux. On macOS and Windows, Chiltepin
+   will skip this dependency. Task submission and data transfer work on all platforms;
+   only endpoint management requires Linux.

@@ -13,8 +13,18 @@ from typing import Dict, Optional, Union
 
 import psutil
 import yaml
-from globus_compute_endpoint.endpoint.config.utils import get_config
-from globus_compute_endpoint.endpoint.endpoint import Endpoint
+
+# Try to import globus-compute-endpoint (Linux-only on conda-forge)
+try:
+    from globus_compute_endpoint.endpoint.config.utils import get_config
+    from globus_compute_endpoint.endpoint.endpoint import Endpoint
+
+    ENDPOINT_MANAGEMENT_AVAILABLE = True
+except ImportError:
+    ENDPOINT_MANAGEMENT_AVAILABLE = False
+    get_config = None
+    Endpoint = None
+
 from globus_compute_sdk import Client
 from globus_compute_sdk.sdk.auth.auth_client import ComputeAuthClient
 from globus_compute_sdk.sdk.auth.globus_app import get_globus_app
@@ -292,9 +302,10 @@ def configure(
         Number of seconds to wait for the command to complete before timing out
         Default is None, meaning the command will never time out.
     """
-    if platform.system() == "Windows":
+    if platform.system() != "Linux":
         raise NotImplementedError(
-            "Globus Compute endpoints are not supported on Windows"
+            "Endpoint management is only supported on Linux. "
+            "Task submission and data transfer work on all platforms."
         )
 
     # Track start time for timeout enforcement
@@ -432,6 +443,11 @@ def show(
 
     Dict[str, Dict[str, Optional[str]]]
     """
+    if platform.system() != "Linux":
+        raise NotImplementedError(
+            "Endpoint management is only supported on Linux. "
+            "Task submission and data transfer work on all platforms."
+        )
 
     config_dir_path = (
         Path(config_dir) if config_dir else Path.home() / ".globus_compute"
@@ -523,9 +539,10 @@ def start(
         Number of seconds to wait for the command to complete before timing out
         Default is None, meaning the command will never time out.
     """
-    if platform.system() == "Windows":
+    if platform.system() != "Linux":
         raise NotImplementedError(
-            "Globus Compute endpoints are not supported on Windows"
+            "Endpoint management is only supported on Linux. "
+            "Task submission and data transfer work on all platforms."
         )
 
     # Make sure we are logged in
@@ -672,9 +689,10 @@ def stop(
         Number of seconds to wait for the command to complete before timing out
         Default is None, meaning the command will never time out.
     """
-    if platform.system() == "Windows":
+    if platform.system() != "Linux":
         raise NotImplementedError(
-            "Globus Compute endpoints are not supported on Windows"
+            "Endpoint management is only supported on Linux. "
+            "Task submission and data transfer work on all platforms."
         )
 
     # Make sure we are logged in
@@ -738,9 +756,10 @@ def delete(
         Number of seconds to wait for the command to complete before timing out
         Default is None, meaning the command will never time out.
     """
-    if platform.system() == "Windows":
+    if platform.system() != "Linux":
         raise NotImplementedError(
-            "Globus Compute endpoints are not supported on Windows"
+            "Endpoint management is only supported on Linux. "
+            "Task submission and data transfer work on all platforms."
         )
 
     # Make sure we are logged in
