@@ -20,8 +20,10 @@ try:
     from globus_compute_endpoint.endpoint.endpoint import Endpoint
 
     ENDPOINT_MANAGEMENT_AVAILABLE = True
-except ImportError:
+    _ENDPOINT_IMPORT_ERROR = None
+except ImportError as e:
     ENDPOINT_MANAGEMENT_AVAILABLE = False
+    _ENDPOINT_IMPORT_ERROR = e
     get_config = None
     Endpoint = None
 
@@ -308,6 +310,11 @@ def configure(
             "Task submission and data transfer work on all platforms."
         )
 
+    if not ENDPOINT_MANAGEMENT_AVAILABLE:
+        raise ImportError(
+            "globus-compute-endpoint is not installed."
+        ) from _ENDPOINT_IMPORT_ERROR
+
     # Track start time for timeout enforcement
     start_time = time.time()
 
@@ -449,6 +456,11 @@ def show(
             "Task submission and data transfer work on all platforms."
         )
 
+    if not ENDPOINT_MANAGEMENT_AVAILABLE:
+        raise ImportError(
+            "globus-compute-endpoint is not installed."
+        ) from _ENDPOINT_IMPORT_ERROR
+
     config_dir_path = (
         Path(config_dir) if config_dir else Path.home() / ".globus_compute"
     )
@@ -544,6 +556,11 @@ def start(
             "Endpoint management is only supported on Linux. "
             "Task submission and data transfer work on all platforms."
         )
+
+    if not ENDPOINT_MANAGEMENT_AVAILABLE:
+        raise ImportError(
+            "globus-compute-endpoint is not installed."
+        ) from _ENDPOINT_IMPORT_ERROR
 
     # Make sure we are logged in
     if login_required():
@@ -695,6 +712,11 @@ def stop(
             "Task submission and data transfer work on all platforms."
         )
 
+    if not ENDPOINT_MANAGEMENT_AVAILABLE:
+        raise ImportError(
+            "globus-compute-endpoint is not installed."
+        ) from _ENDPOINT_IMPORT_ERROR
+
     # Make sure we are logged in
     if login_required():
         raise RuntimeError("Chiltepin login is required")
@@ -761,6 +783,11 @@ def delete(
             "Endpoint management is only supported on Linux. "
             "Task submission and data transfer work on all platforms."
         )
+
+    if not ENDPOINT_MANAGEMENT_AVAILABLE:
+        raise ImportError(
+            "globus-compute-endpoint is not installed."
+        ) from _ENDPOINT_IMPORT_ERROR
 
     # Make sure we are logged in
     if login_required():

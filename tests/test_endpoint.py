@@ -372,7 +372,7 @@ class TestConfigure:
     """Tests for configure() function."""
 
     @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
-    @patch("platform.system")
+    @patch("chiltepin.endpoint.platform.system")
     def test_non_linux_not_supported(self, mock_system, platform_name):
         """Test that configure raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -543,7 +543,7 @@ class TestStart:
     """Tests for start() function."""
 
     @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
-    @patch("platform.system")
+    @patch("chiltepin.endpoint.platform.system")
     def test_non_linux_not_supported(self, mock_system, platform_name):
         """Test that start raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -697,7 +697,7 @@ class TestStop:
     """Tests for stop() function."""
 
     @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
-    @patch("platform.system")
+    @patch("chiltepin.endpoint.platform.system")
     def test_non_linux_not_supported(self, mock_system, platform_name):
         """Test that stop raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -742,7 +742,7 @@ class TestDelete:
     """Tests for delete() function."""
 
     @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
-    @patch("platform.system")
+    @patch("chiltepin.endpoint.platform.system")
     def test_non_linux_not_supported(self, mock_system, platform_name):
         """Test that delete raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -797,7 +797,7 @@ class TestShow:
     """Tests for show() function."""
 
     @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
-    @patch("platform.system")
+    @patch("chiltepin.endpoint.platform.system")
     def test_non_linux_not_supported(self, mock_system, platform_name):
         """Test that show raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -812,7 +812,7 @@ class TestExists:
     """Tests for exists() function."""
 
     @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
-    @patch("platform.system")
+    @patch("chiltepin.endpoint.platform.system")
     def test_non_linux_not_supported(self, mock_system, platform_name):
         """Test that exists raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -827,7 +827,7 @@ class TestIsRunning:
     """Tests for is_running() function."""
 
     @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
-    @patch("platform.system")
+    @patch("chiltepin.endpoint.platform.system")
     def test_non_linux_not_supported(self, mock_system, platform_name):
         """Test that is_running raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -836,3 +836,114 @@ class TestIsRunning:
             match="Endpoint management is only supported on Linux",
         ):
             endpoint.is_running("test_endpoint")
+
+
+class TestEndpointManagementUnavailable:
+    """Tests for when globus-compute-endpoint is not installed."""
+
+    def setup_method(self):
+        """Store original value."""
+        self.original_available = endpoint.ENDPOINT_MANAGEMENT_AVAILABLE
+        self.original_error = endpoint._ENDPOINT_IMPORT_ERROR
+
+    def teardown_method(self):
+        """Restore original value."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = self.original_available
+        endpoint._ENDPOINT_IMPORT_ERROR = self.original_error
+
+    def test_import_error_handling(self):
+        """Test that module handles ImportError correctly at import time."""
+        import sys
+
+        # Remove the endpoint module if it's already imported
+        if "chiltepin.endpoint" in sys.modules:
+            del sys.modules["chiltepin.endpoint"]
+
+        # Mock the globus_compute_endpoint packages to raise ImportError
+        original_modules = {}
+        mock_modules = [
+            "globus_compute_endpoint",
+            "globus_compute_endpoint.endpoint",
+            "globus_compute_endpoint.endpoint.config",
+            "globus_compute_endpoint.endpoint.config.utils",
+        ]
+
+        for mod_name in mock_modules:
+            if mod_name in sys.modules:
+                original_modules[mod_name] = sys.modules[mod_name]
+            sys.modules[mod_name] = None
+
+        try:
+            # This should trigger the ImportError and except block
+            import chiltepin.endpoint as test_endpoint
+
+            # Verify the except block executed correctly
+            assert test_endpoint.ENDPOINT_MANAGEMENT_AVAILABLE is False
+            assert test_endpoint._ENDPOINT_IMPORT_ERROR is not None
+            assert test_endpoint.get_config is None
+            assert test_endpoint.Endpoint is None
+        finally:
+            # Clean up: restore original modules
+            for mod_name in mock_modules:
+                if mod_name in original_modules:
+                    sys.modules[mod_name] = original_modules[mod_name]
+                elif mod_name in sys.modules:
+                    del sys.modules[mod_name]
+
+            # Restore the real endpoint module
+            if "chiltepin.endpoint" in sys.modules:
+                del sys.modules["chiltepin.endpoint"]
+            import chiltepin.endpoint
+
+            # Re-bind to the test's endpoint reference
+            globals()["endpoint"] = chiltepin.endpoint
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_configure_not_available(self, mock_system):
+        """Test configure raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="globus-compute-endpoint is not installed"
+        ):
+            endpoint.configure("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_show_not_available(self, mock_system):
+        """Test show raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="globus-compute-endpoint is not installed"
+        ):
+            endpoint.show()
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_start_not_available(self, mock_system):
+        """Test start raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="globus-compute-endpoint is not installed"
+        ):
+            endpoint.start("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_stop_not_available(self, mock_system):
+        """Test stop raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="globus-compute-endpoint is not installed"
+        ):
+            endpoint.stop("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_delete_not_available(self, mock_system):
+        """Test delete raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="globus-compute-endpoint is not installed"
+        ):
+            endpoint.delete("test_endpoint")
