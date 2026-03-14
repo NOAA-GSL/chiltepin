@@ -1,14 +1,19 @@
 Installation
 ============
 
-This software can be installed on Linux systems. Native Windows and macOS are not currently supported,
-but Chiltepin can be used on these platforms via the Docker container (see :doc:`container`).
+Chiltepin is supported on **Linux, macOS, and Windows**. All platforms support task submission and data transfer.
+Endpoint management (creating, starting, stopping, and deleting endpoints) is only available on Linux.
+
+.. tip::
+   **macOS/Windows users:** You can submit tasks to existing endpoints and transfer data without any
+   limitations. For endpoint management, use the Docker container (see :doc:`container`) or a Linux machine.
 
 Prerequisites
 -------------
 
 * Python 3.10 or higher
-* Linux operating system (or Docker for Mac/Windows)
+* Any operating system (Linux, macOS, Windows)
+* Linux required only for endpoint management
 
 Installing from PyPI
 --------------------

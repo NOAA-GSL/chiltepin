@@ -14,12 +14,18 @@ Chiltepin provides Python decorators and utilities for building scientific workf
 that can execute on distributed computing resources using [Parsl](https://parsl-project.org/)
 and [Globus](https://www.globus.org/) services.
 
+### Platform Support
+
+Chiltepin is supported on **Linux, macOS, and Windows**:
+- ✅ Task submission and data transfer work on all platforms
+- 🐧 Endpoint management (creating, starting, stopping, and deleting endpoints) requires Linux or Docker
+
 ## Documentation
 
 **📚 Full documentation is available at [Read the Docs](https://chiltepin.readthedocs.io/)**
 
 Key documentation sections:
-- [Installation Guide](https://chiltepin.readthedocs.io/en/latest/installation.html) - Installing Chiltepin on Linux and via Docker on macOS and Windows
+- [Installation Guide](https://chiltepin.readthedocs.io/en/latest/installation.html) - Installing Chiltepin
 - [Quick Start](https://chiltepin.readthedocs.io/en/latest/quickstart.html) - Your first Chiltepin workflow
 - [Tasks](https://chiltepin.readthedocs.io/en/latest/tasks.html) - Python, Bash, and Join task decorators
 - [Configuration](https://chiltepin.readthedocs.io/en/latest/configuration.html) - Configuring compute resources

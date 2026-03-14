@@ -142,6 +142,23 @@ idle_heartbeats_hard: 5760
 CHILTEPIN_CLIENT_UUID = "42e9e804-0bcd-4c3d-881b-8e270e3c2163"
 
 
+def _check_endpoint_management_available():
+    """Check if endpoint management is available on this platform.
+
+    Raises:
+        NotImplementedError: If not running on Linux
+        ImportError: If globus-compute-endpoint could not be imported
+    """
+    if platform.system() != "Linux":
+        raise NotImplementedError(
+            "Endpoint management is only supported on Linux. "
+            "Task submission and data transfer work on all platforms."
+        )
+
+    if not ENDPOINT_MANAGEMENT_AVAILABLE:
+        raise _ENDPOINT_IMPORT_ERROR
+
+
 def get_chiltepin_apps() -> (GlobusApp, GlobusApp):
     """Log in to the Chiltepin app
 
@@ -304,16 +321,7 @@ def configure(
         Number of seconds to wait for the command to complete before timing out
         Default is None, meaning the command will never time out.
     """
-    if platform.system() != "Linux":
-        raise NotImplementedError(
-            "Endpoint management is only supported on Linux. "
-            "Task submission and data transfer work on all platforms."
-        )
-
-    if not ENDPOINT_MANAGEMENT_AVAILABLE:
-        raise ImportError(
-            "globus-compute-endpoint is not installed."
-        ) from _ENDPOINT_IMPORT_ERROR
+    _check_endpoint_management_available()
 
     # Track start time for timeout enforcement
     start_time = time.time()
@@ -450,16 +458,7 @@ def show(
 
     Dict[str, Dict[str, Optional[str]]]
     """
-    if platform.system() != "Linux":
-        raise NotImplementedError(
-            "Endpoint management is only supported on Linux. "
-            "Task submission and data transfer work on all platforms."
-        )
-
-    if not ENDPOINT_MANAGEMENT_AVAILABLE:
-        raise ImportError(
-            "globus-compute-endpoint is not installed."
-        ) from _ENDPOINT_IMPORT_ERROR
+    _check_endpoint_management_available()
 
     config_dir_path = (
         Path(config_dir) if config_dir else Path.home() / ".globus_compute"
@@ -551,16 +550,7 @@ def start(
         Number of seconds to wait for the command to complete before timing out
         Default is None, meaning the command will never time out.
     """
-    if platform.system() != "Linux":
-        raise NotImplementedError(
-            "Endpoint management is only supported on Linux. "
-            "Task submission and data transfer work on all platforms."
-        )
-
-    if not ENDPOINT_MANAGEMENT_AVAILABLE:
-        raise ImportError(
-            "globus-compute-endpoint is not installed."
-        ) from _ENDPOINT_IMPORT_ERROR
+    _check_endpoint_management_available()
 
     # Make sure we are logged in
     if login_required():
@@ -706,16 +696,7 @@ def stop(
         Number of seconds to wait for the command to complete before timing out
         Default is None, meaning the command will never time out.
     """
-    if platform.system() != "Linux":
-        raise NotImplementedError(
-            "Endpoint management is only supported on Linux. "
-            "Task submission and data transfer work on all platforms."
-        )
-
-    if not ENDPOINT_MANAGEMENT_AVAILABLE:
-        raise ImportError(
-            "globus-compute-endpoint is not installed."
-        ) from _ENDPOINT_IMPORT_ERROR
+    _check_endpoint_management_available()
 
     # Make sure we are logged in
     if login_required():
@@ -778,16 +759,7 @@ def delete(
         Number of seconds to wait for the command to complete before timing out
         Default is None, meaning the command will never time out.
     """
-    if platform.system() != "Linux":
-        raise NotImplementedError(
-            "Endpoint management is only supported on Linux. "
-            "Task submission and data transfer work on all platforms."
-        )
-
-    if not ENDPOINT_MANAGEMENT_AVAILABLE:
-        raise ImportError(
-            "globus-compute-endpoint is not installed."
-        ) from _ENDPOINT_IMPORT_ERROR
+    _check_endpoint_management_available()
 
     # Make sure we are logged in
     if login_required():
