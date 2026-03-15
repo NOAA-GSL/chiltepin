@@ -14,7 +14,7 @@ Prerequisites
 
 Before running tests, ensure you have:
 
-1. Installed Chiltepin with test dependencies: ``pip install -e ".[test]"
+1. Installed Chiltepin with test dependencies: ``pip install -e ".[test]"``
 2. Access to an HPC system with Slurm, or use the Docker container
 3. Authenticated with Globus (for Globus Compute and Globus Transfer tests)
 

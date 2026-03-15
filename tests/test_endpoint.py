@@ -455,8 +455,8 @@ class TestPlatformChecks:
 
 
 @pytest.mark.skipif(
-    not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
-    reason="globus-compute-endpoint is not installed",
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
 )
 class TestConfigure:
     """Tests for configure() function."""
@@ -619,8 +619,8 @@ class TestConfigure:
 
 
 @pytest.mark.skipif(
-    not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
-    reason="globus-compute-endpoint is not installed",
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
 )
 class TestStart:
     """Tests for start() function."""
@@ -766,8 +766,8 @@ class TestReadStartupErrors:
 
 
 @pytest.mark.skipif(
-    not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
-    reason="globus-compute-endpoint is not installed",
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
 )
 class TestStop:
     """Tests for stop() function."""
@@ -804,8 +804,8 @@ class TestStop:
 
 
 @pytest.mark.skipif(
-    not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
-    reason="globus-compute-endpoint is not installed",
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
 )
 class TestDelete:
     """Tests for delete() function."""
