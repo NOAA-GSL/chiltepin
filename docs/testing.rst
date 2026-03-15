@@ -24,6 +24,28 @@ command to authenticate:
 
 This will open a web browser, or provide a URL, for you to complete the authentication flow.
 
+Platform-Specific Testing
+-------------------------
+
+Some tests are platform-specific and will be automatically skipped on unsupported platforms:
+
+**Endpoint Management Tests** (Linux only)
+  Tests in ``test_endpoint.py`` (except platform-check tests) and ``test_globus_compute_*.py``
+  require the ``globus-compute-endpoint`` package, which is only available on Linux.
+  These tests will automatically skip on macOS and Windows with a clear reason message.
+
+**What This Means:**
+
+* **Linux developers**: All tests run normally
+* **macOS/Windows developers**: Can run and develop all non-endpoint tests locally
+  (task submission, data transfer, configuration, etc.)
+* **CI/CD**: Runs on Linux to ensure endpoint functionality is tested
+
+.. note::
+   Platform checks themselves (ensuring ``NotImplementedError`` is raised on non-Linux)
+   are tested on **all platforms**. Only the actual endpoint management functionality
+   requires Linux.
+
 Running Tests
 -------------
 
@@ -91,12 +113,12 @@ The test suite is organized into several files:
 * ``test_configure.py`` - Tests for configuration parsing and executor creation
 * ``test_cli.py`` - Tests for command-line interface functionality
 * ``test_tasks.py`` - Tests for task decorators
-* ``test_endpoint.py`` - Tests for Globus Compute endpoint management
+* ``test_endpoint.py`` - Tests for Globus Compute endpoint management (Linux only, except platform-check tests)
 * ``test_data.py`` - Tests for data handling utilities
 * ``test_parsl_hello.py`` - Basic Parsl integration tests
 * ``test_parsl_mpi.py`` - MPI-enabled Parsl integration tests
-* ``test_globus_compute_hello.py`` - Basic Globus Compute integration tests
-* ``test_globus_compute_mpi.py`` - MPI-enabled Globus Compute integration tests
+* ``test_globus_compute_hello.py`` - Basic Globus Compute integration tests (Linux only)
+* ``test_globus_compute_mpi.py`` - MPI-enabled Globus Compute integration tests (Linux only)
 
 Docker Container Testing
 ------------------------

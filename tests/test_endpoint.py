@@ -368,6 +368,10 @@ class TestLogout:
             mock_transfer_app.logout.assert_called_once()
 
 
+@pytest.mark.skipif(
+    not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="globus-compute-endpoint is not installed",
+)
 class TestConfigure:
     """Tests for configure() function."""
 
@@ -382,8 +386,7 @@ class TestConfigure:
         ):
             endpoint.configure("test_endpoint")
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_timeout(self, mock_system):
+    def test_timeout(self):
         """Test that configure raises TimeoutError when subprocess times out."""
         pwd = pathlib.Path(__file__).parent.resolve()
         config_dir_test = pwd / "test_output" / ".globus_compute_timeout"
@@ -401,8 +404,7 @@ class TestConfigure:
                     "timeout_test", config_dir=str(config_dir_test), timeout=0.1
                 )
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_command_failure(self, mock_system):
+    def test_command_failure(self):
         """Test that configure raises RuntimeError when command fails."""
         pwd = pathlib.Path(__file__).parent.resolve()
         config_dir_test = pwd / "test_output" / ".globus_compute_fail"
@@ -417,8 +419,7 @@ class TestConfigure:
             with pytest.raises(RuntimeError, match="Failed to configure endpoint"):
                 endpoint.configure("fail_test", config_dir=str(config_dir_test))
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_yaml_read_error(self, mock_system):
+    def test_yaml_read_error(self):
         """Test that configure returns False when YAML read fails."""
         pwd = pathlib.Path(__file__).parent.resolve()
         config_dir_test = pwd / "test_output" / ".globus_compute_yaml_read"
@@ -542,6 +543,10 @@ class TestConfigure:
                 endpoint.configure("path_fail_test", config_dir=str(config_dir_test))
 
 
+@pytest.mark.skipif(
+    not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="globus-compute-endpoint is not installed",
+)
 class TestStart:
     """Tests for start() function."""
 
@@ -556,15 +561,13 @@ class TestStart:
         ):
             endpoint.start("test_endpoint")
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_login_required(self, mock_system):
+    def test_login_required(self):
         """Test that start raises RuntimeError when login is required."""
         with patch("chiltepin.endpoint.login_required", return_value=True):
             with pytest.raises(RuntimeError, match="Chiltepin login is required"):
                 endpoint.start("test_endpoint")
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_timeout(self, mock_system):
+    def test_timeout(self):
         """Test that start raises TimeoutError when endpoint doesn't start in time."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
             with patch("os.fork", return_value=1):  # Parent process
@@ -576,8 +579,7 @@ class TestStart:
                             with pytest.raises(TimeoutError, match="Timeout of"):
                                 endpoint.start("test_endpoint", timeout=0.1)
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_timeout_with_errors(self, mock_system):
+    def test_timeout_with_errors(self):
         """Test that start raises TimeoutError with error message when available."""
         start_time = [time.time()]
 
@@ -600,8 +602,7 @@ class TestStart:
                             with pytest.raises(TimeoutError, match="Startup errors:"):
                                 endpoint.start("test_endpoint", timeout=0.1)
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_failure_with_errors(self, mock_system):
+    def test_failure_with_errors(self):
         """Test that start raises RuntimeError when endpoint fails to start with errors."""
         call_count = [0]
 
@@ -624,8 +625,7 @@ class TestStart:
                             ):
                                 endpoint.start("test_endpoint", timeout=5)
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_cleanup_error(self, mock_system):
+    def test_cleanup_error(self):
         """Test that start handles OSError gracefully when cleaning up temp file."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
             with patch("os.fork", return_value=1):  # Parent process
@@ -701,6 +701,10 @@ class TestReadStartupErrors:
             assert error_msg == ""
 
 
+@pytest.mark.skipif(
+    not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="globus-compute-endpoint is not installed",
+)
 class TestStop:
     """Tests for stop() function."""
 
@@ -715,15 +719,13 @@ class TestStop:
         ):
             endpoint.stop("test_endpoint")
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_login_required(self, mock_system):
+    def test_login_required(self):
         """Test that stop raises RuntimeError when login is required."""
         with patch("chiltepin.endpoint.login_required", return_value=True):
             with pytest.raises(RuntimeError, match="Chiltepin login is required"):
                 endpoint.stop("test_endpoint")
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_timeout(self, mock_system):
+    def test_timeout(self):
         """Test that stop raises TimeoutError when endpoint doesn't stop in time."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
             with patch("chiltepin.endpoint.get_config"):
@@ -732,8 +734,7 @@ class TestStop:
                         with pytest.raises(TimeoutError, match="Timeout of"):
                             endpoint.stop("test_endpoint", timeout=0.1)
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_with_psutil_timeout(self, mock_system):
+    def test_with_psutil_timeout(self):
         """Test that stop retries when psutil.TimeoutExpired is raised."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
             with patch("chiltepin.endpoint.get_config"):
@@ -749,6 +750,10 @@ class TestStop:
                         assert mock_stop.call_count == 2
 
 
+@pytest.mark.skipif(
+    not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="globus-compute-endpoint is not installed",
+)
 class TestDelete:
     """Tests for delete() function."""
 
@@ -763,15 +768,13 @@ class TestDelete:
         ):
             endpoint.delete("test_endpoint")
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_login_required(self, mock_system):
+    def test_login_required(self):
         """Test that delete raises RuntimeError when login is required."""
         with patch("chiltepin.endpoint.login_required", return_value=True):
             with pytest.raises(RuntimeError, match="Chiltepin login is required"):
                 endpoint.delete("test_endpoint")
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_timeout(self, mock_system):
+    def test_timeout(self):
         """Test that delete raises TimeoutError when endpoint deletion times out."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
             with patch("chiltepin.endpoint.get_config"):
@@ -780,8 +783,7 @@ class TestDelete:
                         with pytest.raises(TimeoutError, match="Timeout of"):
                             endpoint.delete("test_endpoint", timeout=0.1)
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_with_config_error(self, mock_system):
+    def test_with_config_error(self):
         """Test that delete uses force=True when get_config raises exception."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
             with patch(
@@ -795,8 +797,7 @@ class TestDelete:
                         # Verify delete was called with force=True
                         assert mock_delete.call_args[1]["force"] is True
 
-    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
-    def test_with_deletion_error(self, mock_system):
+    def test_with_deletion_error(self):
         """Test that delete raises RuntimeError when Endpoint.delete_endpoint fails."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
             with patch("chiltepin.endpoint.get_config"):
@@ -918,7 +919,9 @@ class TestEndpointManagementUnavailable:
         """Test configure raises ImportError when endpoint library not available."""
         endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
         endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
-        with pytest.raises(ImportError, match="test import error"):
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
             endpoint.configure("test_endpoint")
 
     @patch("chiltepin.endpoint.platform.system", return_value="Linux")
@@ -926,7 +929,9 @@ class TestEndpointManagementUnavailable:
         """Test show raises ImportError when endpoint library not available."""
         endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
         endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
-        with pytest.raises(ImportError, match="test import error"):
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
             endpoint.show()
 
     @patch("chiltepin.endpoint.platform.system", return_value="Linux")
@@ -934,7 +939,9 @@ class TestEndpointManagementUnavailable:
         """Test start raises ImportError when endpoint library not available."""
         endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
         endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
-        with pytest.raises(ImportError, match="test import error"):
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
             endpoint.start("test_endpoint")
 
     @patch("chiltepin.endpoint.platform.system", return_value="Linux")
@@ -942,7 +949,9 @@ class TestEndpointManagementUnavailable:
         """Test stop raises ImportError when endpoint library not available."""
         endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
         endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
-        with pytest.raises(ImportError, match="test import error"):
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
             endpoint.stop("test_endpoint")
 
     @patch("chiltepin.endpoint.platform.system", return_value="Linux")
@@ -950,5 +959,7 @@ class TestEndpointManagementUnavailable:
         """Test delete raises ImportError when endpoint library not available."""
         endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
         endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
-        with pytest.raises(ImportError, match="test import error"):
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
             endpoint.delete("test_endpoint")

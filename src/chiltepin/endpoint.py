@@ -156,7 +156,11 @@ def _check_endpoint_management_available():
         )
 
     if not ENDPOINT_MANAGEMENT_AVAILABLE:
-        raise _ENDPOINT_IMPORT_ERROR
+        raise ImportError(
+            "Endpoint management requires the 'globus-compute-endpoint' package, "
+            "which is a Linux-only dependency. If you are on Linux, please install "
+            "'globus-compute-endpoint' to use endpoint management features."
+        ) from _ENDPOINT_IMPORT_ERROR
 
 
 def get_chiltepin_apps() -> (GlobusApp, GlobusApp):
