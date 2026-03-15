@@ -9,7 +9,7 @@ name = "chiltepin"
 version = "0.1.1"
 dependencies = [
   "globus-compute-sdk>=4.3.0,<4.7.0",
-  "globus-compute-endpoint>=4.3.0,<4.7.0",
+  "globus-compute-endpoint>=4.3.0,<4.7.0; platform_system == 'Linux'",
   "parsl>=2025.12.1",
 ]
 requires-python = ">=3.10.0"
