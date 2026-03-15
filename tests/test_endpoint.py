@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
 import os
 import pathlib
 import platform
@@ -868,10 +869,6 @@ class TestEndpointManagementUnavailable:
         """Test that module handles ImportError correctly at import time."""
         import sys
 
-        # Remove the endpoint module if it's already imported
-        if "chiltepin.endpoint" in sys.modules:
-            del sys.modules["chiltepin.endpoint"]
-
         # Mock the globus_compute_endpoint packages to raise ImportError
         original_modules = {}
         mock_modules = [
@@ -887,8 +884,10 @@ class TestEndpointManagementUnavailable:
             sys.modules[mod_name] = None
 
         try:
-            # This should trigger the ImportError and except block
-            import chiltepin.endpoint as test_endpoint
+            # Reload the existing module object to trigger ImportError handling
+            # This avoids creating a new module instance that could cause
+            # cross-test contamination
+            test_endpoint = importlib.reload(endpoint)
 
             # Verify the except block executed correctly
             assert test_endpoint.ENDPOINT_MANAGEMENT_AVAILABLE is False
@@ -896,20 +895,15 @@ class TestEndpointManagementUnavailable:
             assert test_endpoint.get_config is None
             assert test_endpoint.Endpoint is None
         finally:
-            # Clean up: restore original modules
+            # Restore original module state
             for mod_name in mock_modules:
                 if mod_name in original_modules:
                     sys.modules[mod_name] = original_modules[mod_name]
                 elif mod_name in sys.modules:
                     del sys.modules[mod_name]
 
-            # Restore the real endpoint module
-            if "chiltepin.endpoint" in sys.modules:
-                del sys.modules["chiltepin.endpoint"]
-            import chiltepin.endpoint
-
-            # Re-bind to the test's endpoint reference
-            globals()["endpoint"] = chiltepin.endpoint
+            # Reload the module again to restore working state
+            importlib.reload(endpoint)
 
     @patch("chiltepin.endpoint.platform.system", return_value="Linux")
     def test_configure_not_available(self, mock_system):
