@@ -22,7 +22,6 @@ import chiltepin.endpoint as endpoint
 @pytest.mark.skipif(
     platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
     reason="Endpoint management requires Linux and globus-compute-endpoint",
-
 )
 class TestEndpointIntegration:
     """Integration tests for endpoint lifecycle: configure -> start -> stop -> delete.
