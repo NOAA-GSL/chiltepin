@@ -4,13 +4,19 @@ Testing
 The Chiltepin test suite uses pytest and requires an editable installation of the 
 package (achieved using the ``pip install -e ".[test]"`` installation step).
 
+.. note::
+   The full test suite requires HPC resources (Slurm) and is designed to run on Linux
+   or within the Docker container. macOS and Windows users should use the Docker
+   container (see :doc:`container`) to run the complete test suite.
+
 Prerequisites
 -------------
 
 Before running tests, ensure you have:
 
-1. Installed Chiltepin with test dependencies: ``pip install -e ".[test]"``
-2. Authenticated with Globus (for Globus Compute and Globus Transfer tests)
+1. Installed Chiltepin with test dependencies: ``pip install -e ".[test]"
+2. Access to an HPC system with Slurm, or use the Docker container
+3. Authenticated with Globus (for Globus Compute and Globus Transfer tests)
 
 Globus Authentication
 ---------------------
@@ -27,24 +33,24 @@ This will open a web browser, or provide a URL, for you to complete the authenti
 Platform-Specific Testing
 -------------------------
 
-Some tests are platform-specific and will be automatically skipped on unsupported platforms:
+**Test Suite Requirements**
+  The full test suite requires Slurm/HPC resources. On macOS and Windows, use the
+  Docker container which provides a Slurm environment. See :doc:`container` for details.
 
 **Endpoint Management Tests** (Linux only)
   Tests in ``test_endpoint.py`` (except platform-check tests) and ``test_globus_compute_*.py``
   require the ``globus-compute-endpoint`` package, which is only available on Linux.
   These tests will automatically skip on macOS and Windows with a clear reason message.
 
+**Platform Check Tests** (All platforms)
+  Tests that verify ``NotImplementedError`` is raised on non-Linux platforms run on all systems.
+
 **What This Means:**
 
-* **Linux developers**: All tests run normally
-* **macOS/Windows developers**: Can run and develop all non-endpoint tests locally
-  (task submission, data transfer, configuration, etc.)
-* **CI/CD**: Runs on Linux to ensure endpoint functionality is tested
-
-.. note::
-   Platform checks themselves (ensuring ``NotImplementedError`` is raised on non-Linux)
-   are tested on **all platforms**. Only the actual endpoint management functionality
-   requires Linux.
+* **Linux developers**: Can run full test suite with access to HPC/Slurm
+* **macOS/Windows developers**: Use Docker container for complete testing
+* **All developers**: Platform check tests run everywhere
+* **CI/CD**: Runs on Linux to ensure all functionality is tested
 
 Running Tests
 -------------

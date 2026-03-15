@@ -1,19 +1,22 @@
 Installation
 ============
 
-Chiltepin is supported on **Linux, macOS, and Windows**. All platforms support task submission and data transfer.
-Endpoint management (creating, starting, stopping, and deleting endpoints) is only available on Linux.
+Chiltepin is developed and tested on **Linux**. Task submission and data transfer use
+platform-agnostic libraries and should work on macOS and Windows, though testing primarily
+occurs on Linux. Endpoint management (creating, starting, stopping, and deleting endpoints)
+requires Linux.
 
 .. tip::
-   **macOS/Windows users:** You can submit tasks to existing endpoints and transfer data without any
-   limitations. For endpoint management, use the Docker container (see :doc:`container`) or a Linux machine.
+   **macOS/Windows users:** You can install and use Chiltepin for task submission and data
+   transfer. For endpoint management or to run the full test suite, use the Docker container
+   (see :doc:`container`).
 
 Prerequisites
 -------------
 
 * Python 3.10 or higher
-* Any operating system (Linux, macOS, Windows)
-* Linux required only for endpoint management
+* Linux recommended (macOS/Windows supported for task submission and data transfer)
+* Linux required for endpoint management
 
 Installing from PyPI
 --------------------

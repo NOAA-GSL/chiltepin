@@ -16,9 +16,10 @@ and [Globus](https://www.globus.org/) services.
 
 ### Platform Support
 
-Chiltepin is supported on **Linux, macOS, and Windows**:
-- ✅ Task submission and data transfer work on all platforms
-- 🐧 Endpoint management (creating, starting, stopping, and deleting endpoints) requires Linux or Docker
+Chiltepin is **developed and tested on Linux**:
+- ✅ Task submission and data transfer use platform-agnostic libraries (should work on Linux, macOS, Windows)
+- 🐧 Endpoint management requires Linux (or Docker container)
+- 🧪 Full test suite requires HPC resources (Docker container provides Slurm on macOS/Windows)
 
 ## Documentation
 
