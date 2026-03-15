@@ -20,8 +20,9 @@ import chiltepin.endpoint as endpoint
 
 
 @pytest.mark.skipif(
-    platform.system() != "Linux",
-    reason="Endpoint management is only supported on Linux",
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
+
 )
 class TestEndpointIntegration:
     """Integration tests for endpoint lifecycle: configure -> start -> stop -> delete.
@@ -376,8 +377,8 @@ class TestPlatformChecks:
     check happens before the library availability check.
     """
 
-    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     def test_configure_not_supported(self, mock_system, platform_name):
         """Test that configure raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -387,8 +388,8 @@ class TestPlatformChecks:
         ):
             endpoint.configure("test_endpoint")
 
-    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     def test_start_not_supported(self, mock_system, platform_name):
         """Test that start raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -398,8 +399,8 @@ class TestPlatformChecks:
         ):
             endpoint.start("test_endpoint")
 
-    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     def test_stop_not_supported(self, mock_system, platform_name):
         """Test that stop raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -409,8 +410,8 @@ class TestPlatformChecks:
         ):
             endpoint.stop("test_endpoint")
 
-    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     def test_delete_not_supported(self, mock_system, platform_name):
         """Test that delete raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -420,8 +421,8 @@ class TestPlatformChecks:
         ):
             endpoint.delete("test_endpoint")
 
-    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     def test_show_not_supported(self, mock_system, platform_name):
         """Test that show raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -431,8 +432,8 @@ class TestPlatformChecks:
         ):
             endpoint.show()
 
-    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     def test_exists_not_supported(self, mock_system, platform_name):
         """Test that exists raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
@@ -442,8 +443,8 @@ class TestPlatformChecks:
         ):
             endpoint.exists("test_endpoint")
 
-    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
     def test_is_running_not_supported(self, mock_system, platform_name):
         """Test that is_running raises NotImplementedError on Windows and macOS."""
         mock_system.return_value = platform_name
