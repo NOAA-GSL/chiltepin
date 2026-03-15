@@ -14,6 +14,19 @@ implementing distributed scientific workflows on HPC systems.
    This project is for research and exploration purposes only. It is not
    intended for use in operational production environments.
 
+Platform Support
+----------------
+
+Chiltepin is **developed and tested on Linux**:
+
+* ✅ **Task submission & data transfer**: Platform-agnostic design, should work on Linux, macOS, and Windows
+* 🐧 **Endpoint management**: Linux only (or use Docker container)
+* 🧪 **Full testing**: Requires HPC resources (Linux or Docker container)
+
+.. note::
+   While task submission and data transfer use platform-agnostic libraries, primary development
+   and testing occurs on Linux systems.
+
 Overview
 --------
 

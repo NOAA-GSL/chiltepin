@@ -5,6 +5,10 @@ Chiltepin provides command-line tools for managing Globus Compute endpoint lifec
 wrappers around the existing Globus Compute CLI, adding convenience features that make it easier to manage
 endpoints for use with Chiltepin. This page describes how to configure, start, stop, and manage endpoints.
 
+.. note::
+   **Platform Support**: Globus Compute endpoint management is only available on Linux systems.
+   Task submission and data transfer work on all platforms (Linux, macOS, Windows).
+
 Overview
 --------
 

@@ -4,13 +4,19 @@ Testing
 The Chiltepin test suite uses pytest and requires an editable installation of the 
 package (achieved using the ``pip install -e ".[test]"`` installation step).
 
+.. note::
+   The full test suite requires HPC resources (Slurm) and is designed to run on Linux
+   or within the Docker container. macOS and Windows users should use the Docker
+   container (see :doc:`container`) to run the complete test suite.
+
 Prerequisites
 -------------
 
 Before running tests, ensure you have:
 
 1. Installed Chiltepin with test dependencies: ``pip install -e ".[test]"``
-2. Authenticated with Globus (for Globus Compute and Globus Transfer tests)
+2. Access to an HPC system with Slurm, or use the Docker container
+3. Authenticated with Globus (for Globus Compute and Globus Transfer tests)
 
 Globus Authentication
 ---------------------
@@ -23,6 +29,28 @@ command to authenticate:
    $ chiltepin login
 
 This will open a web browser, or provide a URL, for you to complete the authentication flow.
+
+Platform-Specific Testing
+-------------------------
+
+**Test Suite Requirements**
+  The full test suite requires Slurm/HPC resources. On macOS and Windows, use the
+  Docker container which provides a Slurm environment. See :doc:`container` for details.
+
+**Endpoint Management Tests** (Linux only)
+  Tests in ``test_endpoint.py`` (except platform-check tests) and ``test_globus_compute_*.py``
+  require the ``globus-compute-endpoint`` package, which is only available on Linux.
+  These tests will automatically skip on macOS and Windows with a clear reason message.
+
+**Platform Check Tests** (All platforms)
+  Tests that verify ``NotImplementedError`` is raised on non-Linux platforms run on all systems.
+
+**What This Means:**
+
+* **Linux developers**: Can run full test suite with access to HPC/Slurm
+* **macOS/Windows developers**: Use Docker container for complete testing
+* **All developers**: Platform check tests run everywhere
+* **CI/CD**: Runs on Linux to ensure all functionality is tested
 
 Running Tests
 -------------
@@ -91,12 +119,12 @@ The test suite is organized into several files:
 * ``test_configure.py`` - Tests for configuration parsing and executor creation
 * ``test_cli.py`` - Tests for command-line interface functionality
 * ``test_tasks.py`` - Tests for task decorators
-* ``test_endpoint.py`` - Tests for Globus Compute endpoint management
+* ``test_endpoint.py`` - Tests for Globus Compute endpoint management (Linux only, except platform-check tests)
 * ``test_data.py`` - Tests for data handling utilities
 * ``test_parsl_hello.py`` - Basic Parsl integration tests
 * ``test_parsl_mpi.py`` - MPI-enabled Parsl integration tests
-* ``test_globus_compute_hello.py`` - Basic Globus Compute integration tests
-* ``test_globus_compute_mpi.py`` - MPI-enabled Globus Compute integration tests
+* ``test_globus_compute_hello.py`` - Basic Globus Compute integration tests (Linux only)
+* ``test_globus_compute_mpi.py`` - MPI-enabled Globus Compute integration tests (Linux only)
 
 Docker Container Testing
 ------------------------

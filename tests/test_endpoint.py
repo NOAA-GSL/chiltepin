@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
 import os
 import pathlib
+import platform
 import shutil
 import tempfile
 import time
@@ -18,6 +20,10 @@ import chiltepin.endpoint as endpoint
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
+)
 class TestEndpointIntegration:
     """Integration tests for endpoint lifecycle: configure -> start -> stop -> delete.
 
@@ -363,17 +369,98 @@ class TestLogout:
             mock_transfer_app.logout.assert_called_once()
 
 
-class TestConfigure:
-    """Tests for configure() function."""
+class TestPlatformChecks:
+    """Tests for platform checks on endpoint management functions.
 
-    @patch("platform.system", return_value="Windows")
-    def test_windows_not_supported(self, mock_system):
-        """Test that configure raises NotImplementedError on Windows."""
+    These tests verify that NotImplementedError is raised on non-Linux platforms.
+    They don't require globus-compute-endpoint to be installed since the platform
+    check happens before the library availability check.
+    """
+
+    @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    def test_configure_not_supported(self, mock_system, platform_name):
+        """Test that configure raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
         with pytest.raises(
             NotImplementedError,
-            match="Globus Compute endpoints are not supported on Windows",
+            match="Endpoint management is only supported on Linux",
         ):
             endpoint.configure("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    def test_start_not_supported(self, mock_system, platform_name):
+        """Test that start raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.start("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    def test_stop_not_supported(self, mock_system, platform_name):
+        """Test that stop raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.stop("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    def test_delete_not_supported(self, mock_system, platform_name):
+        """Test that delete raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.delete("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    def test_show_not_supported(self, mock_system, platform_name):
+        """Test that show raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.show()
+
+    @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    def test_exists_not_supported(self, mock_system, platform_name):
+        """Test that exists raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.exists("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system")
+    @pytest.mark.parametrize("platform_name", ["Windows", "Darwin"])
+    def test_is_running_not_supported(self, mock_system, platform_name):
+        """Test that is_running raises NotImplementedError on Windows and macOS."""
+        mock_system.return_value = platform_name
+        with pytest.raises(
+            NotImplementedError,
+            match="Endpoint management is only supported on Linux",
+        ):
+            endpoint.is_running("test_endpoint")
+
+
+@pytest.mark.skipif(
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
+)
+class TestConfigure:
+    """Tests for configure() function."""
 
     def test_timeout(self):
         """Test that configure raises TimeoutError when subprocess times out."""
@@ -532,17 +619,12 @@ class TestConfigure:
                 endpoint.configure("path_fail_test", config_dir=str(config_dir_test))
 
 
+@pytest.mark.skipif(
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
+)
 class TestStart:
     """Tests for start() function."""
-
-    @patch("platform.system", return_value="Windows")
-    def test_windows_not_supported(self, mock_system):
-        """Test that start raises NotImplementedError on Windows."""
-        with pytest.raises(
-            NotImplementedError,
-            match="Globus Compute endpoints are not supported on Windows",
-        ):
-            endpoint.start("test_endpoint")
 
     def test_login_required(self):
         """Test that start raises RuntimeError when login is required."""
@@ -684,17 +766,12 @@ class TestReadStartupErrors:
             assert error_msg == ""
 
 
+@pytest.mark.skipif(
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
+)
 class TestStop:
     """Tests for stop() function."""
-
-    @patch("platform.system", return_value="Windows")
-    def test_windows_not_supported(self, mock_system):
-        """Test that stop raises NotImplementedError on Windows."""
-        with pytest.raises(
-            NotImplementedError,
-            match="Globus Compute endpoints are not supported on Windows",
-        ):
-            endpoint.stop("test_endpoint")
 
     def test_login_required(self):
         """Test that stop raises RuntimeError when login is required."""
@@ -727,17 +804,12 @@ class TestStop:
                         assert mock_stop.call_count == 2
 
 
+@pytest.mark.skipif(
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
+)
 class TestDelete:
     """Tests for delete() function."""
-
-    @patch("platform.system", return_value="Windows")
-    def test_windows_not_supported(self, mock_system):
-        """Test that delete raises NotImplementedError on Windows."""
-        with pytest.raises(
-            NotImplementedError,
-            match="Globus Compute endpoints are not supported on Windows",
-        ):
-            endpoint.delete("test_endpoint")
 
     def test_login_required(self):
         """Test that delete raises RuntimeError when login is required."""
@@ -778,3 +850,107 @@ class TestDelete:
                 ):
                     with pytest.raises(RuntimeError, match="Error deleting endpoint"):
                         endpoint.delete("test_endpoint", timeout=5)
+
+
+class TestEndpointManagementUnavailable:
+    """Tests for when globus-compute-endpoint is not installed."""
+
+    def setup_method(self):
+        """Store original value."""
+        self.original_available = endpoint.ENDPOINT_MANAGEMENT_AVAILABLE
+        self.original_error = endpoint._ENDPOINT_IMPORT_ERROR
+
+    def teardown_method(self):
+        """Restore original value."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = self.original_available
+        endpoint._ENDPOINT_IMPORT_ERROR = self.original_error
+
+    def test_import_error_handling(self):
+        """Test that module handles ImportError correctly at import time."""
+        import sys
+
+        # Mock the globus_compute_endpoint packages to raise ImportError
+        original_modules = {}
+        mock_modules = [
+            "globus_compute_endpoint",
+            "globus_compute_endpoint.endpoint",
+            "globus_compute_endpoint.endpoint.config",
+            "globus_compute_endpoint.endpoint.config.utils",
+        ]
+
+        for mod_name in mock_modules:
+            if mod_name in sys.modules:
+                original_modules[mod_name] = sys.modules[mod_name]
+            sys.modules[mod_name] = None
+
+        try:
+            # Reload the existing module object to trigger ImportError handling
+            # This avoids creating a new module instance that could cause
+            # cross-test contamination
+            test_endpoint = importlib.reload(endpoint)
+
+            # Verify the except block executed correctly
+            assert test_endpoint.ENDPOINT_MANAGEMENT_AVAILABLE is False
+            assert test_endpoint._ENDPOINT_IMPORT_ERROR is not None
+            assert test_endpoint.get_config is None
+            assert test_endpoint.Endpoint is None
+        finally:
+            # Restore original module state
+            for mod_name in mock_modules:
+                if mod_name in original_modules:
+                    sys.modules[mod_name] = original_modules[mod_name]
+                elif mod_name in sys.modules:
+                    del sys.modules[mod_name]
+
+            # Reload the module again to restore working state
+            importlib.reload(endpoint)
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_configure_not_available(self, mock_system):
+        """Test configure raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
+            endpoint.configure("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_show_not_available(self, mock_system):
+        """Test show raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
+            endpoint.show()
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_start_not_available(self, mock_system):
+        """Test start raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
+            endpoint.start("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_stop_not_available(self, mock_system):
+        """Test stop raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
+            endpoint.stop("test_endpoint")
+
+    @patch("chiltepin.endpoint.platform.system", return_value="Linux")
+    def test_delete_not_available(self, mock_system):
+        """Test delete raises ImportError when endpoint library not available."""
+        endpoint.ENDPOINT_MANAGEMENT_AVAILABLE = False
+        endpoint._ENDPOINT_IMPORT_ERROR = ImportError("test import error")
+        with pytest.raises(
+            ImportError, match="Endpoint management requires.*globus-compute-endpoint"
+        ):
+            endpoint.delete("test_endpoint")

@@ -3,6 +3,7 @@
 import logging
 import os.path
 import pathlib
+import platform
 import re
 from datetime import datetime as dt
 
@@ -12,6 +13,11 @@ import chiltepin.configure
 import chiltepin.endpoint as endpoint
 from chiltepin import run_workflow
 from chiltepin.tasks import bash_task
+
+pytestmark = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="Endpoint management is only supported on Linux",
+)
 
 
 # Set up fixture to initialize and cleanup Parsl
