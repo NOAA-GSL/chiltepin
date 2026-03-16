@@ -43,10 +43,13 @@ This opens a browser for authentication or, if one is not available, provides a 
 the authentication manually. Follow the prompts to authorize Chiltepin.
 
 .. note::
-   Steps 2-4 (endpoint management) require a Linux system. If you're on macOS or Windows,
-   you can still submit tasks to existing endpoints and transfer data—you just can't manage
-   the endpoints themselves. For full functionality including endpoint management, macOS and
-   Windows users should use the Docker container (see :doc:`container`) or WSL2.
+   Steps 2-4 (endpoint management) require a Linux system.
+
+   * **macOS users:** You can still submit tasks to existing endpoints and transfer data, but
+     can't manage endpoints. For full functionality including endpoint management, use the
+     Docker container (see :doc:`container`).
+   * **Windows users:** Native Windows is not supported. Use the Docker container
+     (see :doc:`container`) or WSL2 with a Linux distribution for full functionality.
 
 Step 2: Configure an Endpoint
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
