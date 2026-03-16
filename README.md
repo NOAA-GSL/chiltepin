@@ -19,8 +19,9 @@ and [Globus](https://www.globus.org/) services.
 Chiltepin is **developed and tested on Linux**:
 - ✅ **Linux**: Full support for all features
 - 🍎 **macOS**: Supported for task submission and data transfer (endpoint management not available)
-- ❌ **Windows**: Not supported due to multiprocessing limitations
-- 🐳 **Docker**: Full test suite available via container on all platforms
+- ❌ **Windows**: Native execution not supported; chiltepin and its use of Parsl relies on fork-based
+multiprocessing
+- 🐳 **Docker**: Full LInux-based test suite and feature support available via container on all platforms
 
 ## Documentation
 

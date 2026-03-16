@@ -13,7 +13,10 @@ source:
 build:
   number: 0
   script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
-  skip: True  # [win or py<310 or py>=313]
+  # Skip Windows: chiltepin requires fork-based multiprocessing not available on Windows
+  # Skip Python <3.10: minimum supported version
+  # Skip Python >=3.13: transitive dependency pyzmq not yet available for Python 3.13
+  skip: true  # [win or py<310 or py>=313]
   entry_points:
     - chiltepin = chiltepin.cli:main
 requirements:

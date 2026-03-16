@@ -3,7 +3,7 @@ Installation
 
 Chiltepin is developed and tested on **Linux**. macOS is supported for task submission and
 data transfer, but endpoint management is Linux-only. **Windows is not supported** due to
-multiprocessing limitations.
+Chiltepin's and Parsl's reliance on fork-based multiprocessing.
 
 .. tip::
    **macOS and Windows users:** You can install and use Chiltepin for task submission and data
@@ -11,7 +11,7 @@ multiprocessing limitations.
    use the Docker container (see :doc:`container`).
 
 .. warning::
-   **Windows is not supported.** Chiltepin requires fork-based multiprocessing which
+   **Windows is not supported.** Chiltepin and its use of Parsl requires fork-based multiprocessing which
    is not available on Windows. Use the Docker container or WSL2 with a Linux distribution.
 
 Prerequisites

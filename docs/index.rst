@@ -21,12 +21,13 @@ Chiltepin is **developed and tested on Linux**:
 
 * ✅ **Linux**: Full support for all features
 * 🍎 **macOS**: Task submission and data transfer supported (endpoint management not available)
-* ❌ **Windows**: Not supported natively due to multiprocessing limitations (use Docker or WSL2)
+* ❌ **Windows**: Not supported natively due to reliance on POSIX ``fork`` semantics (use Docker or WSL2)
 * 🐳 **Docker**: Full support available via container on all platforms
 
 .. note::
    Windows users can use Chiltepin via Docker container or WSL2 with a Linux distribution.
-   Chiltepin requires fork-based multiprocessing which is not available on native Windows.
+   Chiltepin and its use of Parsl both require fork-based multiprocessing which is not available on
+   native Windows.
 
 Overview
 --------
