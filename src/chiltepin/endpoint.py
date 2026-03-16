@@ -152,7 +152,6 @@ def _check_endpoint_management_available():
     if platform.system() != "Linux":
         raise NotImplementedError(
             "Endpoint management is only supported on Linux. "
-            "Task submission and data transfer work on all platforms."
         )
 
     if not ENDPOINT_MANAGEMENT_AVAILABLE:

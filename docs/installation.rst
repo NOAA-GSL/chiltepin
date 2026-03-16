@@ -8,7 +8,7 @@ Chiltepin's and Parsl's reliance on fork-based multiprocessing.
 .. tip::
    **macOS users:** You can install and use Chiltepin for task submission and data
    transfer. **Windows users:** Native Windows is not supported; to use Chiltepin, run it
-   inside the Docker container or under WSL2 with a Linux distribution. (see :doc:`container`).
+   inside the Docker container or under WSL2 with a Linux distribution (see :doc:`container`).
 
 .. warning::
    **Windows is not supported.** Chiltepin's use of Parsl requires fork-based multiprocessing which
