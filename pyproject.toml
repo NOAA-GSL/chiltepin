@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chiltepin"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
   "globus-compute-sdk>=4.3.0,<4.7.0",
   "globus-compute-endpoint>=4.3.0,<4.7.0; platform_system == 'Linux'",

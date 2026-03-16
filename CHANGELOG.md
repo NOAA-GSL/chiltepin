@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-03-16
+
+### Changed
+- Gracefully isolate Linux-only endpoint management features
+  - Added platform detection with informative error messages for non-Linux systems
+  - Endpoint management (start/stop/configure) now limited to Linux platforms
+  - Task submission and data transfer continue to work on all platforms (Linux, macOS, Windows)
+  - Enhanced test suite to skip endpoint tests on unsupported platforms
+  - Updated documentation to clarify platform support
+
+### Fixed
+- Proper handling of `globus-compute-endpoint` import errors on non-Linux platforms
+- Improved error messages to guide users on platform-specific limitations
+
+[0.1.2]: https://github.com/NOAA-GSL/chiltepin/releases/tag/v0.1.2
+
 ## [0.1.1] - 2026-03-12
 
 ### Changed
