@@ -11,7 +11,7 @@ Chiltepin's and Parsl's reliance on fork-based multiprocessing.
    inside the Docker container or under WSL2 with a Linux distribution. (see :doc:`container`).
 
 .. warning::
-   **Windows is not supported.** Chiltepin and its use of Parsl requires fork-based multiprocessing which
+   **Windows is not supported.** Chiltepin's use of Parsl requires fork-based multiprocessing which
    is not available on Windows. Use the Docker container or WSL2 with a Linux distribution.
 
 Prerequisites
