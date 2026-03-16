@@ -1,22 +1,25 @@
 Installation
 ============
 
-Chiltepin is developed and tested on **Linux**. Task submission and data transfer use
-platform-agnostic libraries and should work on macOS and Windows, though testing primarily
-occurs on Linux. Endpoint management (creating, starting, stopping, and deleting endpoints)
-requires Linux.
+Chiltepin is developed and tested on **Linux**. macOS is supported for task submission and
+data transfer, but endpoint management is Linux-only. **Windows is not supported** due to
+Chiltepin's and Parsl's reliance on fork-based multiprocessing.
 
 .. tip::
-   **macOS/Windows users:** You can install and use Chiltepin for task submission and data
-   transfer. For endpoint management or to run the full test suite, use the Docker container
-   (see :doc:`container`).
+   **macOS users:** You can install and use Chiltepin for task submission and data
+   transfer. **Windows users:** Native Windows is not supported; to use Chiltepin, run it
+   inside the Docker container or under WSL2 with a Linux distribution (see :doc:`container`).
+
+.. warning::
+   **Windows is not supported.** Chiltepin's use of Parsl requires fork-based multiprocessing which
+   is not available on Windows. Use the Docker container or WSL2 with a Linux distribution.
 
 Prerequisites
 -------------
 
 * Python 3.10 or higher
-* Linux recommended (macOS/Windows supported for task submission and data transfer)
-* Linux required for endpoint management
+* Linux (required for endpoint management features)
+* macOS (supported for task submission and data transfer only)
 
 Installing from PyPI
 --------------------
@@ -87,11 +90,15 @@ Chiltepin has the following core dependencies:
 
 * ``globus-compute-sdk`` (>=4.3.0,<4.7.0)
 * ``globus-compute-endpoint`` (>=4.3.0,<4.7.0) - **Linux only**
+* ``globus-sdk``
 * ``parsl`` (>=2025.12.1)
+* ``psutil``
+* ``pyyaml``
 
 These will be automatically installed when you install Chiltepin.
 
 .. note::
-   ``globus-compute-endpoint`` is only available on Linux. On macOS and Windows, Chiltepin
-   will skip this dependency. Task submission and data transfer work on all platforms;
-   only endpoint management requires Linux.
+   ``globus-compute-endpoint`` is only available on Linux. On macOS, Chiltepin
+   will be installed without endpoint management features (task submission and data
+   transfer still work). Windows is not supported natively; use Docker or WSL2 with
+   a Linux distribution.

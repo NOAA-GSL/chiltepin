@@ -7,7 +7,8 @@ endpoints for use with Chiltepin. This page describes how to configure, start, s
 
 .. note::
    **Platform Support**: Globus Compute endpoint management is only available on Linux systems.
-   Task submission and data transfer work on all platforms (Linux, macOS, Windows).
+   Task submission and data transfer are supported on Linux and macOS. Windows is not supported
+   natively (use Docker or WSL2).
 
 Overview
 --------

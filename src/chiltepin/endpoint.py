@@ -151,8 +151,11 @@ def _check_endpoint_management_available():
     """
     if platform.system() != "Linux":
         raise NotImplementedError(
-            "Endpoint management is only supported on Linux. "
-            "Task submission and data transfer work on all platforms."
+            "Endpoint management is only supported on Linux.\n\n"
+            "macOS users: All features except endpoint management are available. "
+            "Use the Docker container for full functionality including endpoint management.\n\n"
+            "Windows users: Native Windows is not supported. "
+            "Use the Docker container or WSL2 with a Linux distribution."
         )
 
     if not ENDPOINT_MANAGEMENT_AVAILABLE:

@@ -1,35 +1,42 @@
 # SPDX-License-Identifier: Apache-2.0
 
 {% set version = "0.1.2" %}
-{% set python_min = "3.10" %}
 
 package:
   name: chiltepin
   version: {{ version }}
 
 source:
-  url: https://pypi.io/packages/source/c/chiltepin/chiltepin-{{ version }}.tar.gz
+  url: https://pypi.org/packages/source/c/chiltepin/chiltepin-{{ version }}.tar.gz
   sha256: 9b89f2f4dad5270574a8f31b5be5828366339c1ea8e6a931758721b3ff274c6f
 
 build:
   number: 0
-  script: {{ PYTHON }} -m pip install . --no-deps --no-build-isolation -vv
-  noarch: python
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  # Skip Windows: chiltepin requires fork-based multiprocessing not available on Windows
+  # Skip Python <3.10: minimum supported version
+  # Skip Python >=3.13 for conda builds: transitive dependency pyzmq not yet available on conda-forge for Python 3.13
+  skip: true  # [win or py<310 or py>=313]
   entry_points:
     - chiltepin = chiltepin.cli:main
-
 requirements:
   host:
-    - python {{ python_min }}
+    - python
     - pip
     - setuptools >=61.0
   run:
-    - python >={{ python_min }}
+    - python
     - globus-compute-sdk >=4.3.0,<4.7.0
     - globus-compute-endpoint >=4.3.0,<4.7.0  # [linux]
+    - globus-sdk
     - parsl >=2025.12.1
+    - psutil
+    - pyyaml
 
 test:
+  requires:
+    - pip
+    - python
   imports:
     - chiltepin
     - chiltepin.cli
@@ -37,12 +44,9 @@ test:
     - chiltepin.endpoint
     - chiltepin.tasks
     - chiltepin.data
-  requires:
-    - pip
-    - python {{ python_min }}
   commands:
-    - chiltepin --help
     - pip check
+    - chiltepin --help
 
 about:
   home: https://github.com/NOAA-GSL/chiltepin
