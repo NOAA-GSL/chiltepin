@@ -9,7 +9,7 @@ package:
 
 source:
   url: https://pypi.io/packages/source/c/chiltepin/chiltepin-{{ version }}.tar.gz
-  sha256: 771dbee9bcd04823a6da8d1e1fa03aeb8a44bab3ba20a65e81914e2079ace742
+  sha256: 9b89f2f4dad5270574a8f31b5be5828366339c1ea8e6a931758721b3ff274c6f
 
 build:
   number: 0
