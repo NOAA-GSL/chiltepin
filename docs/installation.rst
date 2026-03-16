@@ -6,9 +6,9 @@ data transfer, but endpoint management is Linux-only. **Windows is not supported
 Chiltepin's and Parsl's reliance on fork-based multiprocessing.
 
 .. tip::
-   **macOS and Windows users:** You can install and use Chiltepin for task submission and data
-   transfer. For full functionality including endpoint management and to run the full test suite,
-   use the Docker container (see :doc:`container`).
+   **macOS users:** You can install and use Chiltepin for task submission and data
+   transfer. **Windows users:** Native Windows is not supported; to use Chiltepin, run it
+   inside the Docker container or under WSL2 with a Linux distribution. (see :doc:`container`).
 
 .. warning::
    **Windows is not supported.** Chiltepin and its use of Parsl requires fork-based multiprocessing which
