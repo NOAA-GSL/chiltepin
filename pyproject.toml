@@ -10,7 +10,10 @@ version = "0.1.2"
 dependencies = [
   "globus-compute-sdk>=4.3.0,<4.7.0",
   "globus-compute-endpoint>=4.3.0,<4.7.0; platform_system == 'Linux'",
+  "globus-sdk",
   "parsl>=2025.12.1",
+  "psutil",
+  "pyyaml",
 ]
 requires-python = ">=3.10.0"
 authors = [
@@ -27,7 +30,8 @@ classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
   "Intended Audience :: Developers",
-  "Operating System :: OS Independent",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",

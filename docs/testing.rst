@@ -48,8 +48,8 @@ Platform-Specific Testing
 **What This Means:**
 
 * **Linux developers**: Can run full test suite with access to HPC/Slurm
-* **macOS/Windows developers**: Use Docker container for complete testing
-* **All developers**: Platform check tests run everywhere
+* **macOS and Windows developers**: Use Docker container for complete testing
+* **All developers**: Platform check tests run on Linux and macOS
 * **CI/CD**: Runs on Linux to ensure all functionality is tested
 
 Running Tests

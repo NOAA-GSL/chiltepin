@@ -7,7 +7,8 @@ Slurm cluster that serves as a backend for running workflow applications.
 
 This is particularly useful for:
 
-* Development and testing on macOS or Windows
+* Full functionality on macOS (endpoint management requires Linux)
+* Running Chiltepin on Windows (native Windows is not supported)
 * Creating a consistent testing environment
 * Demonstrating Chiltepin capabilities without access to HPC systems
 

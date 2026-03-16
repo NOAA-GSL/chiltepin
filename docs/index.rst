@@ -19,13 +19,14 @@ Platform Support
 
 Chiltepin is **developed and tested on Linux**:
 
-* ✅ **Task submission & data transfer**: Platform-agnostic design, should work on Linux, macOS, and Windows
-* 🐧 **Endpoint management**: Linux only (or use Docker container)
-* 🧪 **Full testing**: Requires HPC resources (Linux or Docker container)
+* ✅ **Linux**: Full support for all features
+* 🍎 **macOS**: Task submission and data transfer supported (endpoint management not available)
+* ❌ **Windows**: Not supported natively due to multiprocessing limitations (use Docker or WSL2)
+* 🐳 **Docker**: Full support available via container on all platforms
 
 .. note::
-   While task submission and data transfer use platform-agnostic libraries, primary development
-   and testing occurs on Linux systems.
+   Windows users can use Chiltepin via Docker container or WSL2 with a Linux distribution.
+   Chiltepin requires fork-based multiprocessing which is not available on native Windows.
 
 Overview
 --------
