@@ -1,30 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 
-{% set name = "chiltepin" %}
-{% set version = "0.1.1" %}
+{% set version = "0.1.2" %}
+{% set python_min = "3.10" %}
 
 package:
-  name: {{ name|lower }}
+  name: chiltepin
   version: {{ version }}
 
 source:
-  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/chiltepin-{{ version }}.tar.gz
+  url: https://pypi.io/packages/source/c/chiltepin/chiltepin-{{ version }}.tar.gz
   sha256: 771dbee9bcd04823a6da8d1e1fa03aeb8a44bab3ba20a65e81914e2079ace742
 
 build:
   number: 0
-  script: {{ PYTHON }} -m pip install . -vv
+  script: {{ PYTHON }} -m pip install . --no-deps --no-build-isolation -vv
   noarch: python
   entry_points:
     - chiltepin = chiltepin.cli:main
 
 requirements:
   host:
-    - python >=3.10
+    - python {{ python_min }}
     - pip
     - setuptools >=61.0
   run:
-    - python >=3.10
+    - python >={{ python_min }}
     - globus-compute-sdk >=4.3.0,<4.7.0
     - globus-compute-endpoint >=4.3.0,<4.7.0  # [linux]
     - parsl >=2025.12.1
@@ -37,8 +37,12 @@ test:
     - chiltepin.endpoint
     - chiltepin.tasks
     - chiltepin.data
+  requires:
+    - pip
+    - python {{ python_min }}
   commands:
     - chiltepin --help
+    - pip check
 
 about:
   home: https://github.com/NOAA-GSL/chiltepin
@@ -54,5 +58,4 @@ about:
 
 extra:
   recipe-maintainers:
-    # Add your GitHub username(s) here
     - christopherwharrop-noaa
