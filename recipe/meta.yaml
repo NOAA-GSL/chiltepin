@@ -8,7 +8,7 @@ package:
 
 source:
   url: https://pypi.org/packages/source/c/chiltepin/chiltepin-{{ version }}.tar.gz
-  sha256: UPDATE_AFTER_PYPI_RELEASE
+  sha256: 522620e7711dff246607d28f472700ccff76b6a3a9b34fc24b414a54d187b9dd
 
 build:
   number: 0
