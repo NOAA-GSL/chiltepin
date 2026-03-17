@@ -28,10 +28,10 @@ requirements:
     - python
     - globus-compute-sdk >=4.3.0,<4.7.0
     - globus-compute-endpoint >=4.3.0,<4.7.0  # [linux]
-    - globus-sdk
+    - globus-sdk >=3.65.0
     - parsl >=2025.12.1
-    - psutil
-    - pyyaml
+    - psutil <6.0
+    - pyyaml >=6.0
 
 test:
   requires:
