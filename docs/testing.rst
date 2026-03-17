@@ -5,8 +5,8 @@ The Chiltepin test suite uses pytest and requires an editable installation of th
 package (achieved using the ``pip install -e ".[test]"`` installation step).
 
 .. note::
-   The full test suite requires HPC resources (Slurm) and is designed to run on Linux
-   or within the Docker container. macOS and Windows users should use the Docker
+   The full test suite requires HPC resources (Slurm or PBSPro) and is designed to run on Linux
+   HPC systems or within the Docker container. macOS and Windows users should use the Docker
    container (see :doc:`container`) to run the complete test suite.
 
 Prerequisites
@@ -15,7 +15,7 @@ Prerequisites
 Before running tests, ensure you have:
 
 1. Installed Chiltepin with test dependencies: ``pip install -e ".[test]"``
-2. Access to an HPC system with Slurm, or use the Docker container
+2. Access to an HPC system with Slurm or PBSPro, or use the Docker container
 3. Authenticated with Globus (for Globus Compute and Globus Transfer tests)
 
 Globus Authentication
@@ -34,22 +34,30 @@ Platform-Specific Testing
 -------------------------
 
 **Test Suite Requirements**
-  The full test suite requires Slurm/HPC resources. On macOS and Windows, use the
-  Docker container which provides a Slurm environment. See :doc:`container` for details.
+  The full test suite requires Slurm or PBSPro schedulers and Globus Compute endpoint configurations.
+  You can run the full test suite by:
+  
+  1. Using an existing test config on the corresponding HPC system (Hera, Hercules, Ursa)
+  2. Creating a new test config for your Slurm/PBSPro system using existing configs as examples
+  3. Using the Docker container which provides a Slurm environment (see :doc:`container`)
+  
+  **macOS and Windows users**: Use the Docker container to run the complete test suite, as it
+  provides the required Slurm scheduler.
 
 **Endpoint Management Tests** (Linux only)
   Tests in ``test_endpoint.py`` (except platform-check tests) and ``test_globus_compute_*.py``
   require the ``globus-compute-endpoint`` package, which is only available on Linux.
   These tests will automatically skip on macOS and Windows with a clear reason message.
 
-**Platform Check Tests** (All platforms)
-  Tests that verify ``NotImplementedError`` is raised on non-Linux platforms run on all systems.
+**Platform Check Tests**
+  Tests that verify ``NotImplementedError`` is raised on non-Linux platforms. These run on
+  Linux and macOS to verify proper error handling.
 
 **What This Means:**
 
-* **Linux developers**: Can run full test suite with access to HPC/Slurm
-* **macOS and Windows developers**: Use Docker container for complete testing
-* **All developers**: Platform check tests run on all platforms
+* **Linux developers**: Can run full test suite with access to HPC/Slurm or PBSPro
+* **macOS developers**: Use Docker container for complete testing (includes endpoint management and Slurm)
+* **Windows developers**: Use Docker container (native Windows not supported)
 * **CI/CD**: Runs on Linux to ensure all functionality is tested
 
 Running Tests
