@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-03-17
+
+### Changed
+- **Clarified Windows is not supported**: Discovered during conda-forge builds that Parsl's
+  fork-based multiprocessing is incompatible with Windows
+  - Linux: Full support for all features
+  - macOS: Task submission and data transfer (endpoint management requires Linux)
+  - Windows: Not supported natively; use Docker or WSL2
+- Updated all documentation to accurately reflect platform limitations
+- Improved error messages in endpoint management to guide users by platform
+
+### Added
+- Explicitly declared previously implicit dependencies:
+  - `psutil` (used in endpoint management)
+  - `pyyaml` (used in configuration)
+  - `globus-sdk` (imported directly)
+
+[0.1.3]: https://github.com/NOAA-GSL/chiltepin/releases/tag/v0.1.3
+
 ## [0.1.2] - 2026-03-16
 
 ### Changed
