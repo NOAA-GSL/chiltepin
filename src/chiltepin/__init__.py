@@ -15,6 +15,7 @@ except PackageNotFoundError:
     __version__ = "dev"
 
 __all__ = [
+    "Workflow",
     "run_workflow",
     "run_workflow_from_file",
     "run_workflow_from_dict",
@@ -30,6 +31,7 @@ def __getattr__(name):
     """
     if name in __all__:
         from chiltepin.workflow import (  # noqa: F401
+            Workflow,
             run_workflow,
             run_workflow_from_dict,
             run_workflow_from_file,
