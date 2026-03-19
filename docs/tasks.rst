@@ -557,35 +557,98 @@ object-oriented workflow design:
 .. code-block:: python
 
    from chiltepin.tasks import python_task, bash_task
-   
+
    class DataProcessor:
        def __init__(self, config):
            self.config = config
-       
+
        @python_task
        def load_data(self, filename):
            import pandas as pd
            # Can access self and instance variables
            return pd.read_csv(filename, **self.config)
-       
+
        @python_task
        def transform_data(self, df):
            # Use instance configuration
            if self.config.get('normalize'):
                return (df - df.mean()) / df.std()
            return df
-       
+
        @bash_task
        def export_data(self, output_file):
            # self is available in method tasks
            format_type = self.config.get('export_format', 'csv')
            return f"convert_data --format {format_type} -o {output_file}"
-   
+
    # Create instance and use tasks
    processor = DataProcessor({'normalize': True, 'export_format': 'json'})
    data = processor.load_data("input.csv", executor=["compute"]).result()
    transformed = processor.transform_data(data, executor=["compute"]).result()
    exit_code = processor.export_data("output.json", executor=["compute"]).result()
+
+.. warning::
+   **Pickling Limitation**: When decorating class methods, the entire class instance
+   (``self``) must be picklable (serializable) because it gets sent to remote workers.
+   Classes that contain unpicklable objects—such as network connections, file handles,
+   database connections, remote proxies, or framework-specific objects—cannot be used
+   with task decorators.
+
+   **Workaround 1 - Standalone Functions**: Extract the task logic into a standalone
+   function and pass only picklable data as arguments:
+
+   .. code-block:: python
+
+      @python_task
+      def process_data(config, text):
+          # Task logic using only picklable data
+          return f"Processed {text} with {config}"
+
+      class MyService:
+          def __init__(self):
+              self.config = {"param": "value"}  # Picklable
+              self.connection = NetworkConnection()  # NOT picklable
+
+          def process(self, text):
+              # Pass only picklable data to the task
+              return process_data(self.config, text)
+
+   **Workaround 2 - Helper Class**: Create a separate helper class with only picklable
+   state to hold the task methods, while keeping unpicklable objects in the main class:
+
+   .. code-block:: python
+
+      class TaskBehavior:
+          """Helper class with only picklable state for workflow tasks."""
+
+          @python_task
+          def process_data(self, config, text):
+              # Task logic - self can be empty or contain only picklable data
+              return f"Processed {text} with {config}"
+
+          @python_task
+          def analyze_result(self, data):
+              # Another task method
+              return len(data)
+
+      class MyService:
+          def __init__(self):
+              self.config = {"param": "value"}  # Picklable
+              self.connection = NetworkConnection()  # NOT picklable
+              # Create helper instance for tasks
+              self.tasks = TaskBehavior()
+
+          def process(self, text):
+              # Call task through helper instance
+              future = self.tasks.process_data(self.config, text, executor=["compute"])
+              return future.result()
+
+          def analyze(self, data):
+              return self.tasks.analyze_result(data, executor=["compute"]).result()
+
+   This pattern is especially useful when integrating with frameworks that have
+   unpicklable objects, as it cleanly separates the workflow task definitions from
+   the framework-specific state.
 
 .. warning::
    **Mutable Object State**: When using class methods as tasks, be aware that mutable
