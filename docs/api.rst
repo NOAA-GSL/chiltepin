@@ -39,9 +39,3 @@ Data Module
    :members:
    :show-inheritance:
 
-Command-Line Interface
-----------------------
-
-.. automodule:: chiltepin.cli
-   :members:
-   :show-inheritance:
