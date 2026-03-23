@@ -106,10 +106,6 @@ class Workflow:
         RuntimeError
             If workflow is already started.
         """
-        # dfk = parsl.dfk()
-        # if dfk:
-        #     dfk.cleanup()
-        #     parsl.clear()
         if self.dfk is not None:
             raise RuntimeError("Workflow already started. Call cleanup() first.")
 
@@ -147,6 +143,8 @@ class Workflow:
             This is used when cleaning up after a user exception to ensure
             the user's exception is not masked by cleanup exceptions.
 
+        Notes
+        -----
         All cleanup operations are attempted even if some fail. If multiple
         cleanup operations raise exceptions and suppress_exceptions is False,
         they are chained together using __cause__, with the last exception
