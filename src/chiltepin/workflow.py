@@ -172,7 +172,7 @@ class Workflow:
                     )
                 else:
                     _logger.warning("Exception during dfk.cleanup()", exc_info=True)
-                    cleanup_exception = e
+                cleanup_exception = e
 
         # Always attempt parsl.clear()
         try:
@@ -185,12 +185,12 @@ class Workflow:
                 )
             else:
                 _logger.warning("Exception during parsl.clear()", exc_info=True)
-                if cleanup_exception is None:
-                    cleanup_exception = e
-                else:
-                    # Chain this exception to the previous one
-                    e.__cause__ = cleanup_exception
-                    cleanup_exception = e
+            if cleanup_exception is None:
+                cleanup_exception = e
+            else:
+                # Chain this exception to the previous one
+                e.__cause__ = cleanup_exception
+                cleanup_exception = e
 
         # Always attempt logger cleanup
         if self.logger_handler is not None:
@@ -204,16 +204,16 @@ class Workflow:
                     )
                 else:
                     _logger.warning("Exception during logger cleanup", exc_info=True)
-                    if cleanup_exception is None:
-                        cleanup_exception = e
-                    else:
-                        # Chain this exception to the previous one
-                        e.__cause__ = cleanup_exception
-                        cleanup_exception = e
+                if cleanup_exception is None:
+                    cleanup_exception = e
+                else:
+                    # Chain this exception to the previous one
+                    e.__cause__ = cleanup_exception
+                    cleanup_exception = e
 
-        # Only reset state if cleanup succeeded
-        # If cleanup failed, preserve state for debugging and potential retry
-        if cleanup_exception is None or suppress_exceptions:
+        # Only reset state if cleanup fully succeeded
+        # If cleanup failed, preserve state for debugging even if suppressing exceptions
+        if cleanup_exception is None:
             self.dfk = None
             self.logger_handler = None
 

@@ -408,6 +408,43 @@ class TestWorkflowLifecycle:
         except Exception:
             pass
 
+    def test_cleanup_preserves_state_when_suppressing_exceptions(self, tmp_path):
+        """Test that cleanup preserves state even when suppressing exceptions."""
+        project_root = pathlib.Path(__file__).parent.parent.resolve()
+
+        config = {
+            "test-exec": {
+                "provider": "localhost",
+                "cores_per_node": 1,
+                "max_workers_per_node": 1,
+                "environment": [f"export PYTHONPATH=${{PYTHONPATH}}:{project_root}"],
+            }
+        }
+
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo_lifecycle5"))
+        workflow.start()
+        dfk_ref = workflow.dfk
+
+        # Mock cleanup to fail
+        real_cleanup = parsl.DataFlowKernel.cleanup
+        with mock.patch("parsl.DataFlowKernel.cleanup") as mock_cleanup:
+            mock_cleanup.side_effect = RuntimeError("Cleanup failed")
+
+            # Cleanup with suppress_exceptions=True should not raise
+            workflow.cleanup(suppress_exceptions=True)
+
+            # State should still be preserved when cleanup fails
+            # even though we suppressed the exception
+            assert workflow.dfk is not None
+            assert workflow.dfk is dfk_ref
+
+        # Now actually clean up for real
+        try:
+            real_cleanup(dfk_ref)
+            parsl.clear()
+        except Exception:
+            pass
+
 
 class TestWorkflowExceptionHandling:
     """Test exception handling during workflow cleanup."""
