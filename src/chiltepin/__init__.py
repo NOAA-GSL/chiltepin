@@ -22,9 +22,9 @@ __all__ = [
 def __getattr__(name):
     """Lazy import of Workflow to avoid loading Parsl unnecessarily.
 
-    This allows users to import other chiltepin submodules (like configure, tasks)
-    without triggering the import of Parsl and its dependencies unless they
-    actually use the Workflow class.
+    The Workflow class is not imported until explicitly accessed, avoiding the
+    overhead of loading Parsl and its dependencies when they're not needed.
+    This also enables attribute-style access to submodules (e.g., chiltepin.configure).
     """
     if name in __all__:
         from chiltepin.workflow import Workflow  # noqa: F401

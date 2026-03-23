@@ -340,6 +340,74 @@ class TestWorkflowLifecycle:
                     with Workflow(config, run_dir=str(tmp_path / "runinfo_lifecycle2")):
                         pass
 
+    def test_explicit_start_cleans_up_on_failure(self, tmp_path):
+        """Test that explicit start() cleans up partial state on failure."""
+        project_root = pathlib.Path(__file__).parent.parent.resolve()
+
+        config = {
+            "test-exec": {
+                "provider": "localhost",
+                "cores_per_node": 1,
+                "max_workers_per_node": 1,
+                "environment": [f"export PYTHONPATH=${{PYTHONPATH}}:{project_root}"],
+            }
+        }
+
+        # Mock parsl.load to fail after logger is set up
+        with mock.patch("parsl.load") as mock_load:
+            mock_load.side_effect = RuntimeError("Load failed")
+
+            workflow = Workflow(
+                config,
+                run_dir=str(tmp_path / "runinfo_lifecycle3"),
+                log_file=str(tmp_path / "test.log"),
+            )
+
+            # Verify start() raises and cleans up partial state
+            with pytest.raises(RuntimeError, match="Load failed"):
+                workflow.start()
+
+            # Verify state was reset - logger_handler should be None
+            assert workflow.logger_handler is None
+            assert workflow.dfk is None
+
+    def test_cleanup_preserves_state_on_failure(self, tmp_path):
+        """Test that cleanup preserves state when it fails for debugging."""
+        project_root = pathlib.Path(__file__).parent.parent.resolve()
+
+        config = {
+            "test-exec": {
+                "provider": "localhost",
+                "cores_per_node": 1,
+                "max_workers_per_node": 1,
+                "environment": [f"export PYTHONPATH=${{PYTHONPATH}}:{project_root}"],
+            }
+        }
+
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo_lifecycle4"))
+        workflow.start()
+        dfk_ref = workflow.dfk
+
+        # Mock cleanup to fail
+        real_cleanup = parsl.DataFlowKernel.cleanup
+        with mock.patch("parsl.DataFlowKernel.cleanup") as mock_cleanup:
+            mock_cleanup.side_effect = RuntimeError("Cleanup failed")
+
+            # Cleanup should raise exception
+            with pytest.raises(RuntimeError, match="Cleanup failed"):
+                workflow.cleanup()
+
+            # State should be preserved when cleanup fails (not reset to None)
+            assert workflow.dfk is not None
+            assert workflow.dfk is dfk_ref
+
+        # Now actually clean up for real
+        try:
+            real_cleanup(dfk_ref)
+            parsl.clear()
+        except Exception:
+            pass
+
 
 class TestWorkflowExceptionHandling:
     """Test exception handling during workflow cleanup."""

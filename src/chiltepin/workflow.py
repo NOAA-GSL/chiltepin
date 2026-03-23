@@ -109,26 +109,32 @@ class Workflow:
         if self.dfk is not None:
             raise RuntimeError("Workflow already started. Call cleanup() first.")
 
-        # Set up logging if requested
-        if self.log_file is not None:
-            import logging as log_module
+        try:
+            # Set up logging if requested
+            if self.log_file is not None:
+                import logging as log_module
 
-            level = self.log_level if self.log_level is not None else log_module.INFO
-            self.logger_handler = parsl.set_file_logger(
-                filename=self.log_file, level=level
+                level = self.log_level if self.log_level is not None else log_module.INFO
+                self.logger_handler = parsl.set_file_logger(
+                    filename=self.log_file, level=level
+                )
+
+            # Load configuration
+            parsl_config = configure.load(
+                self.config_dict,
+                include=self.include,
+                client=self.client,
+                run_dir=self.run_dir,
             )
 
-        # Load configuration
-        parsl_config = configure.load(
-            self.config_dict,
-            include=self.include,
-            client=self.client,
-            run_dir=self.run_dir,
-        )
-
-        # Load Parsl
-        self.dfk = parsl.load(parsl_config)
-        return self.dfk
+            # Load Parsl
+            self.dfk = parsl.load(parsl_config)
+            return self.dfk
+        except Exception:
+            # Best-effort cleanup of any partial initialization
+            # This ensures explicit start()/cleanup() usage is as safe as context manager
+            self.cleanup(suppress_exceptions=True)
+            raise
 
     def cleanup(self, suppress_exceptions=False):
         """Cleanup the workflow and release resources.
@@ -203,27 +209,22 @@ class Workflow:
                         e.__cause__ = cleanup_exception
                         cleanup_exception = e
 
-        # Reset state
-        self.dfk = None
-        self.logger_handler = None
+        # Only reset state if cleanup succeeded
+        # If cleanup failed, preserve state for debugging and potential retry
+        if cleanup_exception is None or suppress_exceptions:
+            self.dfk = None
+            self.logger_handler = None
 
         # Raise the final exception if any occurred and not suppressing
         if cleanup_exception is not None and not suppress_exceptions:
             raise cleanup_exception
 
     def __enter__(self):
-        """Context manager entry - starts the workflow."""
-        try:
-            return self.start()
-        except Exception:
-            # If start() fails, ensure cleanup is still attempted
-            # This ensures parsl.clear() is called even if parsl.load() failed
-            try:
-                self.cleanup()
-            except Exception:
-                # Suppress cleanup exceptions, raise the original startup exception
-                pass
-            raise
+        """Context manager entry - starts the workflow.
+
+        If start() fails, it performs its own cleanup before re-raising.
+        """
+        return self.start()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - cleans up the workflow."""
