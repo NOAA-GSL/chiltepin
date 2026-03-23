@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-03-23
+
+### Changed
+- **API Simplification**: Removed `run_workflow()`, `run_workflow_from_file()`, and
+  `run_workflow_from_dict()` functions in favor of unified `Workflow` class
+  - `Workflow` class supports both context manager pattern (`with Workflow(...)`) and
+    explicit lifecycle management (`workflow.start()` / `workflow.cleanup()`)
+  - Simplified package exports to only include `Workflow` class
+  - Updated all documentation and examples to reflect new API
+- **Improved Exception Handling**: Enhanced cleanup robustness with proper exception chaining
+  - All cleanup operations are attempted even if some fail
+  - Cleanup exceptions properly chained using `__cause__` for full error context
+  - User exceptions always take precedence over cleanup exceptions
+- **Enhanced State Management**: Workflow state preserved when cleanup operations fail
+  - DataFlowKernel and logger handler references preserved on cleanup failure for debugging
+  - State only reset after successful cleanup operations
+
+### Added
+- Comprehensive test coverage for workflow lifecycle and exception handling scenarios
+  - Added 5 lifecycle tests covering state preservation and startup failures
+  - Added 8 exception handling tests for cleanup robustness
+  - Added 5 tests for user exception precedence
+  - Maintained 100% code coverage of workflow module
+
+[0.1.4]: https://github.com/NOAA-GSL/chiltepin/releases/tag/v0.1.4
+
 ## [0.1.3] - 2026-03-17
 
 ### Changed
