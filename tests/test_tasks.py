@@ -15,7 +15,7 @@ from unittest import mock
 import parsl
 import pytest
 
-from chiltepin import run_workflow
+from chiltepin import Workflow
 from chiltepin.tasks import bash_task, join_task, python_task
 
 
@@ -42,7 +42,7 @@ def parsl_config():
     }
 
     # Use workflow context manager for Parsl lifecycle
-    with run_workflow(
+    with Workflow(
         local_config,
         run_dir=str(output_dir / "test_tasks_runinfo"),
         log_file=str(output_dir / "test_tasks_parsl.log"),

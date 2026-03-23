@@ -33,7 +33,7 @@ You can use this default resource without any configuration:
 
 .. code-block:: python
 
-   from chiltepin import run_workflow
+   from chiltepin import Workflow
    from chiltepin.tasks import python_task
 
    @python_task
@@ -41,7 +41,7 @@ You can use this default resource without any configuration:
        return "Hello from local!"
 
    # Works even with an empty config
-   with run_workflow({}):
+   with Workflow({}):
        result = my_task(executor=["local"]).result()
 
 You can override the default "local" resource by defining your own resource with
@@ -458,10 +458,10 @@ Parse and Load
 
 .. code-block:: python
 
-   from chiltepin import run_workflow
+   from chiltepin import Workflow
 
    # Load configuration from YAML file and run workflow
-   with run_workflow(
+   with Workflow(
        "my_config.yaml",
        include=["compute", "mpi"],  # Only load specific resources
        run_dir="./runinfo"           # Directory for Parsl runtime files
@@ -473,7 +473,7 @@ Parse and Load
 
 .. code-block:: python
 
-   from chiltepin import run_workflow
+   from chiltepin import Workflow
 
    # Define configuration as a dictionary
    config_dict = {
@@ -496,7 +496,7 @@ Parse and Load
    }
 
    # Load configuration from dict and run workflow
-   with run_workflow(
+   with Workflow(
        config_dict,
        include=["compute", "mpi"],  # Only load specific resources
        run_dir="./runinfo"
@@ -515,9 +515,70 @@ configuration. If omitted, all resources are loaded.
    .. code-block:: python
 
       # "local" is available even though not in include list
-      with run_workflow("config.yaml", include=["compute"]):
+      with Workflow("config.yaml", include=["compute"]):
           local_result = my_task(executor=["local"]).result()  # Works!
           compute_result = my_task(executor=["compute"]).result()  # Works!
+
+Using Workflows: Two Patterns
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``Workflow`` class supports two usage patterns:
+
+**Pattern 1: Context Manager (Recommended)**
+
+Use the ``with`` statement for automatic lifecycle management:
+
+.. code-block:: python
+
+   from chiltepin import Workflow
+   from chiltepin.tasks import python_task
+
+   @python_task
+   def my_task():
+       return "result"
+
+   # Automatic setup and cleanup
+   with Workflow("config.yaml", run_dir="./runinfo") as dfk:
+       result = my_task(executor=["compute"]).result()
+       print(result)
+
+**Pattern 2: Explicit Start/Cleanup**
+
+Use explicit method calls when you need lifecycle control across methods or in class-based designs:
+
+.. code-block:: python
+
+   from chiltepin import Workflow
+   from chiltepin.tasks import python_task
+
+   @python_task
+   def my_task():
+       return "result"
+
+   class MyWorkflow:
+       def __init__(self, config_file):
+           self.workflow = Workflow(config_file, run_dir="./runinfo")
+
+       def start(self):
+           self.dfk = self.workflow.start()
+
+       def run(self):
+           result = my_task(executor=["compute"]).result()
+           print(result)
+
+       def stop(self):
+           self.workflow.cleanup()
+
+   # Usage
+   wf = MyWorkflow("config.yaml")
+   wf.start()
+   try:
+       wf.run()
+   finally:
+       wf.stop()
+
+Choose the context manager pattern for simple scripts. Use explicit start/cleanup when
+building classes, agents, or frameworks that need fine-grained lifecycle control.
 
 Configuration Best Practices
 -----------------------------

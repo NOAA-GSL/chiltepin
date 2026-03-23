@@ -238,7 +238,7 @@ A common pattern is to stage data, process it, then clean up:
 
 .. code-block:: python
 
-   from chiltepin import run_workflow
+   from chiltepin import Workflow
    from chiltepin.tasks import python_task
    from chiltepin.data import transfer_task, delete_task
    
@@ -251,7 +251,7 @@ A common pattern is to stage data, process it, then clean up:
        return result
 
    # Load configuration and start workflow
-   with run_workflow("config.yaml"):
+   with Workflow("config.yaml"):
        # Stage data to compute resource
        stage_in = transfer_task(
            src_ep="my-laptop",

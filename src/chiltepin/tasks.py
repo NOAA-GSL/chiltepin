@@ -226,6 +226,44 @@ def python_task(function: Callable) -> Callable:
        ``outputs``, ``walltime``, etc.) are also accepted and passed through
        to the underlying Parsl app.
 
+    .. warning::
+       **Class Method Limitation**: When decorating class methods, the entire class instance
+       (``self``) must be picklable because it gets serialized and sent to remote workers.
+       Classes that contain unpicklable objects (network connections, file handles, database
+       connections, remote proxies, etc.) cannot be used with this decorator.
+
+       **Workaround 1 - Standalone Functions**: Extract the task logic into a standalone
+       function and pass only picklable data as arguments::
+
+           @python_task
+           def process_data(config, text):
+               return f"Processed {text}"
+
+           class MyClass:
+               def __init__(self):
+                   self.config = {"param": "value"}  # Picklable
+                   self.connection = NetworkConnection()  # NOT picklable
+
+               def my_method(self, text):
+                   return process_data(self.config, text)
+
+       **Workaround 2 - Helper Class**: Create a helper class with only picklable state
+       to hold task methods::
+
+           class TaskBehavior:
+               @python_task
+               def process(self, config, text):
+                   return f"Processed {text}"
+
+           class MyClass:
+               def __init__(self):
+                   self.config = {"param": "value"}
+                   self.connection = NetworkConnection()  # NOT picklable
+                   self.tasks = TaskBehavior()
+
+               def my_method(self, text):
+                   return self.tasks.process(self.config, text, executor=["compute"])
+
     Returns
     -------
     Callable
@@ -329,6 +367,14 @@ def bash_task(function: Callable) -> Callable:
        ``outputs``, ``walltime``, etc.) are also accepted and passed through
        to the underlying Parsl app.
 
+    .. warning::
+       **Class Method Limitation**: When decorating class methods, the entire class instance
+       (``self``) must be picklable because it gets serialized and sent to remote workers.
+       Classes that contain unpicklable objects (network connections, file handles, database
+       connections, remote proxies, etc.) cannot be used with this decorator.
+
+       See the ``python_task`` decorator documentation for examples of recommended workarounds.
+
     Returns
     -------
     Callable
@@ -392,6 +438,13 @@ def join_task(function: Callable) -> Callable:
         `self` to access object state. The function is expected to call multiple python or
         bash tasks and return a Future that encapsulates the result of those tasks.
 
+    .. warning::
+       **Class Method Limitation**: When decorating class methods, the entire class instance
+       (``self``) must be picklable because it gets serialized and sent to remote workers.
+       Classes that contain unpicklable objects (network connections, file handles, database
+       connections, remote proxies, etc.) cannot be used with this decorator.
+
+       See the ``python_task`` decorator documentation for examples of recommended workarounds.
 
     Returns
     -------
