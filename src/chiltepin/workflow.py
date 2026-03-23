@@ -114,7 +114,9 @@ class Workflow:
             if self.log_file is not None:
                 import logging as log_module
 
-                level = self.log_level if self.log_level is not None else log_module.INFO
+                level = (
+                    self.log_level if self.log_level is not None else log_module.INFO
+                )
                 self.logger_handler = parsl.set_file_logger(
                     filename=self.log_file, level=level
                 )
@@ -165,7 +167,7 @@ class Workflow:
             except Exception as e:
                 if suppress_exceptions:
                     _logger.warning(
-                        "Exception during dfk.cleanup() while handling user exception",
+                        "Exception during dfk.cleanup() (suppressing)",
                         exc_info=True,
                     )
                 else:
@@ -178,7 +180,7 @@ class Workflow:
         except Exception as e:
             if suppress_exceptions:
                 _logger.warning(
-                    "Exception during parsl.clear() while handling user exception",
+                    "Exception during parsl.clear() (suppressing)",
                     exc_info=True,
                 )
             else:
@@ -197,7 +199,7 @@ class Workflow:
             except Exception as e:
                 if suppress_exceptions:
                     _logger.warning(
-                        "Exception during logger cleanup while handling user exception",
+                        "Exception during logger cleanup (suppressing)",
                         exc_info=True,
                     )
                 else:

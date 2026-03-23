@@ -156,11 +156,11 @@ class TestWorkflowContextManager:
             assert result == "Hello, Workflow!"
 
 
-class TestWorkflowAliases:
-    """Test workflow_from_dict and workflow_from_file convenience aliases."""
+class TestWorkflowConfigTypes:
+    """Test Workflow with dict and file configuration arguments."""
 
     def test_workflow_from_dict(self, tmp_path):
-        """Test workflow_from_dict convenience function."""
+        """Test Workflow with a dictionary configuration."""
 
         @python_task
         def add_numbers(a, b):
@@ -184,7 +184,7 @@ class TestWorkflowAliases:
             assert result == 300
 
     def test_workflow_from_file(self, config_file, tmp_path):
-        """Test workflow_from_file convenience function."""
+        """Test Workflow with a file path configuration."""
 
         @python_task
         def multiply(x, y):
@@ -199,7 +199,7 @@ class TestWorkflowAliases:
         with open(temp_config_file, "w") as f:
             yaml.dump(config_dict, f)
 
-        # Test with file path argument using workflow_from_file
+        # Test with file path argument
         with Workflow(
             str(temp_config_file),
             include=["service"],
@@ -712,10 +712,10 @@ def config_file_fixture(tmp_path):
 
 
 class TestWorkflowFromFileCoverage:
-    """Tests specifically for workflow_from_file function coverage."""
+    """Tests for Workflow with file path configuration."""
 
     def test_workflow_from_file_with_local_fixture(self, config_file_fixture, tmp_path):
-        """Test workflow_from_file with a local config file fixture."""
+        """Test Workflow with a config file fixture."""
 
         @python_task
         def simple_task():
@@ -763,8 +763,7 @@ class TestUserExceptionPrecedence:
 
             # Cleanup exception should be logged as a warning
             assert any(
-                "Exception during dfk.cleanup() while handling user exception"
-                in record.getMessage()
+                "Exception during dfk.cleanup() (suppressing)" in record.getMessage()
                 for record in caplog.records
             )
 
@@ -818,12 +817,12 @@ class TestUserExceptionPrecedence:
 
                 # Both cleanup exceptions should be logged as warnings
                 assert any(
-                    "Exception during dfk.cleanup() while handling user exception"
+                    "Exception during dfk.cleanup() (suppressing)"
                     in record.getMessage()
                     for record in caplog.records
                 )
                 assert any(
-                    "Exception during parsl.clear() while handling user exception"
+                    "Exception during parsl.clear() (suppressing)"
                     in record.getMessage()
                     for record in caplog.records
                 )
@@ -903,8 +902,7 @@ class TestUserExceptionPrecedence:
 
             # Logger cleanup exception should be logged as a warning
             assert any(
-                "Exception during logger cleanup while handling user exception"
-                in record.getMessage()
+                "Exception during logger cleanup (suppressing)" in record.getMessage()
                 for record in caplog.records
             )
 
