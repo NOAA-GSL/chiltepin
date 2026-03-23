@@ -125,7 +125,7 @@ Create ``my_workflow.py``:
 
 .. code-block:: python
 
-   from chiltepin import run_workflow
+   from chiltepin import Workflow
    from chiltepin.tasks import bash_task, python_task
    
    # Define tasks
@@ -146,7 +146,7 @@ Create ``my_workflow.py``:
    
    if __name__ == "__main__":
        # Load configuration and run workflow
-       with run_workflow("my_config.yaml", include=["laptop", "remote"], run_dir="./runinfo"):
+       with Workflow("my_config.yaml", include=["laptop", "remote"], run_dir="./runinfo"):
            # Run local task on "laptop" resource
            local_future = hello_local(executor=["laptop"])
            
@@ -194,6 +194,85 @@ When finished:
    Endpoints automatically scale down resources after idle periods, so manual stopping is
    optional.
 
+Workflow Usage Patterns
+------------------------
+
+The ``Workflow`` class can be used in two ways depending on your needs.
+
+Context Manager (Recommended for Simple Scripts)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For most workflows, use the context manager pattern with ``with``:
+
+.. code-block:: python
+
+   from chiltepin import Workflow
+   from chiltepin.tasks import python_task
+
+   @python_task
+   def my_task(x):
+       return x * 2
+
+   # Context manager automatically handles setup and cleanup
+   with Workflow("config.yaml", run_dir="./runinfo") as dfk:
+       result = my_task(5, executor=["compute"])
+       print(result.result())  # 10
+   # Workflow is automatically cleaned up when exiting the 'with' block
+
+The context manager:
+
+- Automatically starts the workflow when entering the ``with`` block
+- Ensures proper cleanup when exiting (even if an exception occurs)
+- Is ideal for simple scripts and straightforward workflows
+
+Explicit Start/Cleanup (For Advanced Use Cases)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For class-based workflows, agents, or when you need to manage the workflow lifecycle
+across multiple methods, use explicit ``start()`` and ``cleanup()`` calls:
+
+.. code-block:: python
+
+   from chiltepin import Workflow
+   from chiltepin.tasks import python_task
+
+   @python_task
+   def my_task(x):
+       return x * 2
+
+   class MyWorkflow:
+       def __init__(self, config_path):
+           # Create workflow instance but don't start it yet
+           self.workflow = Workflow(config_path, run_dir="./runinfo")
+
+       def start(self):
+           """Start the workflow - call this before running tasks"""
+           self.dfk = self.workflow.start()
+
+       def run_tasks(self):
+           """Run workflow tasks"""
+           result = my_task(5, executor=["compute"])
+           print(result.result())  # 10
+
+       def stop(self):
+           """Cleanup the workflow - call this when done"""
+           self.workflow.cleanup()
+
+   # Usage
+   workflow = MyWorkflow("config.yaml")
+   workflow.start()
+   try:
+       workflow.run_tasks()
+   finally:
+       workflow.stop()
+
+This pattern is useful when:
+
+- Building class-based workflows
+- Managing workflows across multiple methods
+- Needing precise control over workflow lifecycle
+- Integrating with frameworks that manage their own lifecycle
+
 Local-Only Quickstart
 ---------------------
 
@@ -214,7 +293,7 @@ Simple Workflow (``simple_workflow.py``)
 
 .. code-block:: python
 
-   from chiltepin import run_workflow
+   from chiltepin import Workflow
    from chiltepin.tasks import bash_task, python_task
    
    # Define tasks
@@ -228,7 +307,7 @@ Simple Workflow (``simple_workflow.py``)
    
    if __name__ == "__main__":
        # Load configuration and run workflow
-       with run_workflow("local_config.yaml", run_dir="./runinfo"):
+       with Workflow("local_config.yaml", run_dir="./runinfo"):
            result = multiply(6, 7, executor=["laptop"]).result()
            print(f"6 * 7 = {result}")
            
@@ -271,7 +350,7 @@ MPI Workflow
 
 .. code-block:: python
 
-   from chiltepin import run_workflow
+   from chiltepin import Workflow
    from chiltepin.tasks import bash_task
    
    @bash_task
@@ -283,7 +362,7 @@ MPI Workflow
        return "$PARSL_MPI_PREFIX ./mpi_app"
    
    if __name__ == "__main__":
-       with run_workflow("mpi_config.yaml", run_dir="./runinfo"):
+       with Workflow("mpi_config.yaml", run_dir="./runinfo"):
            # Compile MPI application on the MPI resource (returns exit code)
            compile_result = compile_mpi(executor=["mpi-resource-name"]).result()
            print(f"Compilation exit code: {compile_result}")
@@ -375,7 +454,7 @@ The ``include`` parameter selects specific resources to load from the configurat
 .. code-block:: python
 
    # Load only specific resources from YAML file
-   with run_workflow(
+   with Workflow(
        "my_config.yaml",
        include=["laptop", "compute"],  # Only these resources
        run_dir="./runinfo"
@@ -401,7 +480,7 @@ The ``include`` parameter selects specific resources to load from the configurat
    }
 
    # Load only specific resources from dict
-   with run_workflow(
+   with Workflow(
        config,
        include=["laptop", "compute"],  # Only these resources
        run_dir="./runinfo"

@@ -10,7 +10,7 @@ from datetime import datetime as dt
 import pytest
 
 import chiltepin.configure
-from chiltepin import run_workflow
+from chiltepin import Workflow
 from chiltepin.tasks import bash_task
 
 
@@ -34,7 +34,7 @@ def config(config_file):
     )
 
     # Use workflow context manager for Parsl lifecycle
-    with run_workflow(
+    with Workflow(
         yaml_config,
         include=["compute", "mpi"],
         run_dir=str(output_dir / "test_parsl_mpi_runinfo"),

@@ -16,26 +16,18 @@ except PackageNotFoundError:
 
 __all__ = [
     "Workflow",
-    "run_workflow",
-    "run_workflow_from_file",
-    "run_workflow_from_dict",
 ]
 
 
 def __getattr__(name):
-    """Lazy import of workflow functions to avoid loading Parsl unnecessarily.
+    """Lazy import of Workflow to avoid loading Parsl unnecessarily.
 
     This allows users to import other chiltepin submodules (like configure, tasks)
     without triggering the import of Parsl and its dependencies unless they
-    actually use the workflow context managers.
+    actually use the Workflow class.
     """
     if name in __all__:
-        from chiltepin.workflow import (  # noqa: F401
-            Workflow,
-            run_workflow,
-            run_workflow_from_dict,
-            run_workflow_from_file,
-        )
+        from chiltepin.workflow import Workflow  # noqa: F401
 
         globals()[name] = locals()[name]
         return locals()[name]

@@ -9,7 +9,7 @@ import pytest
 
 import chiltepin.data as data
 import chiltepin.endpoint as endpoint
-from chiltepin import run_workflow
+from chiltepin import Workflow
 
 
 # Set up fixture to initialize and cleanup Parsl
@@ -33,7 +33,7 @@ def config(config_file):
     unique_dst = f"1MB.to_ursa.{uuid.uuid4()}"
 
     # Use workflow context manager with default (empty) resource configuration
-    with run_workflow(
+    with Workflow(
         {},
         run_dir=str(output_dir / "test_data_runinfo"),
         log_file=str(output_dir / "test_data_parsl.log"),

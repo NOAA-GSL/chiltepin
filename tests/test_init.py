@@ -65,18 +65,14 @@ class TestVersionHandling:
 class TestSubmoduleAccess:
     """Test submodule access via __getattr__."""
 
-    def test_lazy_loading_workflow_functions(self):
-        """Test that workflow functions are lazily loaded via __getattr__."""
+    def test_lazy_loading_workflow_class(self):
+        """Test that Workflow class is lazily loaded via __getattr__."""
         import chiltepin
 
-        # Access lazy-loaded workflow function
-        run_workflow = chiltepin.run_workflow
-        assert callable(run_workflow)
-        assert run_workflow.__module__ == "chiltepin.workflow"
-
-        # Verify other workflow functions are also available
-        assert callable(chiltepin.run_workflow_from_file)
-        assert callable(chiltepin.run_workflow_from_dict)
+        # Access lazy-loaded Workflow class
+        Workflow = chiltepin.Workflow
+        assert callable(Workflow)
+        assert Workflow.__module__ == "chiltepin.workflow"
 
     def test_submodule_import_via_attribute_access(self):
         """Test that submodules can be accessed as attributes."""

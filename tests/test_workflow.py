@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 import chiltepin.configure
-from chiltepin import run_workflow, run_workflow_from_dict, run_workflow_from_file
+from chiltepin import Workflow
 from chiltepin.tasks import python_task
 
 
@@ -89,7 +89,7 @@ def cleanup_parsl():
 
 
 class TestWorkflowContextManager:
-    """Test run_workflow() context manager with different configurations."""
+    """Test Workflow context manager with different configurations."""
 
     def test_workflow_with_dict_config(self, tmp_path):
         """Test workflow context manager with a dictionary config."""
@@ -116,7 +116,7 @@ class TestWorkflowContextManager:
             }
         }
 
-        with run_workflow(config, run_dir=str(tmp_path / "runinfo1")):
+        with Workflow(config, run_dir=str(tmp_path / "runinfo1")):
             # Submit tasks
             future1 = add_numbers(10, 32, executor=["test-executor"])
             future2 = multiply(6, 7, executor=["test-executor"])
@@ -146,7 +146,7 @@ class TestWorkflowContextManager:
             yaml.dump(config_dict, f)
 
         # Test with file path argument
-        with run_workflow(
+        with Workflow(
             str(temp_config_file),
             include=["service"],
             run_dir=str(tmp_path / "runinfo2"),
@@ -178,7 +178,7 @@ class TestWorkflowAliases:
             }
         }
 
-        with run_workflow_from_dict(config, run_dir=str(tmp_path / "runinfo5")):
+        with Workflow(config, run_dir=str(tmp_path / "runinfo5")):
             future = add_numbers(100, 200, executor=["my-executor"])
             result = future.result()
             assert result == 300
@@ -200,7 +200,7 @@ class TestWorkflowAliases:
             yaml.dump(config_dict, f)
 
         # Test with file path argument using workflow_from_file
-        with run_workflow_from_file(
+        with Workflow(
             str(temp_config_file),
             include=["service"],
             run_dir=str(tmp_path / "runinfo6"),
@@ -246,12 +246,12 @@ class TestWorkflowCleanup:
         }
 
         # First workflow
-        with run_workflow(config1, run_dir=str(tmp_path / "runinfo7")):
+        with Workflow(config1, run_dir=str(tmp_path / "runinfo7")):
             future = add_numbers(1, 2, executor=["exec1"])
             assert future.result() == 3
 
         # Second workflow should work without conflicts
-        with run_workflow(config2, run_dir=str(tmp_path / "runinfo8")):
+        with Workflow(config2, run_dir=str(tmp_path / "runinfo8")):
             future = multiply(3, 4, executor=["exec2"])
             assert future.result() == 12
 
@@ -276,16 +276,69 @@ class TestWorkflowCleanup:
 
         # Workflow should cleanup even if exception occurs
         with pytest.raises(ValueError):
-            with run_workflow(config, run_dir=str(tmp_path / "runinfo9")):
+            with Workflow(config, run_dir=str(tmp_path / "runinfo9")):
                 future = add_numbers(5, 5, executor=["test-exec"])
                 result = future.result()
                 assert result == 10
                 raise ValueError("Intentional test error")
 
         # Should be able to create another workflow after exception
-        with run_workflow(config, run_dir=str(tmp_path / "runinfo10")):
+        with Workflow(config, run_dir=str(tmp_path / "runinfo10")):
             future = add_numbers(7, 8, executor=["test-exec"])
             assert future.result() == 15
+
+
+class TestWorkflowLifecycle:
+    """Test workflow lifecycle methods."""
+
+    def test_start_called_twice_raises_error(self, tmp_path):
+        """Test that calling start() twice without cleanup raises RuntimeError."""
+        project_root = pathlib.Path(__file__).parent.parent.resolve()
+
+        config = {
+            "test-exec": {
+                "provider": "localhost",
+                "cores_per_node": 1,
+                "max_workers_per_node": 1,
+                "environment": [f"export PYTHONPATH=${{PYTHONPATH}}:{project_root}"],
+            }
+        }
+
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo_lifecycle1"))
+        try:
+            workflow.start()
+
+            # Attempting to start again should raise RuntimeError
+            with pytest.raises(RuntimeError, match="Workflow already started"):
+                workflow.start()
+        finally:
+            # Clean up
+            workflow.cleanup()
+
+    def test_start_failure_with_cleanup_failure(self, tmp_path):
+        """Test that startup exception is raised even if cleanup also fails."""
+        project_root = pathlib.Path(__file__).parent.parent.resolve()
+
+        config = {
+            "test-exec": {
+                "provider": "localhost",
+                "cores_per_node": 1,
+                "max_workers_per_node": 1,
+                "environment": [f"export PYTHONPATH=${{PYTHONPATH}}:{project_root}"],
+            }
+        }
+
+        # Mock parsl.load to fail during startup
+        # Also mock parsl.clear to fail during cleanup
+        with mock.patch("parsl.load") as mock_load:
+            with mock.patch("parsl.clear") as mock_clear:
+                mock_load.side_effect = RuntimeError("Load failed")
+                mock_clear.side_effect = RuntimeError("Clear failed")
+
+                # The startup exception should be raised, not the cleanup exception
+                with pytest.raises(RuntimeError, match="Load failed"):
+                    with Workflow(config, run_dir=str(tmp_path / "runinfo_lifecycle2")):
+                        pass
 
 
 class TestWorkflowExceptionHandling:
@@ -312,7 +365,7 @@ class TestWorkflowExceptionHandling:
             mock_cleanup.side_effect = RuntimeError("Cleanup failed")
 
             with pytest.raises(RuntimeError, match="Cleanup failed"):
-                with run_workflow(config, run_dir=str(tmp_path / "runinfo_exc1")):
+                with Workflow(config, run_dir=str(tmp_path / "runinfo_exc1")):
                     dfk_ref = parsl.dfk()  # Capture dfk reference
                     pass
 
@@ -341,7 +394,7 @@ class TestWorkflowExceptionHandling:
             mock_clear.side_effect = RuntimeError("Clear failed")
 
             with pytest.raises(RuntimeError, match="Clear failed"):
-                with run_workflow(config, run_dir=str(tmp_path / "runinfo_exc2")):
+                with Workflow(config, run_dir=str(tmp_path / "runinfo_exc2")):
                     pass
 
     def test_logger_handler_exception(self, tmp_path):
@@ -378,7 +431,7 @@ class TestWorkflowExceptionHandling:
         with mock.patch("parsl.set_file_logger", side_effect=mock_set_file_logger):
             # The logger cleanup exception will be raised (either from dfk.cleanup or our call)
             with pytest.raises(RuntimeError):
-                with run_workflow(
+                with Workflow(
                     config,
                     run_dir=str(tmp_path / "runinfo_exc3"),
                     log_file=str(tmp_path / "test.log"),
@@ -408,7 +461,7 @@ class TestWorkflowExceptionHandling:
                 mock_clear.side_effect = RuntimeError("Clear failed")
 
                 with pytest.raises(RuntimeError) as exc_info:
-                    with run_workflow(config, run_dir=str(tmp_path / "runinfo_exc4")):
+                    with Workflow(config, run_dir=str(tmp_path / "runinfo_exc4")):
                         dfk_ref = parsl.dfk()  # Capture dfk reference
                         pass
 
@@ -459,7 +512,7 @@ class TestWorkflowExceptionHandling:
                     mock_clear.side_effect = RuntimeError("Clear failed")
 
                     with pytest.raises(RuntimeError) as exc_info:
-                        with run_workflow(
+                        with Workflow(
                             config,
                             run_dir=str(tmp_path / "runinfo_exc5"),
                             log_file=str(tmp_path / "test.log"),
@@ -502,7 +555,7 @@ class TestWorkflowExceptionHandling:
                 mock_load.side_effect = RuntimeError("Load failed")
 
                 with pytest.raises(RuntimeError, match="Load failed"):
-                    with run_workflow(config, run_dir=str(tmp_path / "runinfo_exc6")):
+                    with Workflow(config, run_dir=str(tmp_path / "runinfo_exc6")):
                         pass
 
                 # parsl.clear() should still be called even though dfk is None
@@ -554,7 +607,7 @@ class TestWorkflowExceptionHandling:
 
                 # Now the workflow's call will be count==2 and will raise
                 with pytest.raises(RuntimeError, match="Clear failed"):
-                    with run_workflow(config, run_dir=str(tmp_path / "runinfo_exc7")):
+                    with Workflow(config, run_dir=str(tmp_path / "runinfo_exc7")):
                         dfk_ref = parsl.dfk()  # Capture for manual cleanup
                         pass
 
@@ -600,7 +653,7 @@ class TestWorkflowFromFileCoverage:
         def simple_task():
             return "success"
 
-        with run_workflow_from_file(
+        with Workflow(
             config_file_fixture,
             include=["service"],
             run_dir=str(tmp_path / "runinfo_file"),
@@ -636,7 +689,7 @@ class TestUserExceptionPrecedence:
 
             # User exception should be raised, not cleanup exception
             with pytest.raises(ValueError, match="User error"):
-                with run_workflow(config, run_dir=str(tmp_path / "runinfo_user1")):
+                with Workflow(config, run_dir=str(tmp_path / "runinfo_user1")):
                     dfk_ref = parsl.dfk()  # Capture dfk reference
                     raise ValueError("User error")
 
@@ -691,7 +744,7 @@ class TestUserExceptionPrecedence:
 
                 # User exception should be raised, not any cleanup exception
                 with pytest.raises(ValueError, match="User error"):
-                    with run_workflow(config, run_dir=str(tmp_path / "runinfo_user2")):
+                    with Workflow(config, run_dir=str(tmp_path / "runinfo_user2")):
                         dfk_ref = parsl.dfk()  # Capture dfk reference
                         raise ValueError("User error")
 
@@ -738,7 +791,7 @@ class TestUserExceptionPrecedence:
 
             # Cleanup exception should be raised when there's no user exception
             with pytest.raises(RuntimeError, match="Cleanup failed"):
-                with run_workflow(config, run_dir=str(tmp_path / "runinfo_user3")):
+                with Workflow(config, run_dir=str(tmp_path / "runinfo_user3")):
                     dfk_ref = parsl.dfk()  # Capture dfk reference
                     pass  # No user exception
 
@@ -773,7 +826,7 @@ class TestUserExceptionPrecedence:
         with mock.patch("parsl.set_file_logger", side_effect=mock_set_file_logger):
             # User exception should be raised, not logger cleanup exception
             with pytest.raises(ValueError, match="User error"):
-                with run_workflow(
+                with Workflow(
                     config,
                     run_dir=str(tmp_path / "runinfo_user4"),
                     log_file=str(tmp_path / "test.log"),
@@ -814,7 +867,7 @@ class TestUserExceptionPrecedence:
         with mock.patch("parsl.set_file_logger", side_effect=mock_set_file_logger):
             # Logger cleanup exception should be raised
             with pytest.raises(RuntimeError, match="Logger cleanup failed"):
-                with run_workflow(
+                with Workflow(
                     config,
                     run_dir=str(tmp_path / "runinfo_logger_standalone"),
                     log_file=str(tmp_path / "test.log"),
