@@ -7,8 +7,6 @@ management, eliminating the need for users to directly import or interact with P
 """
 
 import logging
-import sys
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -120,7 +118,9 @@ class Workflow:
             import logging as log_module
 
             level = self.log_level if self.log_level is not None else log_module.INFO
-            self.logger_handler = parsl.set_file_logger(filename=self.log_file, level=level)
+            self.logger_handler = parsl.set_file_logger(
+                filename=self.log_file, level=level
+            )
 
         # Load configuration
         parsl_config = configure.load(
