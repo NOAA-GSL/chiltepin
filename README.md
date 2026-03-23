@@ -1,5 +1,6 @@
 [![ExascaleSandboxTests](https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml/badge.svg)](https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml)
 [![Documentation](https://github.com/NOAA-GSL/chiltepin/actions/workflows/docs.yaml/badge.svg)](https://github.com/NOAA-GSL/chiltepin/actions/workflows/docs.yaml)
+[![DOI](https://zenodo.org/badge/712000160.svg)](https://doi.org/10.5281/zenodo.19195670)
 
 # Chiltepin
 
