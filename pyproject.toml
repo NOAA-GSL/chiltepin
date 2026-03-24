@@ -8,6 +8,7 @@ build-backend = "setuptools.build_meta"
 name = "chiltepin"
 version = "0.1.4"
 dependencies = [
+  "academy-py",
   "globus-compute-sdk>=4.3.0,<4.7.0",
   "globus-compute-endpoint>=4.3.0,<4.7.0; platform_system == 'Linux'",
   "globus-sdk>=3.65.0",
@@ -54,6 +55,7 @@ Changelog = "https://github.com/NOAA-GSL/chiltepin/releases"
 [project.optional-dependencies]
 test = [
     "pytest>=9.0.0",
+    "pytest-asyncio>=1.0.0",
     "pytest-cov>=7.0.0",
     "ruff==0.15.4",
 ]
