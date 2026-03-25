@@ -24,6 +24,64 @@ from academy.manager import Manager
 from parsl.concurrent import ParslPoolExecutor
 
 
+class ChiltepinManager(Manager):
+    """Custom Manager that supports config=, include=, and run_dir= kwargs in launch().
+
+    This Manager subclass intercepts launch() calls to extract chiltepin-specific
+    keyword arguments (config, include, run_dir) and passes them to agents created
+    with the @chiltepin_agent decorator.
+
+    This keeps workflow infrastructure concerns (config, include, run_dir) separate
+    from behavior logic, allowing behavior classes to focus on domain logic only.
+    """
+
+    async def launch(self, agent_class, args=None, kwargs=None, config=None, include=None, run_dir=None, **manager_kwargs):
+        """Launch an agent, supporting chiltepin-specific configuration.
+
+        Args:
+            agent_class: The agent class to launch
+            args: Tuple of positional arguments for agent __init__ (behavior logic only)
+            kwargs: Dict of keyword arguments for agent __init__ (behavior logic only)
+            config: Workflow configuration dict or path (chiltepin agents only)
+            include: Optional list of executor labels for workflow (chiltepin agents only)
+            run_dir: Optional run directory for workflow (chiltepin agents only)
+            **manager_kwargs: Other keyword arguments for Manager (e.g., executor, resources)
+
+        Returns:
+            The launched agent proxy
+
+        Example:
+            ```python
+            model = await manager.launch(
+                MyModel,
+                config=ursa_config,           # ← Workflow config
+                include=["ursa-compute"],     # ← Which executors
+                run_dir="/custom/path",       # ← Where to run
+                args=(25.0,),                 # ← Behavior args only
+                executor="ursa-service-gc"    # ← Manager executor
+            )
+            ```
+        """
+        # If config, include, or run_dir were provided, add them to the agent's kwargs
+        if config is not None or include is not None or run_dir is not None:
+            # Ensure kwargs exists
+            if kwargs is None:
+                kwargs = {}
+            else:
+                # Make a copy to avoid mutating caller's dict
+                kwargs = kwargs.copy()
+
+            if config is not None:
+                kwargs['config'] = config
+            if include is not None:
+                kwargs['include'] = include
+            if run_dir is not None:
+                kwargs['run_dir'] = run_dir
+
+        # Call parent launch without config/include/run_dir (they're now in agent's kwargs)
+        return await super().launch(agent_class, args=args, kwargs=kwargs, **manager_kwargs)
+
+
 class AgentSystem:
     """Simplified agent management system for Chiltepin workflows.
 
@@ -116,8 +174,8 @@ class AgentSystem:
         if self._executors is None:
             self._create_executors()
 
-        # Return the Manager context manager
-        return await Manager.from_exchange_factory(
+        # Return the ChiltepinManager context manager
+        return await ChiltepinManager.from_exchange_factory(
             factory=HttpExchangeFactory(
                 self.exchange_address,
                 auth_method=self.auth_method,
@@ -316,26 +374,49 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
     Use @action for any method (sync or async) you want to expose, and @loop for
     background loops. Both decorators should be imported from chiltepin.agents.
 
-    The behavior class must accept `config` as its first __init__ parameter.
-
     Args:
-        include: List of resource labels to load. If None, all resources are loaded.
-        run_dir: Directory for Parsl runtime files. If None, uses Parsl's default.
+        include: Default list of resource labels to load. Can be overridden at runtime
+                 using include= keyword argument in manager.launch(). If None, all
+                 resources are loaded.
+        run_dir: Default directory for Parsl runtime files. Can be overridden at runtime
+                 using run_dir= keyword argument in manager.launch(). If None, uses
+                 Parsl's default.
 
     Returns:
         A decorator function that wraps the behavior class in an Agent.
+
+    Runtime Configuration:
+        When using AgentSystem (which provides ChiltepinManager), pass workflow
+        configuration using keyword arguments to launch(). This separates infrastructure
+        from behavior logic:
+
+        ```python
+        @chiltepin_agent(include=["default-executor"])
+        class MyModel:
+            def __init__(self, temperature):  # ← No config! Pure domain logic
+                self.temperature = temperature
+
+        # Launch with runtime configuration
+        model = await manager.launch(
+            MyModel,
+            config=ursa_config,              # ← Workflow config used by the agent's workflow context
+            args=(25.0,),                    # ← Behavior args only (domain logic)
+            include=["runtime-executor"],    # ← Override decorator default - executors the agent should use to run tasks
+            executor="ursa-service-gc"       # ← The executor to use for launching the agent itself (infrastructure)
+        )
+        ```
 
     Example:
         ```python
         from chiltepin.agents import chiltepin_agent, action, loop
         from chiltepin.tasks import python_task
 
-        @chiltepin_agent(include=["ursa-compute"])
+        @chiltepin_agent(include=["ursa-compute"])  # ← Default, can be overridden
         class MyModel:
             '''Regular Python class - fully serializable!'''
 
-            def __init__(self, config, temperature: float):
-                self.config = config
+            def __init__(self, temperature: float):
+                '''Initialize behavior with domain logic only.'''
                 self.temperature = temperature
 
             @action  # ← Use @action for sync/task-decorated methods
@@ -364,8 +445,16 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 # Not decorated with @action, won't be exposed
                 pass
 
-        # Usage is the same as regular agents
+        # Usage with default configuration
         model = await manager.launch(MyModel, args=(config, 25))
+
+        # Or override at runtime
+        model = await manager.launch(
+            MyModel,
+            args=(config, 25),
+            include=["runtime-executor"],  # ← Runtime override
+        )
+
         result = await model.run_model()
         status = await model.get_status()
         ```
@@ -374,22 +463,39 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
     import asyncio
     import inspect
 
+    # Capture decorator parameters for use in closure
+    decorator_include = include
+    decorator_run_dir = run_dir
+
     def decorator(behavior_class):
         """Inner decorator that receives the behavior class."""
 
         # Create a wrapper Agent class dynamically
         class ChiltepinAgentWrapper(Agent):
-            def __init__(self, config, *args, **kwargs):
-                """Initialize with config as first param, rest go to behavior."""
+            def __init__(self, *args, config=None, include=None, run_dir=None, **kwargs):
+                """Initialize the agent wrapper.
+
+                Args:
+                    *args: Positional arguments for behavior class
+                    config: Configuration for Agent's workflow context (from manager.launch)
+                    include: Optional runtime override for Agent's workflow executor list (from manager.launch)
+                    run_dir: Optional runtime override for Parsl's run directory (from manager.launch)
+                    **kwargs: Keyword arguments for behavior class
+                """
                 super().__init__()
                 # Store config for workflow setup
                 self._config = config
-                self._include = include
-                self._run_dir = run_dir
+
+                # Use runtime overrides if provided, otherwise fall back to decorator defaults
+                self._include = include if include is not None else decorator_include
+                self._run_dir = run_dir if run_dir is not None else decorator_run_dir
+
+                # Create the behavior instance with its args/kwargs
+                # Note: config, include, and run_dir are infrastructure, not passed to behavior
+                self._behavior = behavior_class(*args, **kwargs)
+
                 self._workflow = None
                 self._dfk = None
-                # Create the behavior instance
-                self._behavior = behavior_class(config, *args, **kwargs)
 
             async def agent_on_startup(self) -> None:
                 """Start the workflow when the agent starts."""

@@ -17,6 +17,7 @@ except PackageNotFoundError:
 __all__ = [
     "Workflow",
     "AgentSystem",
+    "ChiltepinManager",
     "ChiltepinAgent",
     "chiltepin_agent",
     "action",
@@ -38,6 +39,10 @@ def __getattr__(name):
             return locals()[name]
         elif name == "AgentSystem":
             from chiltepin.agents import AgentSystem  # noqa: F401
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "ChiltepinManager":
+            from chiltepin.agents import ChiltepinManager  # noqa: F401
             globals()[name] = locals()[name]
             return locals()[name]
         elif name == "ChiltepinAgent":
