@@ -19,7 +19,8 @@ __all__ = [
     "AgentSystem",
     "ChiltepinAgent",
     "chiltepin_agent",
-    "expose",
+    "action",
+    "loop",
 ]
 
 
@@ -47,8 +48,12 @@ def __getattr__(name):
             from chiltepin.agents import chiltepin_agent  # noqa: F401
             globals()[name] = locals()[name]
             return locals()[name]
-        elif name == "expose":
-            from chiltepin.agents import expose  # noqa: F401
+        elif name == "action":
+            from chiltepin.agents import action  # noqa: F401
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "loop":
+            from chiltepin.agents import loop  # noqa: F401
             globals()[name] = locals()[name]
             return locals()[name]
 

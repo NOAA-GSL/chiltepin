@@ -4,6 +4,15 @@
 
 This module provides simplified interfaces for integrating Academy agents
 with Chiltepin workflows and Parsl executors.
+
+When using @chiltepin_agent decorator, always import action and loop decorators
+from chiltepin.agents, NOT from academy.agent:
+
+    from chiltepin.agents import chiltepin_agent, action, loop  # ✅ Correct
+    from academy.agent import action, loop  # ❌ Wrong for @chiltepin_agent
+
+Chiltepin's decorators work with both sync and async methods, while Academy's
+action decorator requires async methods only.
 """
 
 from typing import Any, Dict, List, Optional, Union
@@ -215,31 +224,83 @@ class ChiltepinAgent(Agent):
             self._workflow.cleanup()
 
 
-def expose(func):
+def action(func):
     """Marker decorator to indicate a method should be exposed as an agent action.
 
     Use this decorator on methods in classes decorated with @chiltepin_agent to
     mark them as actions that should be exposed through the agent interface.
 
-    This is an alternative to using Academy's @action decorator, which requires
-    async methods. Use @expose for sync methods (especially @python_task methods)
-    and either @expose or @action for async methods.
+    Unlike Academy's @action decorator, this works for both sync and async methods,
+    making it suitable for @python_task decorated methods as well as async helpers.
 
     Example:
         ```python
+        from chiltepin.agents import chiltepin_agent, action
+        from chiltepin.tasks import python_task
+
         @chiltepin_agent(include=["compute"])
         class MyModel:
-            @expose
+            @action  # ← Works for sync task methods
             @python_task
             def compute(self):
                 return "result"
 
-            @expose  # or @action
+            @action  # ← Also works for async methods
             async def get_status(self):
                 return "ready"
         ```
     """
+    # Check if Academy's @action was already applied
+    if hasattr(func, '__wrapped__') and hasattr(func, '__name__'):
+        # This might be Academy's action decorator
+        import warnings
+        warnings.warn(
+            f"Method '{func.__name__}' appears to already have Academy's @action decorator. "
+            f"When using @chiltepin_agent, import 'action' from chiltepin.agents, not academy.agent. "
+            f"Academy's @action requires async methods, while chiltepin's works for both sync and async.",
+            UserWarning,
+            stacklevel=2
+        )
+
     func._chiltepin_expose = True
+    return func
+
+
+def loop(func):
+    """Marker decorator for background loop methods in chiltepin agents.
+
+    Use this decorator on async methods with a 'shutdown' parameter that should
+    run as background loops in classes decorated with @chiltepin_agent.
+
+    This is equivalent to Academy's @loop decorator but provided here for consistency
+    so all decorators can be imported from chiltepin.agents.
+
+    Example:
+        ```python
+        from chiltepin.agents import chiltepin_agent, loop
+        import asyncio
+
+        @chiltepin_agent(include=["compute"])
+        class MyModel:
+            @loop
+            async def update_data(self, shutdown):
+                while not shutdown.is_set():
+                    await asyncio.sleep(1)
+                    # Update state
+        ```
+    """
+    # Check if Academy's @loop was already applied
+    if hasattr(func, '__wrapped__') and hasattr(func, '__name__'):
+        import warnings
+        warnings.warn(
+            f"Method '{func.__name__}' appears to already have Academy's @loop decorator. "
+            f"When using @chiltepin_agent, import 'loop' from chiltepin.agents, not academy.agent. "
+            f"This ensures consistent behavior with chiltepin's agent system.",
+            UserWarning,
+            stacklevel=2
+        )
+
+    func._chiltepin_loop = True
     return func
 
 
@@ -251,9 +312,9 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
     The decorator automatically creates an Agent wrapper that manages the workflow
     lifecycle and exposes the behavior's methods as actions.
 
-    Only methods marked with @expose, @action, or @loop decorators are exposed as
-    agent actions. Use @expose for sync methods (especially @python_task methods)
-    and @expose or @action for async methods. @loop methods are automatically exposed.
+    Only methods marked with @action or @loop decorators are exposed as agent actions.
+    Use @action for any method (sync or async) you want to expose, and @loop for
+    background loops. Both decorators should be imported from chiltepin.agents.
 
     The behavior class must accept `config` as its first __init__ parameter.
 
@@ -266,9 +327,8 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
 
     Example:
         ```python
-        from chiltepin.agents import chiltepin_agent, expose
+        from chiltepin.agents import chiltepin_agent, action, loop
         from chiltepin.tasks import python_task
-        from academy.agent import action, loop
 
         @chiltepin_agent(include=["ursa-compute"])
         class MyModel:
@@ -278,7 +338,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 self.config = config
                 self.temperature = temperature
 
-            @expose  # ← Use @expose for sync/task-decorated methods
+            @action  # ← Use @action for sync/task-decorated methods
             @python_task
             def run_model(self) -> str:
                 # Import modules inside methods for serialization
@@ -286,11 +346,11 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 # Can directly access self.temperature!
                 return f"Predicted: {self.temperature + random.uniform(0, 5):.2f} degrees"
 
-            @expose  # ← Use @expose or @action for async methods
+            @action  # ← Use @action for async methods too
             async def get_status(self) -> str:
                 return f"Temperature: {self.temperature:.2f}"
 
-            @loop  # ← Loop methods are automatically exposed
+            @loop  # ← Use @loop for background loops
             async def update_temperature(self, shutdown) -> None:
                 # Import modules inside methods for serialization
                 import asyncio
@@ -301,7 +361,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                     self.temperature += random.uniform(-3, 3)
 
             def _private_helper(self):
-                # Not decorated with @expose, won't be exposed
+                # Not decorated with @action, won't be exposed
                 pass
 
         # Usage is the same as regular agents
@@ -310,7 +370,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
         status = await model.get_status()
         ```
     """
-    from academy.agent import action, loop as loop_decorator
+    from academy.agent import action as academy_action, loop as academy_loop
     import asyncio
     import inspect
 
@@ -361,22 +421,19 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
             if name in dir(object):
                 continue
 
-            # Check if this method was marked with @expose, @action, or @loop
+            # Check if this method was marked with @action or @loop
             is_loop_method = False
             is_exposed = False
 
-            # Check for @loop - has 'shutdown' parameter
-            if inspect.iscoroutinefunction(attr):
-                sig = inspect.signature(attr)
-                params = list(sig.parameters.keys())
-                if 'shutdown' in params:
-                    is_loop_method = True
+            # Check for @loop - must have _chiltepin_loop marker
+            if hasattr(attr, '_chiltepin_loop'):
+                is_loop_method = True
 
-            # Check for @expose marker (our custom decorator)
+            # Check for @action marker (our custom decorator sets _chiltepin_expose)
             if hasattr(attr, '_chiltepin_expose'):
                 is_exposed = True
 
-            # Check for @action marker - these decorators typically set __wrapped__
+            # Check for Academy's @action marker - these decorators typically set __wrapped__
             if hasattr(attr, '__wrapped__'):
                 is_exposed = True
 
@@ -384,7 +441,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
             if is_loop_method:
                 # This is a @loop method - wrap it appropriately
                 def make_loop_method(method_name):
-                    @loop_decorator
+                    @academy_loop
                     async def loop_method(self, shutdown: asyncio.Event) -> None:
                         method = getattr(self._behavior, method_name)
                         await method(shutdown)
@@ -396,12 +453,12 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 setattr(ChiltepinAgentWrapper, name, make_loop_method(name))
 
             elif is_exposed:
-                # Method was decorated with @expose or @action
+                # Method was decorated with @action
                 # Wrap it as an action
                 if inspect.iscoroutinefunction(attr):
                     # Async action
                     def make_async_action(method_name):
-                        @action
+                        @academy_action
                         async def action_method(self, **kwargs):
                             method = getattr(self._behavior, method_name)
                             return await method(**kwargs)
@@ -414,7 +471,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 else:
                     # Sync action (might be task-decorated)
                     def make_action(method_name):
-                        @action
+                        @academy_action
                         async def action_method(self, **kwargs):
                             method = getattr(self._behavior, method_name)
                             result = method(**kwargs)
