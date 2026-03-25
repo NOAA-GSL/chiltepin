@@ -215,6 +215,34 @@ class ChiltepinAgent(Agent):
             self._workflow.cleanup()
 
 
+def expose(func):
+    """Marker decorator to indicate a method should be exposed as an agent action.
+
+    Use this decorator on methods in classes decorated with @chiltepin_agent to
+    mark them as actions that should be exposed through the agent interface.
+
+    This is an alternative to using Academy's @action decorator, which requires
+    async methods. Use @expose for sync methods (especially @python_task methods)
+    and either @expose or @action for async methods.
+
+    Example:
+        ```python
+        @chiltepin_agent(include=["compute"])
+        class MyModel:
+            @expose
+            @python_task
+            def compute(self):
+                return "result"
+
+            @expose  # or @action
+            async def get_status(self):
+                return "ready"
+        ```
+    """
+    func._chiltepin_expose = True
+    return func
+
+
 def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[str] = None):
     """Decorator that wraps a regular Python class (behavior) in an Academy Agent.
 
@@ -223,8 +251,9 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
     The decorator automatically creates an Agent wrapper that manages the workflow
     lifecycle and exposes the behavior's methods as actions.
 
-    Only methods marked with @action or @loop decorators are exposed as agent actions.
-    This provides explicit control over the agent's public API.
+    Only methods marked with @expose, @action, or @loop decorators are exposed as
+    agent actions. Use @expose for sync methods (especially @python_task methods)
+    and @expose or @action for async methods. @loop methods are automatically exposed.
 
     The behavior class must accept `config` as its first __init__ parameter.
 
@@ -237,7 +266,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
 
     Example:
         ```python
-        from chiltepin.agents import chiltepin_agent
+        from chiltepin.agents import chiltepin_agent, expose
         from chiltepin.tasks import python_task
         from academy.agent import action, loop
 
@@ -249,7 +278,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 self.config = config
                 self.temperature = temperature
 
-            @action  # ← Mark methods to expose as actions
+            @expose  # ← Use @expose for sync/task-decorated methods
             @python_task
             def run_model(self) -> str:
                 # Import modules inside methods for serialization
@@ -257,7 +286,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 # Can directly access self.temperature!
                 return f"Predicted: {self.temperature + random.uniform(0, 5):.2f} degrees"
 
-            @action  # ← Mark async methods as actions too
+            @expose  # ← Use @expose or @action for async methods
             async def get_status(self) -> str:
                 return f"Temperature: {self.temperature:.2f}"
 
@@ -272,7 +301,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                     self.temperature += random.uniform(-3, 3)
 
             def _private_helper(self):
-                # Not decorated with @action, won't be exposed
+                # Not decorated with @expose, won't be exposed
                 pass
 
         # Usage is the same as regular agents
@@ -332,10 +361,9 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
             if name in dir(object):
                 continue
 
-            # Check if this method was marked with @action or @loop by looking for
-            # marker attributes that these decorators add, or by checking the signature
+            # Check if this method was marked with @expose, @action, or @loop
             is_loop_method = False
-            is_action_method = False
+            is_exposed = False
 
             # Check for @loop - has 'shutdown' parameter
             if inspect.iscoroutinefunction(attr):
@@ -344,21 +372,15 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 if 'shutdown' in params:
                     is_loop_method = True
 
+            # Check for @expose marker (our custom decorator)
+            if hasattr(attr, '_chiltepin_expose'):
+                is_exposed = True
+
             # Check for @action marker - these decorators typically set __wrapped__
-            # or the method itself is marked during decoration
-            if hasattr(attr, '__wrapped__') or hasattr(attr, '_action_wrapper'):
-                is_action_method = True
+            if hasattr(attr, '__wrapped__'):
+                is_exposed = True
 
-            # Also check if the function itself has any decorator metadata
-            # Academy's @action may not set attributes on unbound methods,
-            # so we need a more permissive check for now
-            # For explicit control, users should use @action or @loop decorators
-
-            # For now, let's be permissive: if it has @loop-like signature, treat as loop
-            # Otherwise, only expose if it looks like it was decorated with @action
-            # Since @action might not leave markers on plain class methods,
-            # we'll check for __wrapped__ or just assume task-decorated methods are actions
-
+            # Only wrap methods that are explicitly marked
             if is_loop_method:
                 # This is a @loop method - wrap it appropriately
                 def make_loop_method(method_name):
@@ -373,8 +395,8 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
 
                 setattr(ChiltepinAgentWrapper, name, make_loop_method(name))
 
-            elif is_action_method or hasattr(attr, '__wrapped__'):
-                # Method was decorated with @action or some other decorator
+            elif is_exposed:
+                # Method was decorated with @expose or @action
                 # Wrap it as an action
                 if inspect.iscoroutinefunction(attr):
                     # Async action

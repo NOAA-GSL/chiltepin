@@ -19,6 +19,7 @@ __all__ = [
     "AgentSystem",
     "ChiltepinAgent",
     "chiltepin_agent",
+    "expose",
 ]
 
 
@@ -44,6 +45,10 @@ def __getattr__(name):
             return locals()[name]
         elif name == "chiltepin_agent":
             from chiltepin.agents import chiltepin_agent  # noqa: F401
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "expose":
+            from chiltepin.agents import expose  # noqa: F401
             globals()[name] = locals()[name]
             return locals()[name]
 
