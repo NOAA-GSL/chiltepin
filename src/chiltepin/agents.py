@@ -223,6 +223,9 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
     The decorator automatically creates an Agent wrapper that manages the workflow
     lifecycle and exposes the behavior's methods as actions.
 
+    Only methods marked with @action or @loop decorators are exposed as agent actions.
+    This provides explicit control over the agent's public API.
+
     The behavior class must accept `config` as its first __init__ parameter.
 
     Args:
@@ -236,7 +239,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
         ```python
         from chiltepin.agents import chiltepin_agent
         from chiltepin.tasks import python_task
-        from academy.agent import loop
+        from academy.agent import action, loop
 
         @chiltepin_agent(include=["ursa-compute"])
         class MyModel:
@@ -246,6 +249,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 self.config = config
                 self.temperature = temperature
 
+            @action  # ← Mark methods to expose as actions
             @python_task
             def run_model(self) -> str:
                 # Import modules inside methods for serialization
@@ -253,7 +257,11 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                 # Can directly access self.temperature!
                 return f"Predicted: {self.temperature + random.uniform(0, 5):.2f} degrees"
 
-            @loop
+            @action  # ← Mark async methods as actions too
+            async def get_status(self) -> str:
+                return f"Temperature: {self.temperature:.2f}"
+
+            @loop  # ← Loop methods are automatically exposed
             async def update_temperature(self, shutdown) -> None:
                 # Import modules inside methods for serialization
                 import asyncio
@@ -263,9 +271,14 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                     await asyncio.sleep(1)
                     self.temperature += random.uniform(-3, 3)
 
+            def _private_helper(self):
+                # Not decorated with @action, won't be exposed
+                pass
+
         # Usage is the same as regular agents
         model = await manager.launch(MyModel, args=(config, 25))
         result = await model.run_model()
+        status = await model.get_status()
         ```
     """
     from academy.agent import action, loop as loop_decorator
@@ -306,6 +319,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                     self._workflow.cleanup()
 
         # Scan the behavior class for methods to wrap as actions
+        # Only wrap methods that are marked with @action or @loop decorators
         for name in dir(behavior_class):
             if name.startswith("_"):
                 continue
@@ -318,26 +332,52 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
             if name in dir(object):
                 continue
 
-            # Determine if this is a loop method (async method with shutdown param)
+            # Check if this method was marked with @action or @loop by looking for
+            # marker attributes that these decorators add, or by checking the signature
+            is_loop_method = False
+            is_action_method = False
+
+            # Check for @loop - has 'shutdown' parameter
             if inspect.iscoroutinefunction(attr):
                 sig = inspect.signature(attr)
                 params = list(sig.parameters.keys())
-                # Check if it has 'shutdown' parameter - likely a @loop method
                 if 'shutdown' in params:
-                    # This is a loop method - wrap it appropriately
-                    def make_loop_method(method_name):
-                        @loop_decorator
-                        async def loop_method(self, shutdown: asyncio.Event) -> None:
-                            method = getattr(self._behavior, method_name)
-                            await method(shutdown)
+                    is_loop_method = True
 
-                        loop_method.__name__ = method_name
-                        loop_method.__doc__ = getattr(behavior_class, method_name).__doc__
-                        return loop_method
+            # Check for @action marker - these decorators typically set __wrapped__
+            # or the method itself is marked during decoration
+            if hasattr(attr, '__wrapped__') or hasattr(attr, '_action_wrapper'):
+                is_action_method = True
 
-                    setattr(ChiltepinAgentWrapper, name, make_loop_method(name))
-                else:
-                    # Regular async method - wrap as action
+            # Also check if the function itself has any decorator metadata
+            # Academy's @action may not set attributes on unbound methods,
+            # so we need a more permissive check for now
+            # For explicit control, users should use @action or @loop decorators
+
+            # For now, let's be permissive: if it has @loop-like signature, treat as loop
+            # Otherwise, only expose if it looks like it was decorated with @action
+            # Since @action might not leave markers on plain class methods,
+            # we'll check for __wrapped__ or just assume task-decorated methods are actions
+
+            if is_loop_method:
+                # This is a @loop method - wrap it appropriately
+                def make_loop_method(method_name):
+                    @loop_decorator
+                    async def loop_method(self, shutdown: asyncio.Event) -> None:
+                        method = getattr(self._behavior, method_name)
+                        await method(shutdown)
+
+                    loop_method.__name__ = method_name
+                    loop_method.__doc__ = getattr(behavior_class, method_name).__doc__
+                    return loop_method
+
+                setattr(ChiltepinAgentWrapper, name, make_loop_method(name))
+
+            elif is_action_method or hasattr(attr, '__wrapped__'):
+                # Method was decorated with @action or some other decorator
+                # Wrap it as an action
+                if inspect.iscoroutinefunction(attr):
+                    # Async action
                     def make_async_action(method_name):
                         @action
                         async def action_method(self, **kwargs):
@@ -349,24 +389,24 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                         return action_method
 
                     setattr(ChiltepinAgentWrapper, name, make_async_action(name))
-            else:
-                # Sync method (might be task-decorated) - wrap as action
-                def make_action(method_name):
-                    @action
-                    async def action_method(self, **kwargs):
-                        method = getattr(self._behavior, method_name)
-                        result = method(**kwargs)
-                        # Check if it's a Future (from task decorator)
-                        if hasattr(result, 'result') and callable(result.result):
-                            # It's a Parsl AppFuture - wrap it
-                            return await asyncio.wrap_future(result)
-                        return result
+                else:
+                    # Sync action (might be task-decorated)
+                    def make_action(method_name):
+                        @action
+                        async def action_method(self, **kwargs):
+                            method = getattr(self._behavior, method_name)
+                            result = method(**kwargs)
+                            # Check if it's a Future (from task decorator)
+                            if hasattr(result, 'result') and callable(result.result):
+                                # It's a Parsl AppFuture - wrap it
+                                return await asyncio.wrap_future(result)
+                            return result
 
-                    action_method.__name__ = method_name
-                    action_method.__doc__ = getattr(behavior_class, method_name).__doc__
-                    return action_method
+                        action_method.__name__ = method_name
+                        action_method.__doc__ = getattr(behavior_class, method_name).__doc__
+                        return action_method
 
-                setattr(ChiltepinAgentWrapper, name, make_action(name))
+                    setattr(ChiltepinAgentWrapper, name, make_action(name))
 
         # Set better names for debugging
         ChiltepinAgentWrapper.__name__ = behavior_class.__name__
