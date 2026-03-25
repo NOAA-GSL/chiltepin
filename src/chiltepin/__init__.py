@@ -18,7 +18,6 @@ __all__ = [
     "Workflow",
     "AgentSystem",
     "ChiltepinManager",
-    "ChiltepinAgent",
     "chiltepin_agent",
     "action",
     "loop",
@@ -43,10 +42,6 @@ def __getattr__(name):
             return locals()[name]
         elif name == "ChiltepinManager":
             from chiltepin.agents import ChiltepinManager  # noqa: F401
-            globals()[name] = locals()[name]
-            return locals()[name]
-        elif name == "ChiltepinAgent":
-            from chiltepin.agents import ChiltepinAgent  # noqa: F401
             globals()[name] = locals()[name]
             return locals()[name]
         elif name == "chiltepin_agent":
