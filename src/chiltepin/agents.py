@@ -237,7 +237,6 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
         from chiltepin.agents import chiltepin_agent
         from chiltepin.tasks import python_task
         from academy.agent import loop
-        import asyncio
 
         @chiltepin_agent(include=["ursa-compute"])
         class MyModel:
@@ -249,11 +248,17 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
 
             @python_task
             def run_model(self) -> str:
+                # Import modules inside methods for serialization
+                import random
                 # Can directly access self.temperature!
-                return f"Predicted: {self.temperature:.2f} degrees"
+                return f"Predicted: {self.temperature + random.uniform(0, 5):.2f} degrees"
 
             @loop
-            async def update_temperature(self, shutdown: asyncio.Event) -> None:
+            async def update_temperature(self, shutdown) -> None:
+                # Import modules inside methods for serialization
+                import asyncio
+                import random
+
                 while not shutdown.is_set():
                     await asyncio.sleep(1)
                     self.temperature += random.uniform(-3, 3)
@@ -309,8 +314,8 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
             if not callable(attr):
                 continue
 
-            # Check if it's a method (has __func__) or just a function
-            if not (inspect.ismethod(attr) or inspect.isfunction(attr)):
+            # Skip if it's inherited from base object class
+            if name in dir(object):
                 continue
 
             # Determine if this is a loop method (async method with shutdown param)
@@ -327,7 +332,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                             await method(shutdown)
 
                         loop_method.__name__ = method_name
-                        loop_method.__doc__ = attr.__doc__
+                        loop_method.__doc__ = getattr(behavior_class, method_name).__doc__
                         return loop_method
 
                     setattr(ChiltepinAgentWrapper, name, make_loop_method(name))
@@ -340,7 +345,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                             return await method(**kwargs)
 
                         action_method.__name__ = method_name
-                        action_method.__doc__ = attr.__doc__
+                        action_method.__doc__ = getattr(behavior_class, method_name).__doc__
                         return action_method
 
                     setattr(ChiltepinAgentWrapper, name, make_async_action(name))
@@ -358,7 +363,7 @@ def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[st
                         return result
 
                     action_method.__name__ = method_name
-                    action_method.__doc__ = attr.__doc__
+                    action_method.__doc__ = getattr(behavior_class, method_name).__doc__
                     return action_method
 
                 setattr(ChiltepinAgentWrapper, name, make_action(name))
