@@ -213,3 +213,162 @@ class ChiltepinAgent(Agent):
         """
         if self._workflow is not None:
             self._workflow.cleanup()
+
+
+def chiltepin_agent(*, include: Optional[List[str]] = None, run_dir: Optional[str] = None):
+    """Decorator that wraps a regular Python class (behavior) in an Academy Agent.
+
+    This decorator allows you to write agent behavior as a regular, serializable
+    Python class where task-decorated methods can access instance state directly.
+    The decorator automatically creates an Agent wrapper that manages the workflow
+    lifecycle and exposes the behavior's methods as actions.
+
+    The behavior class must accept `config` as its first __init__ parameter.
+
+    Args:
+        include: List of resource labels to load. If None, all resources are loaded.
+        run_dir: Directory for Parsl runtime files. If None, uses Parsl's default.
+
+    Returns:
+        A decorator function that wraps the behavior class in an Agent.
+
+    Example:
+        ```python
+        from chiltepin.agents import chiltepin_agent
+        from chiltepin.tasks import python_task
+        from academy.agent import loop
+        import asyncio
+
+        @chiltepin_agent(include=["ursa-compute"])
+        class MyModel:
+            '''Regular Python class - fully serializable!'''
+
+            def __init__(self, config, temperature: float):
+                self.config = config
+                self.temperature = temperature
+
+            @python_task
+            def run_model(self) -> str:
+                # Can directly access self.temperature!
+                return f"Predicted: {self.temperature:.2f} degrees"
+
+            @loop
+            async def update_temperature(self, shutdown: asyncio.Event) -> None:
+                while not shutdown.is_set():
+                    await asyncio.sleep(1)
+                    self.temperature += random.uniform(-3, 3)
+
+        # Usage is the same as regular agents
+        model = await manager.launch(MyModel, args=(config, 25))
+        result = await model.run_model()
+        ```
+    """
+    from academy.agent import action, loop as loop_decorator
+    import asyncio
+    import inspect
+
+    def decorator(behavior_class):
+        """Inner decorator that receives the behavior class."""
+
+        # Create a wrapper Agent class dynamically
+        class ChiltepinAgentWrapper(Agent):
+            def __init__(self, config, *args, **kwargs):
+                """Initialize with config as first param, rest go to behavior."""
+                super().__init__()
+                # Store config for workflow setup
+                self._config = config
+                self._include = include
+                self._run_dir = run_dir
+                self._workflow = None
+                self._dfk = None
+                # Create the behavior instance
+                self._behavior = behavior_class(config, *args, **kwargs)
+
+            async def agent_on_startup(self) -> None:
+                """Start the workflow when the agent starts."""
+                from chiltepin import Workflow
+
+                self._workflow = Workflow(
+                    self._config,
+                    include=self._include,
+                    run_dir=self._run_dir,
+                )
+                self._dfk = self._workflow.start()
+
+            async def agent_on_shutdown(self) -> None:
+                """Clean up the workflow when the agent shuts down."""
+                if self._workflow is not None:
+                    self._workflow.cleanup()
+
+        # Scan the behavior class for methods to wrap as actions
+        for name in dir(behavior_class):
+            if name.startswith("_"):
+                continue
+
+            attr = getattr(behavior_class, name)
+            if not callable(attr):
+                continue
+
+            # Check if it's a method (has __func__) or just a function
+            if not (inspect.ismethod(attr) or inspect.isfunction(attr)):
+                continue
+
+            # Determine if this is a loop method (async method with shutdown param)
+            if inspect.iscoroutinefunction(attr):
+                sig = inspect.signature(attr)
+                params = list(sig.parameters.keys())
+                # Check if it has 'shutdown' parameter - likely a @loop method
+                if 'shutdown' in params:
+                    # This is a loop method - wrap it appropriately
+                    def make_loop_method(method_name):
+                        @loop_decorator
+                        async def loop_method(self, shutdown: asyncio.Event) -> None:
+                            method = getattr(self._behavior, method_name)
+                            await method(shutdown)
+
+                        loop_method.__name__ = method_name
+                        loop_method.__doc__ = attr.__doc__
+                        return loop_method
+
+                    setattr(ChiltepinAgentWrapper, name, make_loop_method(name))
+                else:
+                    # Regular async method - wrap as action
+                    def make_async_action(method_name):
+                        @action
+                        async def action_method(self, **kwargs):
+                            method = getattr(self._behavior, method_name)
+                            return await method(**kwargs)
+
+                        action_method.__name__ = method_name
+                        action_method.__doc__ = attr.__doc__
+                        return action_method
+
+                    setattr(ChiltepinAgentWrapper, name, make_async_action(name))
+            else:
+                # Sync method (might be task-decorated) - wrap as action
+                def make_action(method_name):
+                    @action
+                    async def action_method(self, **kwargs):
+                        method = getattr(self._behavior, method_name)
+                        result = method(**kwargs)
+                        # Check if it's a Future (from task decorator)
+                        if hasattr(result, 'result') and callable(result.result):
+                            # It's a Parsl AppFuture - wrap it
+                            return await asyncio.wrap_future(result)
+                        return result
+
+                    action_method.__name__ = method_name
+                    action_method.__doc__ = attr.__doc__
+                    return action_method
+
+                setattr(ChiltepinAgentWrapper, name, make_action(name))
+
+        # Set better names for debugging
+        ChiltepinAgentWrapper.__name__ = behavior_class.__name__
+        ChiltepinAgentWrapper.__qualname__ = behavior_class.__qualname__
+        ChiltepinAgentWrapper.__module__ = behavior_class.__module__
+        ChiltepinAgentWrapper.__doc__ = behavior_class.__doc__
+
+        return ChiltepinAgentWrapper
+
+    return decorator
