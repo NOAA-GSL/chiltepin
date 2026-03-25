@@ -16,6 +16,8 @@ except PackageNotFoundError:
 
 __all__ = [
     "Workflow",
+    "AgentSystem",
+    "ChiltepinAgent",
 ]
 
 
@@ -27,10 +29,18 @@ def __getattr__(name):
     This also enables attribute-style access to submodules (e.g., chiltepin.configure).
     """
     if name in __all__:
-        from chiltepin.workflow import Workflow  # noqa: F401
-
-        globals()[name] = locals()[name]
-        return locals()[name]
+        if name == "Workflow":
+            from chiltepin.workflow import Workflow  # noqa: F401
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "AgentSystem":
+            from chiltepin.agents import AgentSystem  # noqa: F401
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "ChiltepinAgent":
+            from chiltepin.agents import ChiltepinAgent  # noqa: F401
+            globals()[name] = locals()[name]
+            return locals()[name]
 
     # Try to import as a submodule
     try:

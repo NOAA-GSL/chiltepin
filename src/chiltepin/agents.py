@@ -6,8 +6,10 @@ This module provides simplified interfaces for integrating Academy agents
 with Chiltepin workflows and Parsl executors.
 """
 
-from typing import Optional
+from typing import Any, Dict, List, Optional, Union
+from pathlib import Path
 
+from academy.agent import Agent
 from academy.exchange.cloud.client import HttpExchangeFactory
 from academy.manager import Manager
 from parsl.concurrent import ParslPoolExecutor
@@ -121,3 +123,93 @@ class AgentSystem:
         Returns None if executors haven't been created yet.
         """
         return self._executors
+
+
+class ChiltepinAgent(Agent):
+    """Base class for Chiltepin agents with automatic workflow management.
+
+    This class automatically manages workflow lifecycle, eliminating boilerplate
+    code that users would otherwise need to write in agent_on_startup and
+    agent_on_shutdown methods.
+
+    The workflow is started when the agent starts and cleaned up when the agent
+    shuts down. Users simply define their actions with @action decorator and the
+    workflow automatically handles task execution.
+
+    Args:
+        config: Either a path to a YAML configuration file or a configuration dictionary
+        include: List of resource labels to load. If None, all resources are loaded.
+        run_dir: Directory for Parsl runtime files. If None, uses Parsl's default.
+        **kwargs: Additional keyword arguments (passed to subclass __init__)
+
+    Example:
+        ```python
+        from chiltepin.agents import ChiltepinAgent
+        from chiltepin.tasks import python_task
+        from academy.agent import action
+
+        @python_task
+        def run_model(temperature: float) -> str:
+            return f"Predicted: {temperature:.2f} degrees"
+
+        class MyModel(ChiltepinAgent):
+            def __init__(self, config, temperature: float):
+                super().__init__(config, include=["ursa-compute"])
+                self.temperature = temperature
+
+            @action
+            async def predict(self) -> str:
+                import asyncio
+                # Tasks automatically use the managed workflow
+                return await asyncio.wrap_future(run_model(self.temperature))
+        ```
+    """
+
+    def __init__(
+        self,
+        config: Union[str, Path, Dict[str, Any]],
+        *,
+        include: Optional[List[str]] = None,
+        run_dir: Optional[str] = None,
+        **kwargs
+    ):
+        """Initialize the ChiltepinAgent with workflow configuration.
+
+        Args:
+            config: Either a path to a YAML configuration file or a configuration dictionary
+            include: List of resource labels to load. If None, all resources are loaded.
+            run_dir: Directory for Parsl runtime files. If None, uses Parsl's default.
+            **kwargs: Additional keyword arguments (available for subclass use)
+        """
+        super().__init__()
+        self._config = config
+        self._include = include
+        self._run_dir = run_dir
+        self._workflow = None
+        self._dfk = None
+
+    async def agent_on_startup(self) -> None:
+        """Start the workflow when the agent starts.
+
+        This method is called automatically by the Academy Agent framework.
+        Users can override this method but should call super().agent_on_startup()
+        to ensure the workflow is started.
+        """
+        from chiltepin import Workflow
+
+        self._workflow = Workflow(
+            self._config,
+            include=self._include,
+            run_dir=self._run_dir,
+        )
+        self._dfk = self._workflow.start()
+
+    async def agent_on_shutdown(self) -> None:
+        """Clean up the workflow when the agent shuts down.
+
+        This method is called automatically by the Academy Agent framework.
+        Users can override this method but should call super().agent_on_shutdown()
+        to ensure the workflow is cleaned up.
+        """
+        if self._workflow is not None:
+            self._workflow.cleanup()
