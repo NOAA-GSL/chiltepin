@@ -19,7 +19,7 @@ be launched on remote resources and interacted with asynchronously through an ac
 Overview
 --------
 
-Chiltepin provides three main components for agent-based workflows:
+Chiltepin provides five main components for agent-based workflows:
 
 - **@chiltepin_agent**: Decorator to wrap a regular Python class as an agent
 - **@action**: Decorator to mark methods that should be exposed as agent actions

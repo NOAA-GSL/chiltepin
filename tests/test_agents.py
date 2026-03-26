@@ -499,20 +499,8 @@ class TestChiltepinAgentDecorator:
                 assert result == "public"
 
                 # Private methods should NOT be exposed as actions
-                # Try to call a private method - it should fail because it's not registered as an action
-                try:
+                with pytest.raises(AttributeError):
                     await agent._private_method()
-                    # If we get here, the private method was exposed (which is wrong)
-                    assert False, (
-                        "Private method _private_method should not be exposed as an action"
-                    )
-                except AttributeError:
-                    # Expected: private methods shouldn't be accessible as actions
-                    pass
-                except Exception:
-                    # Some other error is also acceptable - the key is it shouldn't work as an action
-                    # as long as it's not a normal successful call
-                    pass
         finally:
             workflow.cleanup()
 

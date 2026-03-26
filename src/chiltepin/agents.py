@@ -361,14 +361,15 @@ def chiltepin_agent(
                 # Not decorated with @action, won't be exposed
                 pass
 
-        # Usage with default configuration
-        model = await manager.launch(MyModel, args=(config, 25))
+        # Launch agent using decorator defaults (include=["ursa-compute"])
+        model = await manager.launch(MyModel, config=config, args=(25,))
 
-        # Or override at runtime
+        # Override decorator defaults at runtime
         model = await manager.launch(
             MyModel,
-            args=(config, 25),
-            include=["runtime-executor"],  # ← Runtime override
+            config=config,
+            args=(25,),
+            include=["runtime-executor"],  # ← Override decorator's include
         )
 
         result = await model.run_model()
@@ -472,10 +473,6 @@ def chiltepin_agent(
 
             # Check for @action marker (our custom decorator sets _chiltepin_expose)
             if hasattr(attr, "_chiltepin_expose"):
-                is_exposed = True
-
-            # Check for Academy's @action marker - these decorators typically set __wrapped__
-            if hasattr(attr, "__wrapped__"):
                 is_exposed = True
 
             # Only wrap methods that are explicitly marked
