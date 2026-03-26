@@ -34,26 +34,32 @@ def __getattr__(name):
     if name in __all__:
         if name == "Workflow":
             from chiltepin.workflow import Workflow  # noqa: F401
+
             globals()[name] = locals()[name]
             return locals()[name]
         elif name == "AgentSystem":
             from chiltepin.agents import AgentSystem  # noqa: F401
+
             globals()[name] = locals()[name]
             return locals()[name]
         elif name == "ChiltepinManager":
             from chiltepin.agents import ChiltepinManager  # noqa: F401
+
             globals()[name] = locals()[name]
             return locals()[name]
         elif name == "chiltepin_agent":
             from chiltepin.agents import chiltepin_agent  # noqa: F401
+
             globals()[name] = locals()[name]
             return locals()[name]
         elif name == "action":
             from chiltepin.agents import action  # noqa: F401
+
             globals()[name] = locals()[name]
             return locals()[name]
         elif name == "loop":
             from chiltepin.agents import loop  # noqa: F401
+
             globals()[name] = locals()[name]
             return locals()[name]
 
