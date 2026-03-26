@@ -584,7 +584,7 @@ If the agent's internal workflow doesn't start:
 1. Check that ``config`` is passed to ``manager.launch()``
 2. Verify the configuration dict is valid (see :doc:`configuration`)
 3. Check that ``include`` parameter matches actual executor names in config
-4, Check that requested executors are available and can start (e.g. Slurm partition is correct)
+4. Check that requested executors are available and can start (e.g. Slurm partition is correct)
 5. Check that resources are available (e.g. Slurm queue isn't full)
 
 See Also
