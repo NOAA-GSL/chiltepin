@@ -29,10 +29,13 @@ except ImportError as e:
 
 from globus_compute_sdk import Client
 from globus_compute_sdk.sdk.auth.auth_client import ComputeAuthClient
-from globus_compute_sdk.sdk.auth.globus_app import get_globus_app
+from globus_compute_sdk.sdk.auth.globus_app import get_globus_app as get_globus_compute_app
+# from globus_compute_sdk.sdk.auth.globus_app import get_globus_app
 from globus_compute_sdk.sdk.web_client import WebClient
 from globus_sdk import ClientApp, GlobusApp, TransferClient, UserApp
 from globus_sdk.gare import GlobusAuthorizationParameters
+from academy.exchange.cloud.login import get_globus_app as get_globus_academy_app
+from academy.exchange.cloud.scopes import AcademyExchangeScopes
 
 endpoint_template = """# This is the default user-endpoint-process (UEP) template provided with
 # newly-configured endpoints.  Endpoints generate a UEP-specific configuration
@@ -166,7 +169,7 @@ def _check_endpoint_management_available():
         ) from _ENDPOINT_IMPORT_ERROR
 
 
-def get_chiltepin_apps() -> (GlobusApp, GlobusApp):
+def get_chiltepin_apps() -> (GlobusApp, GlobusApp, GlobusApp):
     """Log in to the Chiltepin app
 
     This instantiates GlobusApp objects for use in creating Globus Compute
@@ -182,7 +185,7 @@ def get_chiltepin_apps() -> (GlobusApp, GlobusApp):
     Returns
     -------
 
-    (GlobusApp, GlobusApp)
+    (GlobusApp, GlobusApp, GlobusApp)
     """
     # Get client id and secret from environment if they are set
     client_id = os.environ.get("GLOBUS_COMPUTE_CLIENT_ID", None)
@@ -198,15 +201,18 @@ def get_chiltepin_apps() -> (GlobusApp, GlobusApp):
     if client_secret:
         os.environ["GLOBUS_CLI_CLIENT_ID"] = client_id
         os.environ["GLOBUS_CLI_CLIENT_SECRET"] = client_secret
+        os.environ["ACADEMY_GLOBUS_CLIENT_ID"] = client_id
+        os.environ["ACADEMY_GLOBUS_CLIENT_SECRET"] = client_secret
 
     # If a client id was not found in the environment, use the default Chiltepin client id
     if not client_id:
         client_id = CHILTEPIN_CLIENT_UUID
-        os.environ["GLOBUS_COMPUTE_CLIENT_ID"] = client_id
+        # os.environ["GLOBUS_COMPUTE_CLIENT_ID"] = client_id
         # NOTE: $GLOBUS_CLI_CLIENT_ID should only be set if $GLOBUS_CLI_CLIENT_SECRET is also set
+        # NOTE: $ACADEMY_GLOBUS_CLIENT_ID should only be set if $ACADEMY_GLOBUS_CLIENT_SECRET is also set
 
     # Get the Globus App the compute client will use
-    compute_app = get_globus_app()
+    compute_app = get_globus_compute_app()
     compute_app.add_scope_requirements(
         {
             WebClient.scopes.resource_server: WebClient.default_scope_requirements,
@@ -229,8 +235,18 @@ def get_chiltepin_apps() -> (GlobusApp, GlobusApp):
             client_id=client_id,
         )
 
+    # # Get the Globus App for Academy Agent Exchange authendication
+    academy_app = get_globus_academy_app()
+    academy_app.add_scope_requirements(
+        {
+            AcademyExchangeScopes.resource_server: [
+                AcademyExchangeScopes.academy_exchange,
+            ],
+        },
+    )
+
     # Return the Apps
-    return (compute_app, transfer_app)
+    return (compute_app, transfer_app, academy_app)
 
 
 def login() -> Dict[str, Union[Client, TransferClient]]:
@@ -248,13 +264,15 @@ def login() -> Dict[str, Union[Client, TransferClient]]:
     Dict[str, Client | TransferClient]
     """
     # Get the Globus Apps for use in creating the clients
-    compute_app, transfer_app = get_chiltepin_apps()
+    compute_app, transfer_app, academy_app = get_chiltepin_apps()
 
     # Initialize the compute client
     compute_client = Client(app=compute_app)
 
     # Initialize the transfer client
     transfer_client = TransferClient(app=transfer_app)
+
+    # We don't need an Academy client instance
 
     # transfer_client.add_app_data_access_scope("d75f3e86-df3c-4734-8b9d-f182346b4bbd")
 
@@ -271,6 +289,10 @@ def login() -> Dict[str, Union[Client, TransferClient]]:
             )
         )
 
+    # Initiate login for academy app if necessary
+    if academy_app.login_required():
+        academy_app.login()
+
     # Return the clients
     return {"compute": compute_client, "transfer": transfer_client}
 
@@ -285,9 +307,9 @@ def login_required() -> bool:
     bool
     """
     # Get the Globus Apps for use in creating the clients
-    compute_app, transfer_app = get_chiltepin_apps()
+    compute_app, transfer_app, academy_app = get_chiltepin_apps()
 
-    return compute_app.login_required() or transfer_app.login_required()
+    return compute_app.login_required() or transfer_app.login_required() or academy_app.login_required()
 
 
 def logout():
@@ -297,9 +319,10 @@ def logout():
     all credentials associated with them.
     """
     # Get the Globus Apps for use in creating the clients
-    compute_app, transfer_app = get_chiltepin_apps()
+    compute_app, transfer_app, academy_app = get_chiltepin_apps()
     compute_app.logout()
     transfer_app.logout()
+    academy_app.logout()
 
 
 def configure(
