@@ -7,11 +7,18 @@ import pathlib
 
 import pytest
 
+import chiltepin.endpoint
 from chiltepin.agents import action, chiltepin_agent, loop
 from chiltepin.tasks import python_task
 
 # Get project root for PYTHONPATH
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_academy_login():
+    """Ensure Academy Exchange login before any agent tests run."""
+    chiltepin.endpoint.login()
 
 
 def get_test_config(executor_name="test-executor"):
