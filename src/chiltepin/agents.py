@@ -20,9 +20,7 @@ from typing import List, Optional
 from academy.agent import Agent
 from academy.exchange.cloud.client import HttpExchangeFactory
 from academy.manager import Manager
-
 from parsl.concurrent import ParslPoolExecutor
-from parsl.dataflow.futures import AppFuture
 
 
 class ChiltepinManager(Manager):

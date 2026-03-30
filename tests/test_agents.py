@@ -618,7 +618,9 @@ class TestChiltepinManager:
                 result = await agent.compute(x=7, executor=["executor-1"])
                 assert result == 42  # 6 * 7 = 42
 
-                with pytest.raises(ValueError, match="Task 1 requested invalid executor executor-2"):
+                with pytest.raises(
+                    ValueError, match="Task 1 requested invalid executor executor-2"
+                ):
                     await agent.compute(x=7, executor=["executor-2"])
         finally:
             workflow.cleanup()
