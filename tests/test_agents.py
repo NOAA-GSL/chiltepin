@@ -618,16 +618,8 @@ class TestChiltepinManager:
                 result = await agent.compute(x=7, executor=["executor-1"])
                 assert result == 42  # 6 * 7 = 42
 
-                # Attempting to use executor-2 (not included) should fail or be unavailable
-                # The agent's workflow doesn't have executor-2 loaded
-                try:
+                with pytest.raises(ValueError, match="Task 1 requested invalid executor executor-2"):
                     await agent.compute(x=7, executor=["executor-2"])
-                    assert False, (
-                        "Should not be able to use executor-2 (not in include list)"
-                    )
-                except Exception:
-                    # Expected - executor-2 is not available in the agent's workflow
-                    pass
         finally:
             workflow.cleanup()
 

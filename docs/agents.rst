@@ -246,8 +246,8 @@ When using ``@python_task`` with ``@action``, the order matters:
 
    @chiltepin_agent()
    class Computer:
-       @action       # ← First
        @python_task  # ← Second
+       @action       # ← First
        def compute(self, x: int) -> int:
            return x ** 2
 

@@ -20,7 +20,9 @@ from typing import List, Optional
 from academy.agent import Agent
 from academy.exchange.cloud.client import HttpExchangeFactory
 from academy.manager import Manager
+
 from parsl.concurrent import ParslPoolExecutor
+from parsl.dataflow.futures import AppFuture
 
 
 class ChiltepinManager(Manager):
@@ -381,6 +383,7 @@ def chiltepin_agent(
 
     from academy.agent import action as academy_action
     from academy.agent import loop as academy_loop
+    from parsl.dataflow.futures import AppFuture
 
     # Capture decorator parameters for use in closure
     decorator_include = include
@@ -397,13 +400,13 @@ def chiltepin_agent(
             # executing in the local test process, not in remote workers or agent processes
             # managed by Academy's exchange system.
             def __init__(
-                self, *args, config=None, include=None, run_dir=None, **kwargs
+                self, *args, config={}, include=None, run_dir=None, **kwargs
             ):  # pragma: no cover
                 """Initialize the agent wrapper.
 
                 Args:
                     *args: Positional arguments for behavior class
-                    config: Configuration for Agent's workflow context (from manager.launch)
+                    config: Configuration for Agent's workflow context (from manager.launch), defaults to local config
                     include: Optional runtime override for Agent's workflow executor list (from manager.launch)
                     run_dir: Optional runtime override for Parsl's run directory (from manager.launch)
                     **kwargs: Keyword arguments for behavior class
@@ -521,8 +524,9 @@ def chiltepin_agent(
                         async def action_method(self, **kwargs):
                             method = getattr(self._behavior, method_name)
                             result = method(**kwargs)
-                            # Check if it's a Future (from task decorator)
-                            if hasattr(result, "result") and callable(result.result):
+
+                            # Check if it's a Parsl AppFuture (from task decorator)
+                            if isinstance(result, AppFuture):
                                 # It's a Parsl AppFuture - wrap it
                                 return await asyncio.wrap_future(result)
                             return result
