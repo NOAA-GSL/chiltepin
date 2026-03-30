@@ -27,15 +27,18 @@ except ImportError as e:
     get_config = None
     Endpoint = None
 
+from academy.exchange.cloud.login import get_globus_app as get_globus_academy_app
+from academy.exchange.cloud.scopes import AcademyExchangeScopes
 from globus_compute_sdk import Client
 from globus_compute_sdk.sdk.auth.auth_client import ComputeAuthClient
-from globus_compute_sdk.sdk.auth.globus_app import get_globus_app as get_globus_compute_app
+from globus_compute_sdk.sdk.auth.globus_app import (
+    get_globus_app as get_globus_compute_app,
+)
+
 # from globus_compute_sdk.sdk.auth.globus_app import get_globus_app
 from globus_compute_sdk.sdk.web_client import WebClient
 from globus_sdk import ClientApp, GlobusApp, TransferClient, UserApp
 from globus_sdk.gare import GlobusAuthorizationParameters
-from academy.exchange.cloud.login import get_globus_app as get_globus_academy_app
-from academy.exchange.cloud.scopes import AcademyExchangeScopes
 
 endpoint_template = """# This is the default user-endpoint-process (UEP) template provided with
 # newly-configured endpoints.  Endpoints generate a UEP-specific configuration
@@ -309,7 +312,11 @@ def login_required() -> bool:
     # Get the Globus Apps for use in creating the clients
     compute_app, transfer_app, academy_app = get_chiltepin_apps()
 
-    return compute_app.login_required() or transfer_app.login_required() or academy_app.login_required()
+    return (
+        compute_app.login_required()
+        or transfer_app.login_required()
+        or academy_app.login_required()
+    )
 
 
 def logout():
