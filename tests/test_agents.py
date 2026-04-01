@@ -1198,21 +1198,24 @@ def test_chiltepin_manager_rejects_native_academy_agent(tmp_path):
     workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
     workflow.start()
 
-    agent_system = AgentSystem(workflow=workflow, executor_names=["test-executor"])
+    try:
+        agent_system = AgentSystem(workflow=workflow, executor_names=["test-executor"])
 
-    async def try_launch():
-        async with await agent_system.manager() as manager:
-            with pytest.raises(
-                TypeError, match="only supports agents decorated with @chiltepin_agent"
-            ):
-                await manager.launch(
-                    DummyAcademyAgent, args=(123,), executor="test-executor"
-                )
+        async def try_launch():
+            async with await agent_system.manager() as manager:
+                with pytest.raises(
+                    TypeError,
+                    match="only supports agents decorated with @chiltepin_agent",
+                ):
+                    await manager.launch(
+                        DummyAcademyAgent, args=(123,), executor="test-executor"
+                    )
 
-    import asyncio
+        import asyncio
 
-    asyncio.run(try_launch())
-    workflow.cleanup()
+        asyncio.run(try_launch())
+    finally:
+        workflow.cleanup()
 
 
 def test_academy_action_decorator_rejected():
