@@ -258,10 +258,11 @@ def login() -> Dict[str, Union[Client, TransferClient]]:
     """Log in to the Chiltepin app
 
     This initiates the Globus login flow to log the user in to the Globus compute
-    and transfer services. The login will use the registered Chiltepin thick client
-    by default, or the client id and/or secret specified in the environment. This
-    returns a Globus Compute client and a Globus Transfer client in a dictionary.
-    Those clients can then be used for accessing those services.
+    and transfer services as well as the Academy Exchange. The login will use the
+    registered Chiltepin thick client by default, or the client id and/or secret
+    specified in the environment. This returns a Globus Compute client and a Globus
+    Transfer client in a dictionary. Those clients can then be used for accessing
+    those services.
 
     Returns
     -------
@@ -304,7 +305,7 @@ def login() -> Dict[str, Union[Client, TransferClient]]:
 
 def login_required() -> bool:
     """Check whether a chiltepin login is required to use the requested Globus
-    scopes needed by the Chiltepin transfer and computer Apps.
+    scopes needed by the Chiltepin transfer, compute, and Academy Apps.
 
     Returns
     -------

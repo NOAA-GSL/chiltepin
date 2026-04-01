@@ -133,8 +133,8 @@ class TestSubmoduleAccess:
             ("AgentSystem", "chiltepin.agents"),
             ("ChiltepinManager", "chiltepin.agents"),
             ("chiltepin_agent", "chiltepin.agents"),
-            ("action", "chiltepin.agents"),
-            ("loop", "chiltepin.agents"),
+            ("agent_action", "chiltepin.agents"),
+            ("agent_loop", "chiltepin.agents"),
         ],
     )
     def test_agent_related_attributes_lazy_loaded(self, attr, expected_module):
