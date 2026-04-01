@@ -325,8 +325,8 @@ def login_required() -> bool:
 def logout():
     """Log out of the Chiltepin app
 
-    This logs the user out of the Globus compute and transfer services and revokes
-    all credentials associated with them.
+    This logs the user out of the Globus Compute, Globus Transfer, and Academy
+    services and revokes all credentials associated with them.
     """
     # Get the Globus Apps for use in creating the clients
     compute_app, transfer_app, academy_app = get_chiltepin_apps()

@@ -15,12 +15,23 @@ Chiltepin's decorators work with both sync and async methods, while Academy's
 action decorator requires async methods only.
 """
 
-from typing import List, Optional
+from __future__ import annotations
+
+import asyncio
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
+from pathlib import Path
 
 from academy.agent import Agent
+from academy.handle import Handle
 from academy.exchange.cloud.client import HttpExchangeFactory
 from academy.manager import Manager
 from parsl.concurrent import ParslPoolExecutor
+
+if TYPE_CHECKING:
+    from academy.agent import AgentT
+    from chiltepin.workflow import Workflow
+else:
+    AgentT = TypeVar('AgentT')
 
 
 class ChiltepinManager(Manager):
@@ -36,30 +47,43 @@ class ChiltepinManager(Manager):
 
     async def launch(
         self,
-        agent_class,
-        args=None,
-        kwargs=None,
-        agent_workflow_config=None,
-        agent_workflow_include=None,
-        agent_workflow_run_dir=None,
-        **manager_kwargs,
-    ):
+        agent_class: Type[AgentT],
+        args: Optional[Tuple[Any, ...]] = None,
+        kwargs: Optional[Dict[str, Any]] = None,
+        agent_workflow_config: Optional[Union[str, Path, Dict[str, Any]]] = None,
+        agent_workflow_include: Optional[List[str]] = None,
+        agent_workflow_run_dir: Optional[str] = None,
+        **manager_kwargs: Any,
+    ) -> Handle[AgentT]:
         """Launch an agent, supporting chiltepin-specific configuration.
 
-        Args:
-            agent_class: The agent class to launch
-            args: Tuple of positional arguments for agent __init__ (behavior logic only)
-            kwargs: Dict of keyword arguments for agent __init__ (behavior logic only)
-            agent_workflow_config: Workflow configuration dict or path (chiltepin agents only)
-            agent_workflow_include: Optional list of executor labels for workflow (chiltepin agents only)
-            agent_workflow_run_dir: Optional run directory for workflow (chiltepin agents only)
-            **manager_kwargs: Other keyword arguments for Manager (e.g., executor, resources)
+        Parameters
+        ----------
+        agent_class : Type[AgentT]
+            The agent class to launch
+        args : Optional[Tuple[Any, ...]]
+            Tuple of positional arguments for agent __init__ (behavior logic only)
+        kwargs : Optional[Dict[str, Any]]
+            Dict of keyword arguments for agent __init__ (behavior logic only)
+        agent_workflow_config : Optional[Union[str, Path, Dict[str, Any]]]
+            Workflow configuration dict or path (chiltepin agents only)
+        agent_workflow_include : Optional[List[str]]
+            Optional list of executor labels for workflow (chiltepin agents only)
+        agent_workflow_run_dir : Optional[str]
+            Optional run directory for workflow (chiltepin agents only)
+        **manager_kwargs : Any
+            Other keyword arguments for Manager (e.g., executor, resources)
 
-        Returns:
+        Returns
+        -------
+        Handle[AgentT]
             The launched agent proxy
 
-        Example:
-            ```python
+        Examples
+        --------
+
+        .. code-block:: python
+
             model = await manager.launch(
                 MyModel,
                 agent_workflow_config=ursa_config,           # ← Workflow config
@@ -68,7 +92,6 @@ class ChiltepinManager(Manager):
                 args=(25.0,),                       # ← Behavior args only
                 executor="ursa-service-gc"          # ← Manager executor
             )
-            ```
         """
         # Only allow launching agents decorated with @chiltepin_agent
         if not getattr(agent_class, "_is_chiltepin_agent", False):
@@ -111,14 +134,22 @@ class AgentSystem:
     ParslPoolExecutors and HttpExchangeFactory, providing a clean interface
     for users who always use this pattern.
 
-    Args:
-        workflow: The Workflow instance to use for executing tasks and agents
-        executor_names: List of executor names for running agents on Parsl executors
-        exchange_address: The exchange server address
-        auth_method: Authentication method (default: "globus")
+    Parameters
+    ----------
+    workflow : Workflow
+        The Workflow instance to use for executing tasks and agents
+    executor_names : List[str]
+        List of executor names for running agents on Parsl executors
+    exchange_address : str
+        The exchange server address
+    auth_method : str
+        Authentication method (default: "globus")
 
-    Example:
-        ```python
+    Examples
+    --------
+
+    .. code-block:: python
+
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -138,23 +169,27 @@ class AgentSystem:
             result = await agent.some_action()
 
         workflow.cleanup()
-        ```
     """
 
     def __init__(
         self,
-        workflow,
-        executor_names: list[str],
+        workflow: Workflow,
+        executor_names: List[str],
         exchange_address: str = "https://exchange.academy-agents.org",
         auth_method: str = "globus",
-    ):
+    ) -> None:
         """Initialize the AgentSystem.
 
-        Args:
-            workflow: The Workflow instance with started dfk
-            executor_names: List of executor names for running agents on Parsl executors
-            exchange_address: The exchange server address
-            auth_method: Authentication method for accessing the exchange (default: "globus")
+        Parameters
+        ----------
+        workflow : Workflow
+            The Workflow instance with started dfk
+        executor_names : List[str]
+            List of executor names for running agents on Parsl executors
+        exchange_address : str
+            The exchange server address
+        auth_method : str
+            Authentication method for accessing the exchange (default: "globus")
         """
         self.workflow = workflow
         self.executor_names = executor_names
@@ -162,7 +197,7 @@ class AgentSystem:
         self.auth_method = auth_method
         self._executors: Optional[dict] = None
 
-    def _create_executors(self):
+    def _create_executors(self) -> None:
         """Create ParslPoolExecutors for all configured executor names."""
         if self.workflow.dfk is None:
             raise RuntimeError(
@@ -175,22 +210,26 @@ class AgentSystem:
             for name in self.executor_names
         }
 
-    async def manager(self):
-        """Create and return an Academy Manager context manager.
+    async def manager(self) -> ChiltepinManager:
+        """Create and return a Chiltepin Manager context manager.
 
-        This method returns an Academy Manager configured with HttpExchangeFactory
+        This method returns a Chiltepin Manager configured with HttpExchangeFactory
         using Globus authentication. The Manager is created with ParslPoolExecutors
         for all configured executors.
 
-        Returns:
-            An async context manager for the Academy Manager
+        Returns
+        -------
+        ChiltepinManager
+            An async context manager for the Chiltepin Manager
 
-        Example:
-            ```python
+        Examples
+        --------
+
+        .. code-block:: python
+
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(MyAgent, executor="my-executor")
                 result = await agent.some_action()
-            ```
         """
         # Create executors if not already created
         if self._executors is None:
@@ -206,7 +245,7 @@ class AgentSystem:
         )
 
     @property
-    def executors(self):
+    def executors(self) -> Optional[Dict[str, ParslPoolExecutor]]:
         """Access the created ParslPoolExecutors.
 
         Returns None if executors haven't been created yet.
@@ -214,7 +253,7 @@ class AgentSystem:
         return self._executors
 
 
-def agent_action(func):
+def agent_action(func: Callable) -> Callable:
     """Marker decorator to indicate a method should be exposed as an agent action.
 
     Use this decorator on methods in classes decorated with @chiltepin_agent to
@@ -223,8 +262,11 @@ def agent_action(func):
     Unlike Academy's @agent_action decorator, this works for both sync and async methods,
     making it suitable for @python_task decorated methods as well as async helpers.
 
-    Example:
-        ```python
+    Examples
+    --------
+
+    .. code-block:: python
+
         from chiltepin.agents import chiltepin_agent, agent_action
         from chiltepin.tasks import python_task
 
@@ -238,7 +280,6 @@ def agent_action(func):
             @agent_action  # ← Also works for async methods
             async def get_status(self):
                 return "ready"
-        ```
 
     .. important::
         **Always import from chiltepin.agents, not academy.agent**::
@@ -253,7 +294,7 @@ def agent_action(func):
     return func
 
 
-def agent_loop(func):
+def agent_loop(func: Callable) -> Callable:
     """Marker decorator for background agent_loop methods in chiltepin agents.
 
     Use this decorator on async methods with a 'shutdown' parameter that should
@@ -270,8 +311,11 @@ def agent_loop(func):
 
         Using Academy's decorator will cause confusing signature validation errors.
 
-    Example:
-        ```python
+    Examples
+    --------
+
+    .. code-block:: python
+
         from chiltepin.agents import chiltepin_agent, agent_loop
         import asyncio
 
@@ -282,7 +326,6 @@ def agent_loop(func):
                 while not shutdown.is_set():
                     await asyncio.sleep(1)
                     # Update state
-        ```
     """
     func._chiltepin_loop = True
     return func
@@ -292,7 +335,7 @@ def chiltepin_agent(
     *,
     agent_workflow_include: Optional[List[str]] = None,
     agent_workflow_run_dir: Optional[str] = None,
-):
+) -> Callable[[Type], Type[Agent]]:
     """Decorator that wraps a regular Python class (behavior) in an Academy Agent.
 
     This decorator allows you to write agent behavior as a regular, serializable
@@ -304,40 +347,53 @@ def chiltepin_agent(
     Use @agent_action for any method (sync or async) you want to expose, and @agent_loop for
     background loops. Both decorators should be imported from chiltepin.agents.
 
-    Args:
-        agent_workflow_include: Default list of resource labels to load. Can be overridden at runtime
-                       using agent_workflow_include= keyword argument in manager.launch(). If None, all
-                       resources are loaded.
-        agent_workflow_run_dir: Default directory for Parsl runtime files. Can be overridden at runtime
-                       using agent_workflow_run_dir= keyword argument in manager.launch(). If None, uses
-                       Parsl's default.
+    Parameters
+    ----------
+    agent_workflow_include : Optional[List[str]]
+        Default list of resource labels to load. Can be overridden at runtime
+        using agent_workflow_include= keyword argument in manager.launch(). If None, all
+        resources are loaded.
+    agent_workflow_run_dir : Optional[str]
+        Default directory for Parsl runtime files. Can be overridden at runtime
+        using agent_workflow_run_dir= keyword argument in manager.launch(). If None, uses
+        Parsl's default.
 
-    Returns:
+    Returns
+    -------
+    Callable[[Type], Type[Agent]]
         A decorator function that wraps the behavior class in an Agent.
 
+    Notes
+    -----
     Runtime Configuration:
         When using AgentSystem (which provides ChiltepinManager), pass workflow
         configuration using keyword arguments to launch(). This separates infrastructure
-        from behavior logic:
+        from behavior logic.
 
-        ```python
-        @chiltepin_agent(agent_workflow_include=["default-executor"])
-        class MyModel:
-            def __init__(self, temperature):  # ← No parsl config! Pure domain logic
-                self.temperature = temperature
+    Examples
+    --------
+    Runtime configuration:
 
-        # Launch with runtime configuration
-        model = await manager.launch(
-            MyModel,
-            agent_workflow_config=ursa_config,              # ← Workflow config used by the agent's workflow context
-            args=(25.0,),                          # ← Behavior args only (domain logic)
-            agent_workflow_include=["runtime-executor"],    # ← Override decorator default - executors the agent should use to run tasks
-            executor="ursa-service-gc"             # ← The executor to use for launching the agent itself (infrastructure)
-        )
-        ```
+    .. code-block:: python
 
-    Example:
-        ```python
+            @chiltepin_agent(agent_workflow_include=["default-executor"])
+            class MyModel:
+                def __init__(self, temperature):  # ← No parsl config! Pure domain logic
+                    self.temperature = temperature
+
+            # Launch with runtime configuration
+            model = await manager.launch(
+                MyModel,
+                agent_workflow_config=ursa_config,              # ← Workflow config used by the agent's workflow context
+                args=(25.0,),                          # ← Behavior args only (domain logic)
+                agent_workflow_include=["runtime-executor"],    # ← Override decorator default - executors the agent should use to run tasks
+                executor="ursa-service-gc"             # ← The executor to use for launching the agent itself (infrastructure)
+            )
+
+    Basic agent creation:
+
+    .. code-block:: python
+
         from chiltepin.agents import chiltepin_agent, agent_action, agent_loop
         from chiltepin.tasks import python_task
 
@@ -388,7 +444,6 @@ def chiltepin_agent(
 
         result = await model.run_model()
         status = await model.get_status()
-        ```
     """
     import asyncio
     import inspect
@@ -401,7 +456,7 @@ def chiltepin_agent(
     decorator_include = agent_workflow_include
     decorator_run_dir = agent_workflow_run_dir
 
-    def decorator(behavior_class):
+    def decorator(behavior_class: Type) -> Type[Agent]:
         """Inner decorator that receives the behavior class."""
 
         # Create a wrapper Agent class dynamically
@@ -413,20 +468,26 @@ def chiltepin_agent(
             # managed by Academy's exchange system.
             def __init__(
                 self,
-                *args,
-                agent_workflow_config=None,
-                agent_workflow_include=None,
-                agent_workflow_run_dir=None,
-                **kwargs,
-            ):  # pragma: no cover
+                *args: Any,
+                agent_workflow_config: Optional[Union[str, Path, Dict[str, Any]]] = None,
+                agent_workflow_include: Optional[List[str]] = None,
+                agent_workflow_run_dir: Optional[str] = None,
+                **kwargs: Any,
+            ) -> None:  # pragma: no cover
                 """Initialize the agent wrapper.
 
-                Args:
-                    *args: Positional arguments for behavior class
-                    agent_workflow_config: Configuration for Agent's workflow context (from manager.launch), defaults to local config
-                    agent_workflow_include: Optional runtime override for Agent's workflow executor list (from manager.launch)
-                    agent_workflow_run_dir: Optional runtime override for Parsl's run directory (from manager.launch)
-                    **kwargs: Keyword arguments for behavior class
+                Parameters
+                ----------
+                *args : Any
+                    Positional arguments for behavior class
+                agent_workflow_config : Optional[Union[str, Path, Dict[str, Any]]]
+                    Configuration for Agent's workflow context (from manager.launch), defaults to local config
+                agent_workflow_include : Optional[List[str]]
+                    Optional runtime override for Agent's workflow executor list (from manager.launch)
+                agent_workflow_run_dir : Optional[str]
+                    Optional runtime override for Parsl's run directory (from manager.launch)
+                **kwargs : Any
+                    Keyword arguments for behavior class
                 """
                 super().__init__()  # pragma: no cover
                 # Store config for workflow setup

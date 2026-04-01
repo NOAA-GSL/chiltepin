@@ -1213,3 +1213,35 @@ def test_chiltepin_manager_rejects_native_academy_agent(tmp_path):
 
     asyncio.run(try_launch())
     workflow.cleanup()
+
+
+def test_academy_action_decorator_rejected():
+    """Test that using Academy's @action decorator is detected and rejected."""
+    import asyncio
+
+    import pytest
+    from academy.agent import action as academy_action
+
+    with pytest.raises(TypeError, match="uses Academy's @action decorator"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @academy_action
+            async def bad_method(self):
+                pass
+
+
+def test_academy_loop_decorator_rejected():
+    """Test that using Academy's @loop decorator is detected and rejected."""
+    import asyncio
+
+    import pytest
+    from academy.agent import loop as academy_loop
+
+    with pytest.raises(TypeError, match="uses Academy's @loop decorator"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @academy_loop
+            async def bad_loop(self, shutdown: asyncio.Event) -> None:
+                pass
