@@ -271,7 +271,7 @@ def agent_action(func: Callable) -> Callable:
     Use this decorator on methods in classes decorated with @chiltepin_agent to
     mark them as actions that should be exposed through the agent interface.
 
-    Unlike Academy's @agent_action decorator, this works for both sync and async methods,
+    Unlike Academy's @action decorator, this works for both sync and async methods,
     making it suitable for @python_task decorated methods as well as async helpers.
 
     Examples
@@ -312,7 +312,7 @@ def agent_loop(func: Callable) -> Callable:
     Use this decorator on async methods with a 'shutdown' parameter that should
     run as background loops in classes decorated with @chiltepin_agent.
 
-    This is equivalent to Academy's @agent_loop decorator but provided here for consistency
+    This is equivalent to Academy's @loop decorator but provided here for consistency
     so all decorators can be imported from chiltepin.agents.
 
     .. important::
