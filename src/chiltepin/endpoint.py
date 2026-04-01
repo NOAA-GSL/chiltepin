@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Tuple, Union
 
 import psutil
 import yaml
@@ -34,8 +34,6 @@ from globus_compute_sdk.sdk.auth.auth_client import ComputeAuthClient
 from globus_compute_sdk.sdk.auth.globus_app import (
     get_globus_app as get_globus_compute_app,
 )
-
-# from globus_compute_sdk.sdk.auth.globus_app import get_globus_app
 from globus_compute_sdk.sdk.web_client import WebClient
 from globus_sdk import ClientApp, GlobusApp, TransferClient, UserApp
 from globus_sdk.gare import GlobusAuthorizationParameters
@@ -172,7 +170,7 @@ def _check_endpoint_management_available():
         ) from _ENDPOINT_IMPORT_ERROR
 
 
-def get_chiltepin_apps() -> (GlobusApp, GlobusApp, GlobusApp):
+def get_chiltepin_apps() -> Tuple[GlobusApp, GlobusApp, GlobusApp]:
     """Log in to the Chiltepin app
 
     This instantiates GlobusApp objects for use in creating Globus Compute
@@ -188,7 +186,7 @@ def get_chiltepin_apps() -> (GlobusApp, GlobusApp, GlobusApp):
     Returns
     -------
 
-    (GlobusApp, GlobusApp, GlobusApp)
+    Tuple[GlobusApp, GlobusApp, GlobusApp]
     """
     # Get client id and secret from environment if they are set
     client_id = os.environ.get("GLOBUS_COMPUTE_CLIENT_ID", None)
@@ -238,7 +236,7 @@ def get_chiltepin_apps() -> (GlobusApp, GlobusApp, GlobusApp):
             client_id=client_id,
         )
 
-    # # Get the Globus App for Academy Agent Exchange authendication
+    # Get the Globus App for Academy Agent Exchange authentication
     academy_app = get_globus_academy_app()
     academy_app.add_scope_requirements(
         {

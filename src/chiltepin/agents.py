@@ -398,7 +398,7 @@ def chiltepin_agent(
             # executing in the local test process, not in remote workers or agent processes
             # managed by Academy's exchange system.
             def __init__(
-                self, *args, config={}, include=None, run_dir=None, **kwargs
+                self, *args, config=None, include=None, run_dir=None, **kwargs
             ):  # pragma: no cover
                 """Initialize the agent wrapper.
 
@@ -411,7 +411,7 @@ def chiltepin_agent(
                 """
                 super().__init__()  # pragma: no cover
                 # Store config for workflow setup
-                self._config = config  # pragma: no cover
+                self._config = config or {}  # pragma: no cover
 
                 # Use runtime overrides if provided, otherwise fall back to decorator defaults
                 self._include = (

@@ -342,7 +342,7 @@ class TestLogin:
                     # Call login
                     clients = endpoint.login()
 
-                    # Verify login was called on both apps
+                    # Verify login was called on all apps
                     mock_compute_app.login.assert_called_once()
                     mock_transfer_app.login.assert_called_once()
                     mock_academy_app.login.assert_called_once()
@@ -350,6 +350,7 @@ class TestLogin:
                     # Verify clients were created
                     assert "compute" in clients
                     assert "transfer" in clients
+                    # Academy client is not needed and is not returned by login(), so we don't check for it here
 
     def test_without_login_required(self):
         """Test login when apps don't require login."""
@@ -383,7 +384,7 @@ class TestLoginRequired:
     """Tests for login_required() function."""
 
     def test_returns_true_when_login_needed(self):
-        """Test login_required returns True if either app requires login."""
+        """Test login_required returns True if any app requires login."""
         with patch("chiltepin.endpoint.get_chiltepin_apps") as mock_get_apps:
             mock_compute_app = MagicMock()
             mock_transfer_app = MagicMock()

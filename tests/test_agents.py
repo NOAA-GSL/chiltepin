@@ -17,7 +17,11 @@ PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_academy_login():
-    """Ensure Academy Exchange login before any agent tests run."""
+    """Ensure Academy Exchange login before any agent tests run.
+
+    In CI environments, the login will obtain credentials from environment variables.
+    """
+
     chiltepin.endpoint.login()
 
 
@@ -327,6 +331,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
+            # It is ok to use public Academy exchange for tests
             agent_system = AgentSystem(
                 workflow=workflow, executor_names=["test-executor"]
             )
