@@ -25,10 +25,13 @@ __all__ = [
 
 
 def __getattr__(name):
-    """Lazy import of Workflow to avoid loading Parsl unnecessarily.
+    """Lazy import of workflow and agent classes to avoid loading dependencies unnecessarily.
 
-    The Workflow class is not imported until explicitly accessed, avoiding the
-    overhead of loading Parsl and its dependencies when they're not needed.
+    The following are lazy-loaded to avoid import overhead:
+    - Workflow: Avoids loading Parsl and its dependencies
+    - AgentSystem, ChiltepinManager: Avoids loading Academy agents framework
+    - chiltepin_agent, action, loop: Agent decorators from chiltepin.agents
+
     This also enables attribute-style access to submodules (e.g., chiltepin.configure).
     """
     if name in __all__:

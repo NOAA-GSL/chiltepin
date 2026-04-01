@@ -27,6 +27,7 @@ def ensure_academy_login():
     if endpoint.login_required():
         raise RuntimeError("Chiltepin login is required for agent tests")
 
+
 def get_test_config(executor_name="test-executor"):
     """Helper to create test configuration."""
     return {
@@ -96,7 +97,7 @@ class LoopAgent:
             self.counter += 1
 
 
-@chiltepin_agent(parsl_include=["default-executor"])
+@chiltepin_agent(agent_workflow_include=["default-executor"])
 class ConfigAgent:
     def __init__(self):
         self.initialized = True
@@ -147,7 +148,7 @@ class EmptyAgent:
         return self.value
 
 
-@chiltepin_agent(parsl_include=["test-executor"])
+@chiltepin_agent(agent_workflow_include=["test-executor"])
 class FullAgent:
     def __init__(self, initial_value: int):
         self.value = initial_value
@@ -357,7 +358,10 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    BasicTestAgent, parsl_config=config, args=(42,), executor="test-executor"
+                    BasicTestAgent,
+                    agent_workflow_config=config,
+                    args=(42,),
+                    executor="test-executor",
                 )
 
                 result = await agent.get_value()
@@ -381,7 +385,10 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    ComputeAgent, parsl_config=config, args=(3,), executor="test-executor"
+                    ComputeAgent,
+                    agent_workflow_config=config,
+                    args=(3,),
+                    executor="test-executor",
                 )
 
                 result = await agent.compute(x=14, executor=["test-executor"])
@@ -405,7 +412,7 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    AsyncAgent, parsl_config=config, executor="test-executor"
+                    AsyncAgent, agent_workflow_config=config, executor="test-executor"
                 )
 
                 await agent.add_data(value="hello")
@@ -431,7 +438,7 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    LoopAgent, parsl_config=config, executor="test-executor"
+                    LoopAgent, agent_workflow_config=config, executor="test-executor"
                 )
 
                 initial = await agent.get_counter()
@@ -467,8 +474,8 @@ class TestChiltepinAgentDecorator:
                 # Launch with runtime override
                 agent = await manager.launch(
                     ConfigAgent,
-                    parsl_config=config2,
-                    parsl_include=["executor-2"],  # Override decorator default
+                    agent_workflow_config=config2,
+                    agent_workflow_include=["executor-2"],  # Override decorator default
                     executor="executor-1",
                 )
 
@@ -493,7 +500,10 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    MixedAgent, parsl_config=config, args=(10,), executor="test-executor"
+                    MixedAgent,
+                    agent_workflow_config=config,
+                    args=(10,),
+                    executor="test-executor",
                 )
 
                 sync_result = await agent.sync_compute(x=5, executor=["test-executor"])
@@ -523,7 +533,9 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    PrivateMethodAgent, parsl_config=config, executor="test-executor"
+                    PrivateMethodAgent,
+                    agent_workflow_config=config,
+                    executor="test-executor",
                 )
 
                 # Public method should be accessible
@@ -553,7 +565,7 @@ class TestChiltepinAgentDecorator:
             async with await agent_system.manager() as manager:
                 # Should launch successfully even with no actions
                 agent = await manager.launch(
-                    EmptyAgent, parsl_config=config, executor="test-executor"
+                    EmptyAgent, agent_workflow_config=config, executor="test-executor"
                 )
                 # Agent exists but has no callable actions (other than Agent base methods)
                 assert agent is not None
@@ -587,7 +599,7 @@ class TestChiltepinManager:
                 # Launch agent with config - agent will use this config for its internal workflow
                 agent = await manager.launch(
                     ComputeAgent,
-                    parsl_config=config,  # Agent's workflow will use this config
+                    agent_workflow_config=config,  # Agent's workflow will use this config
                     args=(7,),
                     executor="test-executor",
                 )
@@ -628,12 +640,12 @@ class TestChiltepinManager:
                 workflow=workflow, executor_names=["executor-1", "executor-2"]
             )
             async with await agent_system.manager() as manager:
-                # Launch agent with parsl_include=["executor-1"] only
+                # Launch agent with agent_workflow_include=["executor-1"] only
                 agent = await manager.launch(
                     ComputeAgent,
-                    parsl_config=config,
+                    agent_workflow_config=config,
                     args=(6,),
-                    parsl_include=[
+                    agent_workflow_include=[
                         "executor-1"
                     ],  # Agent's workflow should only load executor-1
                     executor="executor-1",
@@ -675,9 +687,9 @@ class TestChiltepinManager:
 
                 agent = await manager.launch(
                     ComputeAgent,
-                    parsl_config=config,
+                    agent_workflow_config=config,
                     args=(3,),
-                    parsl_run_dir=custom_run_dir,  # Custom run directory for agent's workflow
+                    agent_workflow_run_dir=custom_run_dir,  # Custom run directory for agent's workflow
                     executor="test-executor",
                 )
 
@@ -789,7 +801,10 @@ class TestIntegration:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    FullAgent, parsl_config=config, args=(10,), executor="test-executor"
+                    FullAgent,
+                    agent_workflow_config=config,
+                    args=(10,),
+                    executor="test-executor",
                 )
 
                 # Test task execution
@@ -839,10 +854,10 @@ class TestIntegration:
             )
             async with await agent_system.manager() as manager:
                 agent1 = await manager.launch(
-                    Agent1, parsl_config=config, executor="test-executor"
+                    Agent1, agent_workflow_config=config, executor="test-executor"
                 )
                 agent2 = await manager.launch(
-                    Agent2, parsl_config=config, executor="test-executor"
+                    Agent2, agent_workflow_config=config, executor="test-executor"
                 )
 
                 name1 = await agent1.get_name()
@@ -871,7 +886,7 @@ class TestIntegration:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     StatefulAgent,
-                    parsl_config=config,
+                    agent_workflow_config=config,
                     args=("test-agent",),
                     executor="test-executor",
                 )
@@ -907,7 +922,9 @@ class TestEdgeCases:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    PlainSyncAgent, parsl_config=config, executor="test-executor"
+                    PlainSyncAgent,
+                    agent_workflow_config=config,
+                    executor="test-executor",
                 )
 
                 result = await agent.get_double()
@@ -932,7 +949,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     KwargsAgent,
-                    parsl_config=config,
+                    agent_workflow_config=config,
                     args=("test", 42),
                     kwargs={"extra_key": "extra_value"},  # Test kwargs parameter
                     executor="test-executor",
@@ -962,7 +979,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     FutureReturnAgent,
-                    parsl_config=config,
+                    agent_workflow_config=config,
                     args=(5,),
                     executor="test-executor",
                 )
@@ -989,7 +1006,9 @@ class TestEdgeCases:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    NoMarkersAgent, parsl_config=config, executor="test-executor"
+                    NoMarkersAgent,
+                    agent_workflow_config=config,
+                    executor="test-executor",
                 )
 
                 # Agent should launch successfully even without @action markers
@@ -1015,7 +1034,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     AsyncActionAgent,
-                    parsl_config=config,
+                    agent_workflow_config=config,
                     args=(100,),
                     executor="test-executor",
                 )
@@ -1046,7 +1065,9 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 # This agent has non-callable attributes and overridden object methods
                 agent = await manager.launch(
-                    MixedAttributesAgent, parsl_config=config, executor="test-executor"
+                    MixedAttributesAgent,
+                    agent_workflow_config=config,
+                    executor="test-executor",
                 )
 
                 result = await agent.get_value()
@@ -1070,7 +1091,9 @@ class TestEdgeCases:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    LifecycleTestAgent, parsl_config=config, executor="test-executor"
+                    LifecycleTestAgent,
+                    agent_workflow_config=config,
+                    executor="test-executor",
                 )
 
                 # If we can call an action, agent_on_startup must have succeeded
@@ -1096,7 +1119,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 # Launch agent with loop method
                 agent = await manager.launch(
-                    LoopAgent, parsl_config=config, executor="test-executor"
+                    LoopAgent, agent_workflow_config=config, executor="test-executor"
                 )
 
                 # Verify loop is running by checking counter increases
@@ -1128,7 +1151,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     ReverseOrderAgent,
-                    parsl_config=config,
+                    agent_workflow_config=config,
                     args=(10,),
                     executor="test-executor",
                 )
@@ -1148,6 +1171,7 @@ class TestEdgeCases:
 
 class DummyAcademyAgent(Agent):
     """A native Academy agent (not decorated with @chiltepin_agent)."""
+
     def __init__(self, value):
         super().__init__()
         self.value = value
@@ -1155,19 +1179,27 @@ class DummyAcademyAgent(Agent):
 
 def test_chiltepin_manager_rejects_native_academy_agent(tmp_path):
     """Test that ChiltepinManager rejects non-chiltepin agents with a clear error."""
-    from chiltepin import Workflow
-    from chiltepin.agents import AgentSystem, ChiltepinManager
     import pytest
+
+    from chiltepin import Workflow
+    from chiltepin.agents import AgentSystem
 
     config = {"test-executor": {"provider": "localhost"}}
     workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
     workflow.start()
 
     agent_system = AgentSystem(workflow=workflow, executor_names=["test-executor"])
+
     async def try_launch():
         async with await agent_system.manager() as manager:
-            with pytest.raises(TypeError, match="only supports agents decorated with @chiltepin_agent"):
-                await manager.launch(DummyAcademyAgent, args=(123,), executor="test-executor")
+            with pytest.raises(
+                TypeError, match="only supports agents decorated with @chiltepin_agent"
+            ):
+                await manager.launch(
+                    DummyAcademyAgent, args=(123,), executor="test-executor"
+                )
+
     import asyncio
+
     asyncio.run(try_launch())
     workflow.cleanup()

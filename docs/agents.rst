@@ -64,7 +64,7 @@ Use the ``@chiltepin_agent`` decorator to wrap a regular Python class:
    from chiltepin.agents import chiltepin_agent, action, loop
    from chiltepin.tasks import python_task
 
-   @chiltepin_agent(parsl_include=["compute"])
+   @chiltepin_agent(agent_workflow_include=["compute"])
    class WeatherModel:
        """A simple weather model agent."""
        
@@ -142,8 +142,8 @@ Use ``AgentSystem`` to create a manager and launch agents:
    async with await agent_system.manager() as manager:
        model = await manager.launch(
            WeatherModel,
-           parsl_config=agent_config,   # Agent's workflow config
-           parsl_include=["compute"],   # Which executors to use
+           agent_workflow_config=agent_config,   # Agent's workflow config
+           agent_workflow_include=["compute"],   # Which executors to use
            args=(25.0,),                # Arguments for __init__
            executor="manager-executor"  # Where to run the agent
        )
@@ -164,9 +164,9 @@ Infrastructure concerns (workflow config, executors, directories) are passed to
 
    model = await manager.launch(
        WeatherModel,
-       config=agent_config,         # Workflow configuration dict or YAML path
-       include=["compute"],         # List of executors to include (None = all)
-       run_dir="/custom/path",      # Directory for Parsl runtime files
+       agent_workflow_config=agent_config,         # Workflow configuration dict or YAML path
+       agent_workflow_include=["compute"],         # List of executors to include (None = all)
+       agent_workflow_run_dir="/custom/path",      # Directory for Parsl runtime files
        args=(25.0,),                # Behavior arguments (domain logic)
        kwargs={"units": "C"},       # Behavior keyword arguments
        executor="manager-executor"  # Agent executor (where agent runs)
@@ -190,19 +190,19 @@ The ``@chiltepin_agent`` decorator accepts default values that can be overridden
 
 .. code-block:: python
 
-   @chiltepin_agent(parsl_include=["default-compute"], parsl_run_dir="./runs")
+   @chiltepin_agent(agent_workflow_include=["default-compute"], agent_workflow_run_dir="./runs")
    class MyAgent:
        pass
    
    # Use decorator defaults
-   agent1 = await manager.launch(MyAgent, parsl_config=cfg)
+   agent1 = await manager.launch(MyAgent, agent_workflow_config=cfg)
    
    # Override at runtime
    agent2 = await manager.launch(
        MyAgent,
-       parsl_config=cfg,
-       parsl_include=["special-compute"],  # Overrides decorator default
-       parsl_run_dir="/tmp/runs"           # Overrides decorator default
+       agent_workflow_config=cfg,
+       agent_workflow_include=["special-compute"],  # Overrides decorator default
+       agent_workflow_run_dir="/tmp/runs"           # Overrides decorator default
    )
 
 Action Decorators
@@ -251,14 +251,14 @@ Asynchronous Actions
 Task-Decorated Actions
 ^^^^^^^^^^^^^^^^^^^^^^
 
-When using ``@python_task`` with ``@action``, the order matters:
+When using ``@python_task`` with ``@action``, the order does not matter and both are supported:
 
 .. code-block:: python
 
    @chiltepin_agent()
    class Computer:
-       @python_task  # ← Second
-       @action       # ← First
+       @python_task
+       @action
        def compute(self, x: int) -> int:
            return x ** 2
 
@@ -355,8 +355,8 @@ You can also create it directly:
    ) as manager:
        agent = await manager.launch(
            MyAgent,
-           parsl_config=agent_config,
-           parsl_include=["compute"]
+           agent_workflow_config=agent_config,
+           agent_workflow_include=["compute"]
        )
 
 Best Practices
@@ -454,7 +454,7 @@ Here's a complete example combining all features:
    
    logger = logging.getLogger(__name__)
    
-   @chiltepin_agent(parsl_include=["compute"])
+   @chiltepin_agent(agent_workflow_include=["compute"])
    class TemperatureModel:
        """Agent that forecasts temperature with background updates."""
        
@@ -532,8 +532,8 @@ Here's a complete example combining all features:
            # Launch agent with runtime configuration
            model = await manager.launch(
                TemperatureModel,
-               parsl_config=agent_config,
-               parsl_include=["compute"],
+               agent_workflow_config=agent_config,
+               agent_workflow_include=["compute"],
                args=(20.0, "Boulder, CO"),
                executor="manager-executor"
            )
