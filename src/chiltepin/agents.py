@@ -18,20 +18,32 @@ action decorator requires async methods only.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
 from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from academy.agent import Agent
-from academy.handle import Handle
 from academy.exchange.cloud.client import HttpExchangeFactory
+from academy.handle import Handle
 from academy.manager import Manager
 from parsl.concurrent import ParslPoolExecutor
 
 if TYPE_CHECKING:
     from academy.agent import AgentT
+
     from chiltepin.workflow import Workflow
 else:
-    AgentT = TypeVar('AgentT')
+    AgentT = TypeVar("AgentT")
 
 
 class ChiltepinManager(Manager):
@@ -469,7 +481,9 @@ def chiltepin_agent(
             def __init__(
                 self,
                 *args: Any,
-                agent_workflow_config: Optional[Union[str, Path, Dict[str, Any]]] = None,
+                agent_workflow_config: Optional[
+                    Union[str, Path, Dict[str, Any]]
+                ] = None,
                 agent_workflow_include: Optional[List[str]] = None,
                 agent_workflow_run_dir: Optional[str] = None,
                 **kwargs: Any,

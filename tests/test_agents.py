@@ -1217,7 +1217,6 @@ def test_chiltepin_manager_rejects_native_academy_agent(tmp_path):
 
 def test_academy_action_decorator_rejected():
     """Test that using Academy's @action decorator is detected and rejected."""
-    import asyncio
 
     import pytest
     from academy.agent import action as academy_action
