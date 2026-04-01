@@ -20,7 +20,8 @@ PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
 def ensure_academy_login():
     """Make sure we are already logged in to the Academy Exchange before any agent tests run.
 
-    In CI environments, the login will obtain credentials from environment variables and not prompt for input.
+    In CI environments, the login will obtain credentials from environment variables when
+    login_required() is called and will not prompt for input.
     """
     if endpoint.login_required():
         raise RuntimeError(
@@ -273,8 +274,8 @@ class AsyncActionAgent:
 
     @agent_action
     async def async_compute(self, x: int) -> int:
-        """Pure async agent_action - exercises lines 479-480."""
-        await asyncio.sleep(0.01)  # Make it actually async
+        """Pure async agent_action."""
+        await asyncio.sleep(0.01)
         return self.base_value + x
 
     @agent_action
@@ -286,7 +287,7 @@ class AsyncActionAgent:
 
 @chiltepin_agent()
 class MixedAttributesAgent:
-    """Agent with callable and non-callable attributes to test line 423."""
+    """Agent with callable and non-callable attributes."""
 
     # Class-level non-callable attribute
     CLASS_CONSTANT = "constant_value"
@@ -301,7 +302,7 @@ class MixedAttributesAgent:
     async def get_value(self) -> int:
         return self.value
 
-    # Override object method to test line 434
+    # Override object method
     def __str__(self) -> str:
         return f"MixedAttributesAgent(value={self.value})"
 
@@ -1028,7 +1029,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_pure_async_actions(self, tmp_path):
-        """Test agent with async actions (no @python_task) - covers lines 479-480."""
+        """Test agent with async actions (no @python_task)."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -1059,7 +1060,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_agent_with_mixed_attributes(self, tmp_path):
-        """Test agent with callable/non-callable attributes - covers lines 423, 434."""
+        """Test agent with callable/non-callable attributes."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -1086,7 +1087,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_agent_lifecycle_methods(self, tmp_path):
-        """Test that agent_on_startup/shutdown are called - covers lines 395-408."""
+        """Test that agent_on_startup/shutdown are called."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -1113,7 +1114,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_verify_loop_method_execution(self, tmp_path):
-        """Explicitly verify agent_loop methods execute - helps ensure lines 462-463 are hit."""
+        """Explicitly verify agent_loop methods execute."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 

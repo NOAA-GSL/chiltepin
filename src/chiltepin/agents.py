@@ -215,7 +215,7 @@ class AgentSystem:
 
 
 def agent_action(func):
-    """Marker decorator to indicate a method should be exposed as an agent agent_action.
+    """Marker decorator to indicate a method should be exposed as an agent action.
 
     Use this decorator on methods in classes decorated with @chiltepin_agent to
     mark them as actions that should be exposed through the agent interface.
