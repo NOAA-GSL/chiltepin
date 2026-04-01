@@ -16,6 +16,17 @@ be launched on remote resources and interacted with asynchronously through an ac
    For more information about Academy Agents, see the
    `Academy documentation <https://docs.academy-agents.org/latest/get-started/>`_.
 
+.. note::
+   **Decorator Order:**
+   The order of ``@action`` and ``@python_task`` decorators does not affect behavior—both orders
+   are supported and tested. For consistency and readability, we recommend using ``@python_task``
+   outermost and ``@action`` innermost (closest to the function), but either order will work.
+
+.. important::
+   ChiltepinManager and AgentSystem only support agents decorated with ``@chiltepin_agent``. Native
+   Academy agents (not decorated) are not supported and will raise an error if launched with ChiltepinManager.
+   Use the base Academy Manager for native agents.
+
 Overview
 --------
 
@@ -53,7 +64,7 @@ Use the ``@chiltepin_agent`` decorator to wrap a regular Python class:
    from chiltepin.agents import chiltepin_agent, action, loop
    from chiltepin.tasks import python_task
 
-   @chiltepin_agent(include=["compute"])
+   @chiltepin_agent(parsl_include=["compute"])
    class WeatherModel:
        """A simple weather model agent."""
        
@@ -131,8 +142,8 @@ Use ``AgentSystem`` to create a manager and launch agents:
    async with await agent_system.manager() as manager:
        model = await manager.launch(
            WeatherModel,
-           config=agent_config,         # Agent's workflow config
-           include=["compute"],         # Which executors to use
+           parsl_config=agent_config,   # Agent's workflow config
+           parsl_include=["compute"],   # Which executors to use
            args=(25.0,),                # Arguments for __init__
            executor="manager-executor"  # Where to run the agent
        )
@@ -179,19 +190,19 @@ The ``@chiltepin_agent`` decorator accepts default values that can be overridden
 
 .. code-block:: python
 
-   @chiltepin_agent(include=["default-compute"], run_dir="./runs")
+   @chiltepin_agent(parsl_include=["default-compute"], parsl_run_dir="./runs")
    class MyAgent:
        pass
    
    # Use decorator defaults
-   agent1 = await manager.launch(MyAgent, config=cfg)
+   agent1 = await manager.launch(MyAgent, parsl_config=cfg)
    
    # Override at runtime
    agent2 = await manager.launch(
        MyAgent,
-       config=cfg,
-       include=["special-compute"],  # Overrides decorator default
-       run_dir="/tmp/runs"           # Overrides decorator default
+       parsl_config=cfg,
+       parsl_include=["special-compute"],  # Overrides decorator default
+       parsl_run_dir="/tmp/runs"           # Overrides decorator default
    )
 
 Action Decorators
@@ -210,8 +221,8 @@ Synchronous Actions
    
    @chiltepin_agent()
    class DataProcessor:
-       @action
        @python_task
+       @action
        def process_data(self, data: str) -> str:
            """Synchronous task-decorated method."""
            return data.upper()
@@ -344,8 +355,8 @@ You can also create it directly:
    ) as manager:
        agent = await manager.launch(
            MyAgent,
-           config=agent_config,
-           include=["compute"]
+           parsl_config=agent_config,
+           parsl_include=["compute"]
        )
 
 Best Practices
@@ -443,7 +454,7 @@ Here's a complete example combining all features:
    
    logger = logging.getLogger(__name__)
    
-   @chiltepin_agent(include=["compute"])
+   @chiltepin_agent(parsl_include=["compute"])
    class TemperatureModel:
        """Agent that forecasts temperature with background updates."""
        
@@ -521,8 +532,8 @@ Here's a complete example combining all features:
            # Launch agent with runtime configuration
            model = await manager.launch(
                TemperatureModel,
-               config=agent_config,
-               include=["compute"],
+               parsl_config=agent_config,
+               parsl_include=["compute"],
                args=(20.0, "Boulder, CO"),
                executor="manager-executor"
            )

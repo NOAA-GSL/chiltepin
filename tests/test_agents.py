@@ -6,8 +6,9 @@ import asyncio
 import pathlib
 
 import pytest
+from academy.agent import Agent
 
-import chiltepin.endpoint
+import chiltepin.endpoint as endpoint
 from chiltepin.agents import action, chiltepin_agent, loop
 from chiltepin.tasks import python_task
 
@@ -22,8 +23,9 @@ def ensure_academy_login():
     In CI environments, the login will obtain credentials from environment variables.
     """
 
-    chiltepin.endpoint.login()
-
+    # Make sure we are logged in
+    if endpoint.login_required():
+        raise RuntimeError("Chiltepin login is required for agent tests")
 
 def get_test_config(executor_name="test-executor"):
     """Helper to create test configuration."""
@@ -94,7 +96,7 @@ class LoopAgent:
             self.counter += 1
 
 
-@chiltepin_agent(include=["default-executor"])
+@chiltepin_agent(parsl_include=["default-executor"])
 class ConfigAgent:
     def __init__(self):
         self.initialized = True
@@ -145,7 +147,7 @@ class EmptyAgent:
         return self.value
 
 
-@chiltepin_agent(include=["test-executor"])
+@chiltepin_agent(parsl_include=["test-executor"])
 class FullAgent:
     def __init__(self, initial_value: int):
         self.value = initial_value
@@ -317,6 +319,24 @@ class LifecycleTestAgent:
         return True  # If we can call this, workflow was started
 
 
+@chiltepin_agent()
+class ReverseOrderAgent:
+    def __init__(self, value: int):
+        self.value = value
+
+    @action
+    @python_task
+    def compute_action_outer(self, x: int) -> int:
+        """@action outer, @python_task inner"""
+        return self.value + x
+
+    @python_task
+    @action
+    def compute_task_outer(self, x: int) -> int:
+        """@python_task outer, @action inner (recommended)"""
+        return self.value * x
+
+
 class TestChiltepinAgentDecorator:
     """Test the @chiltepin_agent decorator."""
 
@@ -337,7 +357,7 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    BasicTestAgent, config=config, args=(42,), executor="test-executor"
+                    BasicTestAgent, parsl_config=config, args=(42,), executor="test-executor"
                 )
 
                 result = await agent.get_value()
@@ -361,7 +381,7 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    ComputeAgent, config=config, args=(3,), executor="test-executor"
+                    ComputeAgent, parsl_config=config, args=(3,), executor="test-executor"
                 )
 
                 result = await agent.compute(x=14, executor=["test-executor"])
@@ -385,7 +405,7 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    AsyncAgent, config=config, executor="test-executor"
+                    AsyncAgent, parsl_config=config, executor="test-executor"
                 )
 
                 await agent.add_data(value="hello")
@@ -411,7 +431,7 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    LoopAgent, config=config, executor="test-executor"
+                    LoopAgent, parsl_config=config, executor="test-executor"
                 )
 
                 initial = await agent.get_counter()
@@ -447,8 +467,8 @@ class TestChiltepinAgentDecorator:
                 # Launch with runtime override
                 agent = await manager.launch(
                     ConfigAgent,
-                    config=config2,
-                    include=["executor-2"],  # Override decorator default
+                    parsl_config=config2,
+                    parsl_include=["executor-2"],  # Override decorator default
                     executor="executor-1",
                 )
 
@@ -473,7 +493,7 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    MixedAgent, config=config, args=(10,), executor="test-executor"
+                    MixedAgent, parsl_config=config, args=(10,), executor="test-executor"
                 )
 
                 sync_result = await agent.sync_compute(x=5, executor=["test-executor"])
@@ -503,7 +523,7 @@ class TestChiltepinAgentDecorator:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    PrivateMethodAgent, config=config, executor="test-executor"
+                    PrivateMethodAgent, parsl_config=config, executor="test-executor"
                 )
 
                 # Public method should be accessible
@@ -533,7 +553,7 @@ class TestChiltepinAgentDecorator:
             async with await agent_system.manager() as manager:
                 # Should launch successfully even with no actions
                 agent = await manager.launch(
-                    EmptyAgent, config=config, executor="test-executor"
+                    EmptyAgent, parsl_config=config, executor="test-executor"
                 )
                 # Agent exists but has no callable actions (other than Agent base methods)
                 assert agent is not None
@@ -567,7 +587,7 @@ class TestChiltepinManager:
                 # Launch agent with config - agent will use this config for its internal workflow
                 agent = await manager.launch(
                     ComputeAgent,
-                    config=config,  # Agent's workflow will use this config
+                    parsl_config=config,  # Agent's workflow will use this config
                     args=(7,),
                     executor="test-executor",
                 )
@@ -608,12 +628,12 @@ class TestChiltepinManager:
                 workflow=workflow, executor_names=["executor-1", "executor-2"]
             )
             async with await agent_system.manager() as manager:
-                # Launch agent with include=["executor-1"] only
+                # Launch agent with parsl_include=["executor-1"] only
                 agent = await manager.launch(
                     ComputeAgent,
-                    config=config,
+                    parsl_config=config,
                     args=(6,),
-                    include=[
+                    parsl_include=[
                         "executor-1"
                     ],  # Agent's workflow should only load executor-1
                     executor="executor-1",
@@ -655,9 +675,9 @@ class TestChiltepinManager:
 
                 agent = await manager.launch(
                     ComputeAgent,
-                    config=config,
+                    parsl_config=config,
                     args=(3,),
-                    run_dir=custom_run_dir,  # Custom run directory for agent's workflow
+                    parsl_run_dir=custom_run_dir,  # Custom run directory for agent's workflow
                     executor="test-executor",
                 )
 
@@ -769,7 +789,7 @@ class TestIntegration:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    FullAgent, config=config, args=(10,), executor="test-executor"
+                    FullAgent, parsl_config=config, args=(10,), executor="test-executor"
                 )
 
                 # Test task execution
@@ -819,10 +839,10 @@ class TestIntegration:
             )
             async with await agent_system.manager() as manager:
                 agent1 = await manager.launch(
-                    Agent1, config=config, executor="test-executor"
+                    Agent1, parsl_config=config, executor="test-executor"
                 )
                 agent2 = await manager.launch(
-                    Agent2, config=config, executor="test-executor"
+                    Agent2, parsl_config=config, executor="test-executor"
                 )
 
                 name1 = await agent1.get_name()
@@ -851,7 +871,7 @@ class TestIntegration:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     StatefulAgent,
-                    config=config,
+                    parsl_config=config,
                     args=("test-agent",),
                     executor="test-executor",
                 )
@@ -887,7 +907,7 @@ class TestEdgeCases:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    PlainSyncAgent, config=config, executor="test-executor"
+                    PlainSyncAgent, parsl_config=config, executor="test-executor"
                 )
 
                 result = await agent.get_double()
@@ -912,7 +932,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     KwargsAgent,
-                    config=config,
+                    parsl_config=config,
                     args=("test", 42),
                     kwargs={"extra_key": "extra_value"},  # Test kwargs parameter
                     executor="test-executor",
@@ -942,7 +962,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     FutureReturnAgent,
-                    config=config,
+                    parsl_config=config,
                     args=(5,),
                     executor="test-executor",
                 )
@@ -969,7 +989,7 @@ class TestEdgeCases:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    NoMarkersAgent, config=config, executor="test-executor"
+                    NoMarkersAgent, parsl_config=config, executor="test-executor"
                 )
 
                 # Agent should launch successfully even without @action markers
@@ -995,7 +1015,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
                     AsyncActionAgent,
-                    config=config,
+                    parsl_config=config,
                     args=(100,),
                     executor="test-executor",
                 )
@@ -1026,7 +1046,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 # This agent has non-callable attributes and overridden object methods
                 agent = await manager.launch(
-                    MixedAttributesAgent, config=config, executor="test-executor"
+                    MixedAttributesAgent, parsl_config=config, executor="test-executor"
                 )
 
                 result = await agent.get_value()
@@ -1050,7 +1070,7 @@ class TestEdgeCases:
             )
             async with await agent_system.manager() as manager:
                 agent = await manager.launch(
-                    LifecycleTestAgent, config=config, executor="test-executor"
+                    LifecycleTestAgent, parsl_config=config, executor="test-executor"
                 )
 
                 # If we can call an action, agent_on_startup must have succeeded
@@ -1076,7 +1096,7 @@ class TestEdgeCases:
             async with await agent_system.manager() as manager:
                 # Launch agent with loop method
                 agent = await manager.launch(
-                    LoopAgent, config=config, executor="test-executor"
+                    LoopAgent, parsl_config=config, executor="test-executor"
                 )
 
                 # Verify loop is running by checking counter increases
@@ -1090,3 +1110,64 @@ class TestEdgeCases:
                 assert count3 > count2 > count1
         finally:
             workflow.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_decorator_order_equivalence(self, tmp_path):
+        """Test that @action/@python_task order does not affect behavior."""
+        from chiltepin import Workflow
+        from chiltepin.agents import AgentSystem
+
+        config = get_test_config()
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_system = AgentSystem(
+                workflow=workflow, executor_names=["test-executor"]
+            )
+            async with await agent_system.manager() as manager:
+                agent = await manager.launch(
+                    ReverseOrderAgent,
+                    parsl_config=config,
+                    args=(10,),
+                    executor="test-executor",
+                )
+
+                # Both should work and return correct results
+                result_outer_action = await agent.compute_action_outer(
+                    x=5, executor=["test-executor"]
+                )
+                result_outer_task = await agent.compute_task_outer(
+                    x=5, executor=["test-executor"]
+                )
+                assert result_outer_action == 15  # 10 + 5
+                assert result_outer_task == 50  # 10 * 5
+        finally:
+            workflow.cleanup()
+
+
+class DummyAcademyAgent(Agent):
+    """A native Academy agent (not decorated with @chiltepin_agent)."""
+    def __init__(self, value):
+        super().__init__()
+        self.value = value
+
+
+def test_chiltepin_manager_rejects_native_academy_agent(tmp_path):
+    """Test that ChiltepinManager rejects non-chiltepin agents with a clear error."""
+    from chiltepin import Workflow
+    from chiltepin.agents import AgentSystem, ChiltepinManager
+    import pytest
+
+    config = {"test-executor": {"provider": "localhost"}}
+    workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+    workflow.start()
+
+    agent_system = AgentSystem(workflow=workflow, executor_names=["test-executor"])
+    async def try_launch():
+        async with await agent_system.manager() as manager:
+            with pytest.raises(TypeError, match="only supports agents decorated with @chiltepin_agent"):
+                await manager.launch(DummyAcademyAgent, args=(123,), executor="test-executor")
+    import asyncio
+    asyncio.run(try_launch())
+    workflow.cleanup()

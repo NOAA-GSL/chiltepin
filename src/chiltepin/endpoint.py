@@ -174,14 +174,15 @@ def get_chiltepin_apps() -> Tuple[GlobusApp, GlobusApp, GlobusApp]:
     """Log in to the Chiltepin app
 
     This instantiates GlobusApp objects for use in creating Globus Compute
-    and Globus Transfer clients.  If the environment contains settings that
-    specify client ids and/or client secrets, those will be used to create the
-    Globus Apps.  Otherwise, the default Chiltepin thick client will be used.
-    If a secret is present in the environment, ClientApp objects will be created.
-    Otherwise, UserApp objects will be created. This is used by the login() and
-    logout() functions where login and logout flows are initiated after the apps
-    are retreived. A tuple is returned where the first item is the compute app
-    and the second item is the transfer app.
+    and Globus Transfer clients and for authenticating to the Academy Agent Exchange
+    server.  If the environment contains settings that specify client ids and/or
+    client secrets, those will be used to create the Globus Apps.  Otherwise, the
+    default Chiltepin thick client will be used. If a secret is present in the
+    environment, ClientApp objects will be created. Otherwise, UserApp objects will
+    be created. This is used by the login() and logout() functions where login and
+    logout flows are initiated after the apps are retrieved. A tuple is returned
+    where the first item is the compute app, the second item is the transfer app, and
+    the third item is the academy app.
 
     Returns
     -------
@@ -208,11 +209,13 @@ def get_chiltepin_apps() -> Tuple[GlobusApp, GlobusApp, GlobusApp]:
     # If a client id was not found in the environment, use the default Chiltepin client id
     if not client_id:
         client_id = CHILTEPIN_CLIENT_UUID
-        # os.environ["GLOBUS_COMPUTE_CLIENT_ID"] = client_id
         # NOTE: $GLOBUS_CLI_CLIENT_ID should only be set if $GLOBUS_CLI_CLIENT_SECRET is also set
         # NOTE: $ACADEMY_GLOBUS_CLIENT_ID should only be set if $ACADEMY_GLOBUS_CLIENT_SECRET is also set
 
     # Get the Globus App the compute client will use
+    # This uses the environment variables GLOBUS_COMPUTE_CLIENT_ID and GLOBUS_COMPUTE_CLIENT_SECRET to
+    # determine which app to load, so it will use the default Chiltepin thick client if no client id
+    # is set in the environment.
     compute_app = get_globus_compute_app()
     compute_app.add_scope_requirements(
         {
