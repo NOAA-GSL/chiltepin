@@ -3,7 +3,7 @@ Agents
 
 Chiltepin integrates with `Academy Agents <https://docs.academy-agents.org/latest/get-started/>`_ to support
 distributed agent-based workflows. Agents enable long-running, stateful computations that can
-be launched on remote resources and interacted with asynchronously through an action-based API.
+be launched on remote resources and interacted with asynchronously through an agent_action-based API.
 
 .. note::
    Chiltepin's agent system builds on Academy Agents to provide:
@@ -18,9 +18,9 @@ be launched on remote resources and interacted with asynchronously through an ac
 
 .. note::
    **Decorator Order:**
-   The order of ``@action`` and ``@python_task`` decorators does not affect behavior—both orders
+   The order of ``@agent_action`` and ``@python_task`` decorators does not affect behavior—both orders
    are supported and tested. For consistency and readability, we recommend using ``@python_task``
-   outermost and ``@action`` innermost (closest to the function), but either order will work.
+   outermost and ``@agent_action`` innermost (closest to the function), but either order will work.
 
 .. important::
    ChiltepinManager and AgentSystem only support agents decorated with ``@chiltepin_agent``. Native
@@ -33,8 +33,8 @@ Overview
 Chiltepin provides five main components for agent-based workflows:
 
 - **@chiltepin_agent**: Decorator to wrap a regular Python class as an agent
-- **@action**: Decorator to mark methods that should be exposed as agent actions
-- **@loop**: Decorator to mark methods that should run as background loops
+- **@agent_action**: Decorator to mark methods that should be exposed as agent actions
+- **@agent_loop**: Decorator to mark methods that should run as background loops
 - **AgentSystem**: Helper class to simplify Academy Manager setup with Parsl executors
 - **ChiltepinManager**: Custom Manager that supports workflow configuration parameters
 
@@ -44,7 +44,7 @@ When to Use Agents
 Use agents when you need:
 
 - **Long-running services**: Agents that persist beyond a single task execution
-- **Stateful computations**: Maintaining state across multiple action invocations
+- **Stateful computations**: Maintaining state across multiple agent_action invocations
 - **Background processing**: Loops that update state while handling requests
 - **Autonomous behavior**: Agents that can make decisions and act without external prompts
 - **Remote interaction**: Asynchronous communication with computations on remote resources
@@ -61,7 +61,7 @@ Use the ``@chiltepin_agent`` decorator to wrap a regular Python class:
 
 .. code-block:: python
 
-   from chiltepin.agents import chiltepin_agent, action, loop
+   from chiltepin.agents import chiltepin_agent, agent_action, agent_loop
    from chiltepin.tasks import python_task
 
    @chiltepin_agent(agent_workflow_include=["compute"])
@@ -71,7 +71,7 @@ Use the ``@chiltepin_agent`` decorator to wrap a regular Python class:
        def __init__(self, temperature: float):
            self.temperature = temperature
        
-       @action
+       @agent_action
        @python_task
        def forecast(self) -> str:
            """Generate a forecast based on current temperature."""
@@ -79,14 +79,14 @@ Use the ``@chiltepin_agent`` decorator to wrap a regular Python class:
            conditions = ["sunny", "cloudy", "rainy"]
            return f"{random.choice(conditions)} at {self.temperature}°C"
        
-       @action
+       @agent_action
        async def get_temperature(self) -> float:
            """Get the current temperature."""
            return self.temperature
        
-       @loop
+       @agent_loop
        async def update_temperature(self, shutdown):
-           """Background loop that updates temperature."""
+           """Background agent_loop that updates temperature."""
            import asyncio
            import random
            while not shutdown.is_set():
@@ -98,8 +98,8 @@ Key Features
 
 1. **Regular Python class**: No inheritance required, fully serializable
 2. **Access instance state**: Task-decorated methods can access ``self.temperature``
-3. **Mixed sync/async**: Use ``@action`` on both sync and async methods
-4. **Background loops**: Use ``@loop`` for continuous background processing or autonomous behavior
+3. **Mixed sync/async**: Use ``@agent_action`` on both sync and async methods
+4. **Background loops**: Use ``@agent_loop`` for continuous background processing or autonomous behavior
 5. **Infrastructure separation**: Workflow config passed via ``manager.launch()``, not ``__init__``
 
 Launching Agents
@@ -208,7 +208,7 @@ The ``@chiltepin_agent`` decorator accepts default values that can be overridden
 Action Decorators
 -----------------
 
-Use ``@action`` to expose methods as agent actions. The decorator works with both
+Use ``@agent_action`` to expose methods as agent actions. The decorator works with both
 synchronous and asynchronous methods:
 
 Synchronous Actions
@@ -216,18 +216,18 @@ Synchronous Actions
 
 .. code-block:: python
 
-   from chiltepin.agents import chiltepin_agent, action
+   from chiltepin.agents import chiltepin_agent, agent_action
    from chiltepin.tasks import python_task
    
    @chiltepin_agent()
    class DataProcessor:
        @python_task
-       @action
+       @agent_action
        def process_data(self, data: str) -> str:
            """Synchronous task-decorated method."""
            return data.upper()
        
-       @action
+       @agent_action
        def get_config(self) -> dict:
            """Synchronous helper method."""
            return {"version": "1.0"}
@@ -239,7 +239,7 @@ Asynchronous Actions
 
    @chiltepin_agent()
    class AsyncService:
-       @action
+       @agent_action
        async def fetch_data(self, url: str) -> str:
            """Async method using httpx, aiohttp, etc."""
            import httpx  # ✅ Import inside method for serializability
@@ -251,14 +251,14 @@ Asynchronous Actions
 Task-Decorated Actions
 ^^^^^^^^^^^^^^^^^^^^^^
 
-When using ``@python_task`` with ``@action``, the order does not matter and both are supported:
+When using ``@python_task`` with ``@agent_action``, the order does not matter and both are supported:
 
 .. code-block:: python
 
    @chiltepin_agent()
    class Computer:
        @python_task
-       @action
+       @agent_action
        def compute(self, x: int) -> int:
            return x ** 2
 
@@ -267,11 +267,11 @@ This allows the task to access instance state (``self``) while still executing r
 Loop Decorators
 ---------------
 
-Use ``@loop`` to create background tasks that run continuously:
+Use ``@agent_loop`` to create background tasks that run continuously:
 
 .. code-block:: python
 
-   from chiltepin.agents import chiltepin_agent, loop
+   from chiltepin.agents import chiltepin_agent, agent_loop
    import asyncio
    
    @chiltepin_agent()
@@ -280,9 +280,9 @@ Use ``@loop`` to create background tasks that run continuously:
            self.status = "initializing"
            self.count = 0
        
-       @loop
+       @agent_loop
        async def heartbeat(self, shutdown: asyncio.Event):
-           """Background loop that runs until agent shuts down."""
+           """Background agent_loop that runs until agent shuts down."""
            self.status = "running"
            while not shutdown.is_set():
                await asyncio.sleep(1)
@@ -365,12 +365,12 @@ Best Practices
 Import Decorators Correctly
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Always import ``action`` and ``loop`` from ``chiltepin.agents``, not ``academy.agent``:
+Always import ``agent_action`` and ``agent_loop`` from ``chiltepin.agents``, not ``academy.agent``:
 
 .. code-block:: python
 
    # ✅ Correct
-   from chiltepin.agents import chiltepin_agent, action, loop
+   from chiltepin.agents import chiltepin_agent, agent_action, agent_loop
    
    # ❌ Wrong - Academy's decorators have different semantics
    from academy.agent import action, loop
@@ -389,7 +389,7 @@ Since agents can run remotely, behavior classes must be serializable:
        def __init__(self, value: int):
            self.value = value  # ✅ Serializable types
        
-       @action
+       @agent_action
        @python_task
        def compute(self):
            # ✅ Import modules inside methods for remote execution
@@ -434,7 +434,7 @@ Type hints improve code clarity and enable better IDE support:
        def __init__(self, values: List[float]):
            self.values = values
        
-       @action
+       @agent_action
        @python_task
        def mean(self) -> float:
            return sum(self.values) / len(self.values)
@@ -449,7 +449,7 @@ Here's a complete example combining all features:
    import asyncio
    import logging
    from chiltepin import Workflow, AgentSystem
-   from chiltepin.agents import chiltepin_agent, action, loop
+   from chiltepin.agents import chiltepin_agent, agent_action, agent_loop
    from chiltepin.tasks import python_task
    
    logger = logging.getLogger(__name__)
@@ -463,7 +463,7 @@ Here's a complete example combining all features:
            self.location = location
            self.forecast_count = 0
        
-       @action
+       @agent_action
        @python_task
        def forecast(self) -> str:
            """Generate forecast using current temperature."""
@@ -472,7 +472,7 @@ Here's a complete example combining all features:
            condition = random.choice(conditions)
            return f"{self.location}: {condition}, {self.temperature:.1f}°C"
        
-       @action
+       @agent_action
        async def get_stats(self) -> dict:
            """Get current statistics."""
            return {
@@ -481,12 +481,12 @@ Here's a complete example combining all features:
                "forecasts_generated": self.forecast_count
            }
        
-       @action
+       @agent_action
        async def set_temperature(self, temp: float) -> None:
            """Manually update temperature."""
            self.temperature = temp
        
-       @loop
+       @agent_loop
        async def update_temperature(self, shutdown: asyncio.Event):
            """Simulate temperature changes."""
            import asyncio
@@ -581,10 +581,10 @@ If you get serialization errors when launching agents:
 Action Not Found
 ^^^^^^^^^^^^^^^^
 
-If an action isn't available on the agent proxy:
+If an agent_action isn't available on the agent proxy:
 
-1. Check that the method is decorated with ``@action``
-2. Verify you're importing ``action`` from ``chiltepin.agents``, not ``academy.agent``
+1. Check that the method is decorated with ``@agent_action``
+2. Verify you're importing ``agent_action`` from ``chiltepin.agents``, not ``academy.agent``
 3. Ensure the method name doesn't start with underscore (private methods aren't exposed)
 
 Workflow Not Starting

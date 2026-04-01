@@ -209,6 +209,7 @@ def get_chiltepin_apps() -> Tuple[GlobusApp, GlobusApp, GlobusApp]:
     # If a client id was not found in the environment, use the default Chiltepin client id
     if not client_id:
         client_id = CHILTEPIN_CLIENT_UUID
+        os.environ["GLOBUS_COMPUTE_CLIENT_ID"] = client_id
         # NOTE: $GLOBUS_CLI_CLIENT_ID should only be set if $GLOBUS_CLI_CLIENT_SECRET is also set
         # NOTE: $ACADEMY_GLOBUS_CLIENT_ID should only be set if $ACADEMY_GLOBUS_CLIENT_SECRET is also set
 

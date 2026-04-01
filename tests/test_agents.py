@@ -9,7 +9,7 @@ import pytest
 from academy.agent import Agent
 
 import chiltepin.endpoint as endpoint
-from chiltepin.agents import action, chiltepin_agent, loop
+from chiltepin.agents import agent_action, agent_loop, chiltepin_agent
 from chiltepin.tasks import python_task
 
 # Get project root for PYTHONPATH
@@ -18,14 +18,14 @@ PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_academy_login():
-    """Ensure Academy Exchange login before any agent tests run.
+    """Make sure we are already logged in to the Academy Exchange before any agent tests run.
 
-    In CI environments, the login will obtain credentials from environment variables.
+    In CI environments, the login will obtain credentials from environment variables and not prompt for input.
     """
-
-    # Make sure we are logged in
     if endpoint.login_required():
-        raise RuntimeError("Chiltepin login is required for agent tests")
+        raise RuntimeError(
+            "Chiltepin login is required to run agent tests. Please log in before running tests."
+        )
 
 
 def get_test_config(executor_name="test-executor"):
@@ -48,7 +48,7 @@ class BasicTestAgent:
     def __init__(self, value: int):
         self.value = value
 
-    @action
+    @agent_action
     async def get_value(self) -> int:
         return self.value
 
@@ -59,7 +59,7 @@ class ComputeAgent:
         self.multiplier = multiplier
 
     @python_task
-    @action
+    @agent_action
     def compute(self, x: int) -> int:
         """Task that accesses instance state."""
         return x * self.multiplier
@@ -70,11 +70,11 @@ class AsyncAgent:
     def __init__(self):
         self.data = []
 
-    @action
+    @agent_action
     async def add_data(self, value: str) -> None:
         self.data.append(value)
 
-    @action
+    @agent_action
     async def get_data(self) -> list:
         return self.data
 
@@ -84,11 +84,11 @@ class LoopAgent:
     def __init__(self):
         self.counter = 0
 
-    @action
+    @agent_action
     async def get_counter(self) -> int:
         return self.counter
 
-    @loop
+    @agent_loop
     async def increment_counter(self, shutdown):
         import asyncio
 
@@ -102,7 +102,7 @@ class ConfigAgent:
     def __init__(self):
         self.initialized = True
 
-    @action
+    @agent_action
     async def check(self) -> bool:
         return self.initialized
 
@@ -113,22 +113,22 @@ class MixedAgent:
         self.base = base
 
     @python_task
-    @action
+    @agent_action
     def sync_compute(self, x: int) -> int:
         return self.base + x
 
-    @action
+    @agent_action
     async def async_compute(self, x: int) -> int:
         return self.base * x
 
-    @action
+    @agent_action
     def sync_helper(self) -> str:
         return "helper"
 
 
 @chiltepin_agent()
 class PrivateMethodAgent:
-    @action
+    @agent_action
     def public_method(self):
         return "public"
 
@@ -155,24 +155,24 @@ class FullAgent:
         self.counter = 0
 
     @python_task
-    @action
+    @agent_action
     def compute(self, x: int) -> int:
         """Task that accesses instance state."""
         return self.value + x
 
-    @action
+    @agent_action
     async def get_state(self) -> dict:
         """Get agent state."""
         return {"value": self.value, "counter": self.counter}
 
-    @action
+    @agent_action
     async def set_value(self, new_value: int) -> None:
         """Update agent state."""
         self.value = new_value
 
-    @loop
+    @agent_loop
     async def background_counter(self, shutdown):
-        """Background loop."""
+        """Background agent_loop."""
         while not shutdown.is_set():
             await asyncio.sleep(0.1)
             self.counter += 1
@@ -180,14 +180,14 @@ class FullAgent:
 
 @chiltepin_agent()
 class Agent1:
-    @action
+    @agent_action
     async def get_name(self) -> str:
         return "agent1"
 
 
 @chiltepin_agent()
 class Agent2:
-    @action
+    @agent_action
     async def get_name(self) -> str:
         return "agent2"
 
@@ -199,23 +199,23 @@ class StatefulAgent:
         self.history = []
         self.metadata = {"created": "now", "version": "1.0"}
 
-    @action
+    @agent_action
     async def add_to_history(self, item: str) -> None:
         self.history.append(item)
 
-    @action
+    @agent_action
     async def get_full_state(self) -> dict:
         return {"name": self.name, "history": self.history, "metadata": self.metadata}
 
 
 @chiltepin_agent()
 class PlainSyncAgent:
-    """Agent with plain sync action (no task decorator)."""
+    """Agent with plain sync agent_action (no task decorator)."""
 
     def __init__(self):
         self.value = 100
 
-    @action
+    @agent_action
     def get_double(self) -> int:
         """Plain sync method returning int directly."""
         return self.value * 2
@@ -230,7 +230,7 @@ class KwargsAgent:
         self.value = value
         self.extras = extra_kwargs
 
-    @action
+    @agent_action
     async def get_info(self) -> dict:
         return {"name": self.name, "value": self.value, "extras": self.extras}
 
@@ -243,7 +243,7 @@ class FutureReturnAgent:
         self.multiplier = multiplier
 
     @python_task
-    @action
+    @agent_action
     def compute_future(self, x: int) -> int:
         """Returns a Future that resolves to int."""
         return x * self.multiplier
@@ -251,13 +251,13 @@ class FutureReturnAgent:
 
 @chiltepin_agent()
 class NoMarkersAgent:
-    """Agent without @action or @loop decorators."""
+    """Agent without @agent_action or @agent_loop decorators."""
 
     def __init__(self):
         self.value = 42
 
     def unmarked_method(self):
-        """Method without @action decorator - should not be exposed."""
+        """Method without @agent_action decorator - should not be exposed."""
         return "not exposed"
 
     def another_unmarked(self):
@@ -271,15 +271,15 @@ class AsyncActionAgent:
     def __init__(self, base_value: int):
         self.base_value = base_value
 
-    @action
+    @agent_action
     async def async_compute(self, x: int) -> int:
-        """Pure async action - exercises lines 479-480."""
+        """Pure async agent_action - exercises lines 479-480."""
         await asyncio.sleep(0.01)  # Make it actually async
         return self.base_value + x
 
-    @action
+    @agent_action
     async def async_multiply(self, x: int, y: int) -> int:
-        """Another async action."""
+        """Another async agent_action."""
         await asyncio.sleep(0.01)
         return x * y
 
@@ -297,7 +297,7 @@ class MixedAttributesAgent:
         # Instance-level non-callable attribute
         self.config_dict = {"key": "value"}
 
-    @action
+    @agent_action
     async def get_value(self) -> int:
         return self.value
 
@@ -313,7 +313,7 @@ class LifecycleTestAgent:
     def __init__(self):
         self.value = 42
 
-    @action
+    @agent_action
     async def check_workflow(self) -> bool:
         """Check if workflow was initialized during startup."""
         # Access the wrapper's _workflow attribute through the agent handle
@@ -325,16 +325,16 @@ class ReverseOrderAgent:
     def __init__(self, value: int):
         self.value = value
 
-    @action
+    @agent_action
     @python_task
     def compute_action_outer(self, x: int) -> int:
-        """@action outer, @python_task inner"""
+        """@agent_action outer, @python_task inner"""
         return self.value + x
 
     @python_task
-    @action
+    @agent_action
     def compute_task_outer(self, x: int) -> int:
-        """@python_task outer, @action inner (recommended)"""
+        """@python_task outer, @agent_action inner (recommended)"""
         return self.value * x
 
 
@@ -371,7 +371,7 @@ class TestChiltepinAgentDecorator:
 
     @pytest.mark.asyncio
     async def test_action_decorator_with_python_task(self, tmp_path):
-        """Test @action decorator with @python_task."""
+        """Test @agent_action decorator with @python_task."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -398,7 +398,7 @@ class TestChiltepinAgentDecorator:
 
     @pytest.mark.asyncio
     async def test_action_decorator_with_async_method(self, tmp_path):
-        """Test @action decorator with async methods."""
+        """Test @agent_action decorator with async methods."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -424,7 +424,7 @@ class TestChiltepinAgentDecorator:
 
     @pytest.mark.asyncio
     async def test_loop_decorator(self, tmp_path):
-        """Test @loop decorator for background tasks."""
+        """Test @agent_loop decorator for background tasks."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -441,13 +441,22 @@ class TestChiltepinAgentDecorator:
                     LoopAgent, agent_workflow_config=config, executor="test-executor"
                 )
 
+                # Wait for loop to increment counter at least once
+                # Poll until we see an increment (with timeout)
                 initial = await agent.get_counter()
-                await asyncio.sleep(0.5)
-                final = await agent.get_counter()
+                assert initial == 0  # Should start at 0
 
-                # Should have incremented multiple times
-                assert final > initial
-                assert final >= initial + 3
+                for _ in range(20):  # 2 second timeout (20 * 0.1s)
+                    await asyncio.sleep(0.1)
+                    current = await agent.get_counter()
+                    if current > initial:
+                        break
+
+                final = await agent.get_counter()
+                # Verify the background loop is running and incrementing
+                assert final > initial, (
+                    "Background loop should have incremented counter"
+                )
         finally:
             workflow.cleanup()
 
@@ -550,7 +559,7 @@ class TestChiltepinAgentDecorator:
 
     @pytest.mark.asyncio
     async def test_agent_with_no_actions(self, tmp_path):
-        """Test that agent with no @action methods still works."""
+        """Test that agent with no @agent_action methods still works."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -811,7 +820,7 @@ class TestIntegration:
                 result = await agent.compute(x=32, executor=["test-executor"])
                 assert result == 42
 
-                # Test async action
+                # Test async agent_action
                 state = await agent.get_state()
                 assert state["value"] == 10
                 assert state["counter"] >= 0
@@ -821,7 +830,7 @@ class TestIntegration:
                 result = await agent.compute(x=22, executor=["test-executor"])
                 assert result == 42
 
-                # Test loop is running
+                # Test agent_loop is running
                 initial_counter = state["counter"]
                 await asyncio.sleep(0.5)
                 final_state = await agent.get_state()
@@ -908,7 +917,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_sync_action_without_task_decorator(self, tmp_path):
-        """Test sync action that returns a plain value (not a Future)."""
+        """Test sync agent_action that returns a plain value (not a Future)."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -992,7 +1001,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_agent_without_explicit_markers(self, tmp_path):
-        """Test agent class with methods that have no @action or @loop decorators."""
+        """Test agent class with methods that have no @agent_action or @agent_loop decorators."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -1011,7 +1020,7 @@ class TestEdgeCases:
                     executor="test-executor",
                 )
 
-                # Agent should launch successfully even without @action markers
+                # Agent should launch successfully even without @agent_action markers
                 # This tests the code path where methods don't have _chiltepin_expose or __wrapped__
                 assert agent is not None
         finally:
@@ -1096,7 +1105,7 @@ class TestEdgeCases:
                     executor="test-executor",
                 )
 
-                # If we can call an action, agent_on_startup must have succeeded
+                # If we can call an agent_action, agent_on_startup must have succeeded
                 result = await agent.check_workflow()
                 assert result is True
         finally:
@@ -1104,7 +1113,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_verify_loop_method_execution(self, tmp_path):
-        """Explicitly verify loop methods execute - helps ensure lines 462-463 are hit."""
+        """Explicitly verify agent_loop methods execute - helps ensure lines 462-463 are hit."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -1117,12 +1126,12 @@ class TestEdgeCases:
                 workflow=workflow, executor_names=["test-executor"]
             )
             async with await agent_system.manager() as manager:
-                # Launch agent with loop method
+                # Launch agent with agent_loop method
                 agent = await manager.launch(
                     LoopAgent, agent_workflow_config=config, executor="test-executor"
                 )
 
-                # Verify loop is running by checking counter increases
+                # Verify agent_loop is running by checking counter increases
                 count1 = await agent.get_counter()
                 await asyncio.sleep(0.3)
                 count2 = await agent.get_counter()
@@ -1136,7 +1145,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_decorator_order_equivalence(self, tmp_path):
-        """Test that @action/@python_task order does not affect behavior."""
+        """Test that @agent_action/@python_task order does not affect behavior."""
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 

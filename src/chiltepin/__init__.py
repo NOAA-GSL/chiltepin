@@ -19,8 +19,8 @@ __all__ = [
     "AgentSystem",
     "ChiltepinManager",
     "chiltepin_agent",
-    "action",
-    "loop",
+    "agent_action",
+    "agent_loop",
 ]
 
 
@@ -30,7 +30,7 @@ def __getattr__(name):
     The following are lazy-loaded to avoid import overhead:
     - Workflow: Avoids loading Parsl and its dependencies
     - AgentSystem, ChiltepinManager: Avoids loading Academy agents framework
-    - chiltepin_agent, action, loop: Agent decorators from chiltepin.agents
+    - chiltepin_agent, agent_action, agent_loop: Agent decorators from chiltepin.agents
 
     This also enables attribute-style access to submodules (e.g., chiltepin.configure).
     """
@@ -55,13 +55,13 @@ def __getattr__(name):
 
             globals()[name] = locals()[name]
             return locals()[name]
-        elif name == "action":
-            from chiltepin.agents import action  # noqa: F401
+        elif name == "agent_action":
+            from chiltepin.agents import agent_action  # noqa: F401
 
             globals()[name] = locals()[name]
             return locals()[name]
-        elif name == "loop":
-            from chiltepin.agents import loop  # noqa: F401
+        elif name == "agent_loop":
+            from chiltepin.agents import agent_loop  # noqa: F401
 
             globals()[name] = locals()[name]
             return locals()[name]
