@@ -356,6 +356,48 @@ def agent_loop(func: Callable) -> Callable:
             f"Method '{func.__name__}' is not async. "
             f"Did you forget the 'async' keyword?"
         )
+
+    # Validate that the method has the correct signature for Academy's loop protocol
+    # Academy will call the method with exactly one argument: shutdown (asyncio.Event)
+    # Expected signature: async def loop_method(self, shutdown): ...
+    sig = inspect.signature(func)
+    params = list(sig.parameters.values())
+
+    # Filter out 'self' parameter (should be first for instance methods)
+    non_self_params = [p for p in params if p.name != "self"]
+
+    if not non_self_params:
+        raise TypeError(
+            f"@agent_loop method '{func.__name__}' must accept a 'shutdown' parameter. "
+            f"Expected signature: async def {func.__name__}(self, shutdown: asyncio.Event): "
+            f"The shutdown parameter is an asyncio.Event used to signal loop termination."
+        )
+
+    # Should have exactly one non-self parameter
+    if len(non_self_params) != 1:
+        raise TypeError(
+            f"@agent_loop method '{func.__name__}' must accept exactly one parameter (shutdown). "
+            f"Found {len(non_self_params)} parameters: {', '.join(p.name for p in non_self_params)}. "
+            f"Expected signature: async def {func.__name__}(self, shutdown: asyncio.Event):"
+        )
+
+    # That parameter should not be *args or **kwargs
+    first_param = non_self_params[0]
+
+    if first_param.kind == inspect.Parameter.VAR_POSITIONAL:
+        raise TypeError(
+            f"@agent_loop method '{func.__name__}' should not use *args. "
+            f"Expected signature: async def {func.__name__}(self, shutdown: asyncio.Event): "
+            f"Academy will call the loop with exactly one argument (shutdown Event)."
+        )
+
+    if first_param.kind == inspect.Parameter.VAR_KEYWORD:
+        raise TypeError(
+            f"@agent_loop method '{func.__name__}' should not use **kwargs. "
+            f"Expected signature: async def {func.__name__}(self, shutdown: asyncio.Event): "
+            f"Academy will call the loop with exactly one argument (shutdown Event)."
+        )
+
     func._chiltepin_loop = True
     return func
 

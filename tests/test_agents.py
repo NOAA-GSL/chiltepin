@@ -1378,3 +1378,70 @@ def test_agent_loop_requires_async():
             @agent_loop
             def sync_loop(self, shutdown):  # Missing 'async'
                 pass
+
+
+def test_agent_loop_requires_shutdown_parameter():
+    """Test that @agent_loop validates the method accepts a shutdown parameter."""
+    import pytest
+
+    with pytest.raises(TypeError, match="must accept a 'shutdown' parameter"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @agent_loop
+            async def bad_loop(self):  # Missing shutdown parameter
+                pass
+
+
+def test_agent_loop_rejects_args():
+    """Test that @agent_loop rejects methods with *args."""
+    import pytest
+
+    with pytest.raises(TypeError, match="should not use \\*args"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @agent_loop
+            async def bad_loop(self, *args):
+                pass
+
+
+def test_agent_loop_rejects_kwargs():
+    """Test that @agent_loop rejects methods with **kwargs."""
+    import pytest
+
+    with pytest.raises(TypeError, match="should not use \\*\\*kwargs"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @agent_loop
+            async def bad_loop(self, **kwargs):
+                pass
+
+
+def test_agent_loop_rejects_required_params_after_shutdown():
+    """Test that @agent_loop rejects additional required parameters."""
+    import pytest
+
+    with pytest.raises(TypeError, match="must accept exactly one parameter"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @agent_loop
+            async def bad_loop(
+                self, shutdown, extra_param
+            ):  # extra_param has no default
+                pass
+
+
+def test_agent_loop_rejects_optional_params():
+    """Test that @agent_loop rejects additional parameters even with defaults."""
+    import pytest
+
+    with pytest.raises(TypeError, match="must accept exactly one parameter"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @agent_loop
+            async def bad_loop(self, shutdown, interval=1.0):  # Even with default
+                pass
