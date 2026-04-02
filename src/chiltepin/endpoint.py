@@ -203,8 +203,8 @@ def get_chiltepin_apps() -> Tuple[GlobusApp, GlobusApp, GlobusApp]:
     if client_secret:
         os.environ["GLOBUS_CLI_CLIENT_ID"] = client_id
         os.environ["GLOBUS_CLI_CLIENT_SECRET"] = client_secret
-        os.environ.setdefault("ACADEMY_GLOBUS_CLIENT_ID", client_id)
-        os.environ.setdefault("ACADEMY_GLOBUS_CLIENT_SECRET", client_secret)
+        os.environ["ACADEMY_GLOBUS_CLIENT_ID"] = client_id
+        os.environ["ACADEMY_GLOBUS_CLIENT_SECRET"] = client_secret
 
     # If a client id was not found in the environment, use the default Chiltepin client id
     if not client_id:
