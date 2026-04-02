@@ -27,6 +27,31 @@ be launched on remote resources and interacted with asynchronously through an ag
    Academy agents (not decorated) are not supported and will raise an error if launched with ChiltepinManager.
    Use the base Academy Manager for native agents.
 
+.. warning::
+   **Multi-Agent Deployments on Shared Filesystems:**
+
+   When launching multiple agents on systems with shared filesystems (e.g., HPC clusters,
+   shared network storage), you **must** provide unique ``agent_workflow_run_dir`` values
+   to each agent to avoid Parsl directory collisions. If ``agent_workflow_run_dir`` is not
+   specified, a unique directory is auto-generated using a UUID.
+
+   **Recommended practice**: Explicitly set ``agent_workflow_run_dir`` in ``manager.launch()``
+   to use predictable paths for debugging:
+
+   .. code-block:: python
+
+      agent1 = await manager.launch(
+          MyAgent,
+          agent_workflow_config=config,
+          agent_workflow_run_dir="/scratch/agent1_runinfo"  # Unique path
+      )
+
+      agent2 = await manager.launch(
+          MyAgent,
+          agent_workflow_config=config,
+          agent_workflow_run_dir="/scratch/agent2_runinfo"  # Different path
+      )
+
 Overview
 --------
 
@@ -365,17 +390,18 @@ Best Practices
 Import Decorators Correctly
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Always import ``agent_action`` and ``agent_loop`` from ``chiltepin.agents``, not ``academy.agent``:
+Always use Chiltepin's decorators (``agent_action`` and ``agent_loop``), not Academy's native
+decorators (``action`` and ``loop``):
 
 .. code-block:: python
 
-   # ✅ Correct
+   # ✅ Correct - Use Chiltepin's decorators
    from chiltepin.agents import chiltepin_agent, agent_action, agent_loop
    
-   # ❌ Wrong - Academy's decorators have different semantics
+   # ❌ Wrong - Academy's decorators have different names and semantics
    from academy.agent import action, loop
 
-Academy's ``@action`` requires async methods, while Chiltepin's works with both sync and async.
+Academy's ``@action`` requires async methods, while Chiltepin's ``@agent_action`` works with both sync and async.
 
 Keep Behavior Classes Serializable
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -584,7 +610,7 @@ Action Not Found
 If an agent_action isn't available on the agent proxy:
 
 1. Check that the method is decorated with ``@agent_action``
-2. Verify you're importing ``agent_action`` from ``chiltepin.agents``, not ``academy.agent``
+2. Verify you're using ``agent_action`` from ``chiltepin.agents``, not ``action`` from ``academy.agent``
 3. Ensure the method name doesn't start with underscore (private methods aren't exposed)
 
 Workflow Not Starting

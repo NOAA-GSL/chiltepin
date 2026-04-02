@@ -842,7 +842,12 @@ class TestIntegration:
 
     @pytest.mark.asyncio
     async def test_multiple_agents_same_manager(self, tmp_path):
-        """Test launching multiple agents with the same manager."""
+        """Test launching multiple agents with the same manager.
+
+        This also implicitly tests that auto-generated agent_workflow_run_dir values
+        prevent Parsl directory collisions when multiple agents are launched without
+        explicit run_dir specification. Each agent gets a unique UUID-based run_dir.
+        """
         from chiltepin import Workflow
         from chiltepin.agents import AgentSystem
 
@@ -863,6 +868,7 @@ class TestIntegration:
                 workflow=workflow, executor_names=["test-executor"]
             )
             async with await agent_system.manager() as manager:
+                # Launch agents without agent_workflow_run_dir - each gets auto-generated unique path
                 agent1 = await manager.launch(
                     Agent1, agent_workflow_config=config, executor="test-executor"
                 )

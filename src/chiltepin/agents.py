@@ -18,6 +18,7 @@ action decorator requires async methods only.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -82,7 +83,10 @@ class ChiltepinManager(Manager):
         agent_workflow_include : Optional[List[str]]
             Optional list of executor labels for workflow (chiltepin agents only)
         agent_workflow_run_dir : Optional[str]
-            Optional run directory for workflow (chiltepin agents only)
+            Optional run directory for workflow (chiltepin agents only).
+            **Important**: When launching multiple agents on shared filesystems,
+            provide unique run_dir values to avoid Parsl directory collisions.
+            If omitted, a unique directory is auto-generated.
         **manager_kwargs : Any
             Other keyword arguments for Manager (e.g., executor, resources)
 
@@ -367,8 +371,9 @@ def chiltepin_agent(
         resources are loaded.
     agent_workflow_run_dir : Optional[str]
         Default directory for Parsl runtime files. Can be overridden at runtime
-        using agent_workflow_run_dir= keyword argument in manager.launch(). If None, uses
-        Parsl's default.
+        using agent_workflow_run_dir= keyword argument in manager.launch(). If None,
+        a unique directory is auto-generated to prevent collisions when multiple agents
+        run on shared filesystems.
 
     Returns
     -------
@@ -499,7 +504,8 @@ def chiltepin_agent(
                 agent_workflow_include : Optional[List[str]]
                     Optional runtime override for Agent's workflow executor list (from manager.launch)
                 agent_workflow_run_dir : Optional[str]
-                    Optional runtime override for Parsl's run directory (from manager.launch)
+                    Optional runtime override for Parsl's run directory (from manager.launch).
+                    If None, a unique directory is auto-generated to prevent collisions.
                 **kwargs : Any
                     Keyword arguments for behavior class
                 """
@@ -513,11 +519,18 @@ def chiltepin_agent(
                     if agent_workflow_include is not None
                     else decorator_include
                 )  # pragma: no cover
-                self._run_dir = (
-                    agent_workflow_run_dir
-                    if agent_workflow_run_dir is not None
-                    else decorator_run_dir
-                )  # pragma: no cover
+
+                # Auto-generate unique run_dir if not specified to prevent collisions
+                # when multiple agents run on shared filesystems
+                if agent_workflow_run_dir is not None:
+                    self._run_dir = agent_workflow_run_dir
+                elif decorator_run_dir is not None:
+                    self._run_dir = decorator_run_dir
+                else:
+                    # Generate unique run_dir using UUID to avoid Parsl directory collisions
+                    self._run_dir = (
+                        f"parsl_runinfo_{uuid.uuid4().hex[:8]}"  # pragma: no cover
+                    )
 
                 # Create the behavior instance with its args/kwargs
                 # Note: agent_workflow_config, agent_workflow_include, and agent_workflow_run_dir are infrastructure, not passed to behavior
