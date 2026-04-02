@@ -58,8 +58,8 @@ Overview
 Chiltepin provides five main components for agent-based workflows:
 
 - **@chiltepin_agent**: Decorator to wrap a regular Python class as an agent
-- **@agent_action**: Decorator to mark methods that should be exposed as agent actions
-- **@agent_loop**: Decorator to mark methods that should run as background loops
+- **@agent_action**: Decorator to mark methods that should be exposed as agent actions (works with sync or async)
+- **@agent_loop**: Decorator to mark async methods that should run as background loops (must be async)
 - **AgentSystem**: Helper class to simplify Academy Manager setup with Parsl executors
 - **ChiltepinManager**: Custom Manager that supports workflow configuration parameters
 
@@ -124,8 +124,14 @@ Key Features
 1. **Regular Python class**: No inheritance required, fully serializable
 2. **Access instance state**: Task-decorated methods can access ``self.temperature``
 3. **Mixed sync/async**: Use ``@agent_action`` on both sync and async methods
-4. **Background loops**: Use ``@agent_loop`` for continuous background processing or autonomous behavior
+4. **Background loops**: Use ``@agent_loop`` on async methods for continuous background processing or autonomous behavior
 5. **Infrastructure separation**: Workflow config passed via ``manager.launch()``, not ``__init__``
+
+.. note::
+   **@agent_loop requires async methods**: The ``@agent_loop`` decorator can only be applied to
+   async methods. This is validated at decoration time, and a TypeError will be raised if you
+   attempt to use it on a synchronous method. Background loops must be async to properly
+   cooperate with the agent's event loop.
 
 Launching Agents
 ^^^^^^^^^^^^^^^^

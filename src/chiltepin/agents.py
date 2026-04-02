@@ -321,6 +321,12 @@ def agent_loop(func: Callable) -> Callable:
     so all decorators can be imported from chiltepin.agents.
 
     .. important::
+        **The decorated method MUST be async.** The decorator validates this at
+        decoration time and will raise a TypeError if applied to a non-async method.
+        Background loops need to be async to properly cooperate with the agent's
+        event loop.
+
+    .. important::
         **Always import from chiltepin.agents, not academy.agent**::
 
             from chiltepin.agents import agent_loop  # ✅ Correct
