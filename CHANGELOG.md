@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-04-02
+
+### Added
+- **Agent System Integration**: Added support for stateful agent-based workflows with Academy Agents
+  - `@chiltepin_agent` decorator to wrap Python classes as Academy agents
+  - `@agent_action` decorator for exposing methods as agent actions (supports sync and async)
+  - `@agent_loop` decorator for background loops (requires async methods)
+  - `AgentSystem` helper class for simplified agent management
+  - `ChiltepinManager` custom manager supporting workflow configuration at launch time
+  - Comprehensive agent documentation and examples
+  - Full test suite with 100% coverage of agent module
+- **Enhanced Workflow API**: `Workflow` now accepts `None` for default configuration
+  - `Workflow()` or `Workflow(None)` creates default local executor automatically
+  - More intuitive API for simple use cases
+  - Fully backward compatible with existing code
+
+### Changed
+- **Validation Improvements**: Added comprehensive decorator validation
+  - Detects and rejects mixed usage of Academy and Chiltepin decorators
+  - Validates `@agent_loop` methods are async with correct signature
+  - Clear error messages guide users to correct decorator usage
+- **Documentation Updates**: Enhanced documentation for agent workflows
+  - Added agents module to API reference
+  - Updated README to mention Academy Agents and agent-based workflows
+  - Added documentation for multi-agent deployments on shared filesystems
+  - Clarified decorator naming (Chiltepin vs Academy)
+
+### Fixed
+- **Collision Prevention**: Auto-generated unique run directories for agents
+  - UUID-based naming prevents Parsl directory collisions
+  - Important for multi-agent deployments on shared filesystems
+- **Runtime Robustness**: Improved action wrapper argument handling
+  - Agent actions now accept both positional and keyword arguments
+  - Proper forwarding of `*args` and `**kwargs` to underlying methods
+- **Test Reliability**: Fixed race condition in loop decorator test
+  - Removed racy assertion on initial counter value
+  - Test now validates loop functionality without timing assumptions
+
+[0.1.5]: https://github.com/NOAA-GSL/chiltepin/releases/tag/v0.1.5
+
 ## [0.1.4] - 2026-03-23
 
 ### Changed
