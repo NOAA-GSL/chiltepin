@@ -520,11 +520,11 @@ class TestChiltepinAgentDecorator:
                     LoopAgent, agent_workflow_config=config, executor="test-executor"
                 )
 
-                # Wait for loop to increment counter at least once
-                # Poll until we see an increment (with timeout)
+                # Get the initial counter value (could be 0 or already incremented due to race)
+                # We can't assert it's 0 because the loop starts immediately and runs async
                 initial = await agent.get_counter()
-                assert initial == 0  # Should start at 0
 
+                # Poll until we see an increment (with timeout)
                 for _ in range(20):  # 2 second timeout (20 * 0.1s)
                     await asyncio.sleep(0.1)
                     current = await agent.get_counter()
