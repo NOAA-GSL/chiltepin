@@ -1253,3 +1253,18 @@ def test_academy_loop_decorator_rejected():
             @academy_loop
             async def bad_loop(self, shutdown: asyncio.Event) -> None:
                 pass
+
+
+def test_agent_loop_requires_async():
+    """Test that @agent_loop raises TypeError when applied to non-async methods."""
+    import pytest
+
+    with pytest.raises(
+        TypeError, match="@agent_loop can only be applied to async methods"
+    ):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @agent_loop
+            def sync_loop(self, shutdown):  # Missing 'async'
+                pass

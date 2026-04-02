@@ -18,6 +18,7 @@ action decorator requires async methods only.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import uuid
 from pathlib import Path
 from typing import (
@@ -343,6 +344,12 @@ def agent_loop(func: Callable) -> Callable:
                     await asyncio.sleep(1)
                     # Update state
     """
+    if not inspect.iscoroutinefunction(func):
+        raise TypeError(
+            f"@agent_loop can only be applied to async methods. "
+            f"Method '{func.__name__}' is not async. "
+            f"Did you forget the 'async' keyword?"
+        )
     func._chiltepin_loop = True
     return func
 
