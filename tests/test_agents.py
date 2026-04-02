@@ -1333,6 +1333,38 @@ def test_academy_loop_decorator_rejected():
                 pass
 
 
+def test_mixed_academy_chiltepin_action_decorators_rejected():
+    """Test that stacking Academy's @action with @agent_action is rejected."""
+    import pytest
+    from academy.agent import action as academy_action
+
+    with pytest.raises(TypeError, match="has both Academy and Chiltepin decorators"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @agent_action
+            @academy_action
+            async def mixed_method(self):
+                pass
+
+
+def test_mixed_academy_chiltepin_loop_decorators_rejected():
+    """Test that stacking Academy's @loop with @agent_loop is rejected."""
+    import asyncio
+
+    import pytest
+    from academy.agent import loop as academy_loop
+
+    with pytest.raises(TypeError, match="has both Academy and Chiltepin decorators"):
+
+        @chiltepin_agent()
+        class BadAgent:
+            @agent_loop
+            @academy_loop
+            async def mixed_loop(self, shutdown: asyncio.Event) -> None:
+                pass
+
+
 def test_agent_loop_requires_async():
     """Test that @agent_loop raises TypeError when applied to non-async methods."""
     import pytest

@@ -593,13 +593,21 @@ def chiltepin_agent(
 
             # First, detect if user accidentally used Academy's @action or @loop decorators
             # Academy's decorators set _agent_method_type attribute
-            if (
-                hasattr(attr, "_agent_method_type")
-                and not hasattr(attr, "_chiltepin_expose")
-                and not hasattr(attr, "_chiltepin_loop")
-            ):
+            if hasattr(attr, "_agent_method_type"):
                 method_type = getattr(attr, "_agent_method_type", "unknown")
-                if method_type == "action":
+                has_chiltepin_marker = hasattr(attr, "_chiltepin_expose") or hasattr(
+                    attr, "_chiltepin_loop"
+                )
+
+                if has_chiltepin_marker:
+                    # Mixed usage - both Academy and Chiltepin decorators
+                    raise TypeError(
+                        f"Method '{name}' in class '{behavior_class.__name__}' has both Academy and Chiltepin decorators. "
+                        f"This is not supported and will cause double-wrapping issues. "
+                        f"Remove the Academy decorator (@action or @loop) and use only Chiltepin decorators:\n"
+                        f"  from chiltepin.agents import agent_action, agent_loop  # Use these only"
+                    )
+                elif method_type == "action":
                     raise TypeError(
                         f"Method '{name}' in class '{behavior_class.__name__}' uses Academy's @action decorator. "
                         f"Use @agent_action from chiltepin.agents instead:\n"
