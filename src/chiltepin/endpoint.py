@@ -171,7 +171,7 @@ def _check_endpoint_management_available():
 
 
 def get_chiltepin_apps() -> Tuple[GlobusApp, GlobusApp, GlobusApp]:
-    """Log in to the Chiltepin app
+    """Get the Globus Apps for Globus Compute, Globus Transfer, and Academy Exchange
 
     This instantiates GlobusApp objects for use in creating Globus Compute
     and Globus Transfer clients and for authenticating to the Academy Agent Exchange
@@ -182,7 +182,8 @@ def get_chiltepin_apps() -> Tuple[GlobusApp, GlobusApp, GlobusApp]:
     be created. This is used by the login() and logout() functions where login and
     logout flows are initiated after the apps are retrieved. A tuple is returned
     where the first item is the compute app, the second item is the transfer app, and
-    the third item is the academy app.
+    the third item is the academy app. When called while environment variables are set
+    for a client id and secret, this will return apps configured with those credentials.
 
     Returns
     -------

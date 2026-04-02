@@ -149,6 +149,30 @@ class EmptyAgent:
         return self.value
 
 
+@chiltepin_agent()
+class PositionalArgsAgent:
+    """Agent to test positional arguments in agent actions."""
+
+    def __init__(self, base: int):
+        self.base = base
+
+    @agent_action
+    @python_task
+    def add_numbers(self, a: int, b: int, c: int = 0) -> int:
+        """Sync action with positional and keyword args."""
+        return self.base + a + b + c
+
+    @agent_action
+    async def multiply_numbers(self, x: int, y: int) -> int:
+        """Async action with positional args."""
+        return self.base * x * y
+
+    @agent_action
+    async def concat_strings(self, s1: str, s2: str, sep: str = " ") -> str:
+        """Async action with mixed positional and keyword args."""
+        return f"{s1}{sep}{s2}"
+
+
 @chiltepin_agent(agent_workflow_include=["test-executor"])
 class FullAgent:
     def __init__(self, initial_value: int):
@@ -420,6 +444,60 @@ class TestChiltepinAgentDecorator:
                 await agent.add_data(value="world")
                 result = await agent.get_data()
                 assert result == ["hello", "world"]
+        finally:
+            workflow.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_agent_actions_with_positional_arguments(self, tmp_path):
+        """Test that agent actions support positional arguments."""
+        from chiltepin import Workflow
+        from chiltepin.agents import AgentSystem
+
+        config = get_test_config()
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_system = AgentSystem(
+                workflow=workflow, executor_names=["test-executor"]
+            )
+            async with await agent_system.manager() as manager:
+                agent = await manager.launch(
+                    PositionalArgsAgent,
+                    agent_workflow_config=config,
+                    args=(10,),  # base=10
+                    executor="test-executor",
+                )
+
+                # Test sync action with positional args
+                result = await agent.add_numbers(5, 3)  # 10 + 5 + 3 = 18
+                assert result == 18
+
+                # Test sync action with positional + keyword args
+                result = await agent.add_numbers(5, 3, c=2)  # 10 + 5 + 3 + 2 = 20
+                assert result == 20
+
+                # Test sync action with all keyword args
+                result = await agent.add_numbers(a=1, b=2, c=3)  # 10 + 1 + 2 + 3 = 16
+                assert result == 16
+
+                # Test async action with positional args
+                result = await agent.multiply_numbers(2, 3)  # 10 * 2 * 3 = 60
+                assert result == 60
+
+                # Test async action with keyword args
+                result = await agent.multiply_numbers(x=4, y=5)  # 10 * 4 * 5 = 200
+                assert result == 200
+
+                # Test async action with mixed positional and keyword args
+                result = await agent.concat_strings("hello", "world")
+                assert result == "hello world"
+
+                result = await agent.concat_strings("foo", "bar", sep="-")
+                assert result == "foo-bar"
+
+                result = await agent.concat_strings(s1="a", s2="b", sep=":")
+                assert result == "a:b"
         finally:
             workflow.cleanup()
 

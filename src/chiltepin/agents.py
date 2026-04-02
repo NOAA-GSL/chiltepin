@@ -212,7 +212,7 @@ class AgentSystem:
         self.executor_names = executor_names
         self.exchange_address = exchange_address
         self.auth_method = auth_method
-        self._executors: Optional[dict] = None
+        self._executors: Optional[Dict[str, ParslPoolExecutor]] = None
 
     def _create_executors(self) -> None:
         """Create ParslPoolExecutors for all configured executor names."""
@@ -649,9 +649,9 @@ def chiltepin_agent(
                     # Async agent_action
                     def make_async_action(method_name):
                         @academy_action
-                        async def action_method(self, **kwargs):
+                        async def action_method(self, *args, **kwargs):
                             method = getattr(self._behavior, method_name)
-                            return await method(**kwargs)
+                            return await method(*args, **kwargs)
 
                         action_method.__name__ = method_name
                         action_method.__doc__ = getattr(
@@ -664,9 +664,9 @@ def chiltepin_agent(
                     # Sync agent_action (might be task-decorated)
                     def make_action(method_name):
                         @academy_action
-                        async def action_method(self, **kwargs):
+                        async def action_method(self, *args, **kwargs):
                             method = getattr(self._behavior, method_name)
-                            result = method(**kwargs)
+                            result = method(*args, **kwargs)
 
                             # Check if it's a Parsl AppFuture (from task decorator)
                             if isinstance(result, AppFuture):
