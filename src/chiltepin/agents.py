@@ -524,7 +524,7 @@ def chiltepin_agent(
                 """
                 super().__init__()  # pragma: no cover
                 # Store config for workflow setup
-                self._config = agent_workflow_config or {}  # pragma: no cover
+                self._config = {} if agent_workflow_config is None else agent_workflow_config  # pragma: no cover
 
                 # Use runtime overrides if provided, otherwise fall back to decorator defaults
                 self._include = (
