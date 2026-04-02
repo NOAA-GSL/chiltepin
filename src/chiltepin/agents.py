@@ -8,6 +8,8 @@ with Chiltepin workflows and Parsl executors.
 When using @chiltepin_agent decorator, always import agent_action and agent_loop decorators
 from chiltepin.agents, NOT from academy.agent:
 
+.. code-block:: python
+
     from chiltepin.agents import chiltepin_agent, agent_action, agent_loop  # ✅ Correct
     from academy.agent import action, loop  # ❌ Wrong for @chiltepin_agent
 
