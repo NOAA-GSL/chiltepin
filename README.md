@@ -14,8 +14,10 @@ This collection of resources is not intended for production use, and is for
 research purposes only.
 
 Chiltepin provides Python decorators and utilities for building scientific workflows
-that can execute on distributed computing resources using [Parsl](https://parsl-project.org/)
-and [Globus](https://www.globus.org/) services.
+that can execute on distributed computing resources using [Parsl](https://parsl-project.org/),
+[Globus](https://www.globus.org/) services, and [Academy Agents](https://docs.academy-agents.org/).
+It supports both traditional task-based workflows and stateful agent-based workflows for
+long-running, autonomous computations.
 
 ### Platform Support
 
@@ -34,6 +36,7 @@ Key documentation sections:
 - [Installation Guide](https://chiltepin.readthedocs.io/en/latest/installation.html) - Installing Chiltepin
 - [Quick Start](https://chiltepin.readthedocs.io/en/latest/quickstart.html) - Your first Chiltepin workflow
 - [Tasks](https://chiltepin.readthedocs.io/en/latest/tasks.html) - Python, Bash, and Join task decorators
+- [Agents](https://chiltepin.readthedocs.io/en/latest/agents.html) - Building stateful agent-based workflows
 - [Configuration](https://chiltepin.readthedocs.io/en/latest/configuration.html) - Configuring compute resources
 - [Endpoints](https://chiltepin.readthedocs.io/en/latest/endpoints.html) - Managing Globus Compute endpoints
 - [Data Transfer](https://chiltepin.readthedocs.io/en/latest/data.html) - Using Globus for data movement
