@@ -34,7 +34,7 @@ def config(config_file):
 
     # Use workflow context manager with default (empty) resource configuration
     with Workflow(
-        {},
+        None,  # Use None for default configuration (local executor only)
         run_dir=str(output_dir / "test_data_runinfo"),
         log_file=str(output_dir / "test_data_parsl.log"),
         log_level=logging.DEBUG,
