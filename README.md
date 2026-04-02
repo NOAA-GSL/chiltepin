@@ -1,3 +1,5 @@
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![PyPI - Version](https://img.shields.io/pypi/v/chiltepin)](https://pypi.org/project/chiltepin/)
 [![ExascaleSandboxTests](https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml/badge.svg)](https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml)
 [![Documentation](https://github.com/NOAA-GSL/chiltepin/actions/workflows/docs.yaml/badge.svg)](https://github.com/NOAA-GSL/chiltepin/actions/workflows/docs.yaml)
 [![DOI](https://zenodo.org/badge/712000160.svg)](https://doi.org/10.5281/zenodo.19195670)

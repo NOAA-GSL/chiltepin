@@ -5,8 +5,8 @@ Chiltepin Documentation
    :target: https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml
    :alt: ChiltepinTests
 
-**Chiltepin** is a Python library for exploring federated workflow capabilities
-using Parsl and Globus Compute. It provides tools and demonstrations for
+**Chiltepin** is a Python library for exploring federated agentic workflow capabilities
+using Parsl, Globus Compute, and Academy Agents. It provides tools and demonstrations for
 implementing distributed scientific workflows on HPC systems.
 
 .. warning::
@@ -46,8 +46,9 @@ Key Features
 
 * Configuration-based resource management for both HPC platforms and laptops
 * Support for both MPI (HPC) and non-MPI (HTC) applications
-* Globus Compute endpoint management utilities
+* Agent-based workflows with Academy Agents integration
 * Task decorators for seamless integration of Parsl and Globus Compute
+* Globus Compute endpoint management utilities
 * Dynamic distributed task execution across heterogeneous resources
 * Docker container environment for development and testing
 * Comprehensive test suite with high coverage for core modules
@@ -61,6 +62,7 @@ Getting Started
    installation
    quickstart
    tasks
+   agents
    data
    configuration
    endpoints

@@ -32,6 +32,13 @@ Tasks Module
    :members:
    :show-inheritance:
 
+Agents Module
+-------------
+
+.. automodule:: chiltepin.agents
+   :members:
+   :show-inheritance:
+
 Data Module
 -----------
 

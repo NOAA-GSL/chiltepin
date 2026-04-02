@@ -126,3 +126,20 @@ class TestSubmoduleAccess:
             # This should raise AttributeError since the submodule doesn't exist
             with pytest.raises(AttributeError, match="has no attribute 'nonexistent'"):
                 _ = chiltepin.nonexistent
+
+    @pytest.mark.parametrize(
+        "attr, expected_module",
+        [
+            ("AgentSystem", "chiltepin.agents"),
+            ("ChiltepinManager", "chiltepin.agents"),
+            ("chiltepin_agent", "chiltepin.agents"),
+            ("agent_action", "chiltepin.agents"),
+            ("agent_loop", "chiltepin.agents"),
+        ],
+    )
+    def test_agent_related_attributes_lazy_loaded(self, attr, expected_module):
+        import chiltepin
+
+        value = getattr(chiltepin, attr)
+        assert callable(value)
+        assert value.__module__.startswith(expected_module)

@@ -28,8 +28,9 @@ class Workflow:
 
     Parameters
     ----------
-    config : str, Path, or dict
-        Either a path to a YAML configuration file or a configuration dictionary
+    config : str, Path, dict, or None
+        Either a path to a YAML configuration file, a configuration dictionary,
+        or None to use default configuration (local executor only)
     include : list of str, optional
         List of resource labels to load. If None, all resources are loaded.
         Note: The default "local" resource is always available, regardless of
@@ -46,7 +47,7 @@ class Workflow:
 
     Examples
     --------
-    As a context manager:
+    As a context manager with default configuration:
 
     >>> from chiltepin import Workflow
     >>> from chiltepin.tasks import python_task
@@ -55,6 +56,12 @@ class Workflow:
     >>> def my_task():
     ...     return "Hello!"
     >>>
+    >>> with Workflow() as dfk:  # or Workflow(None)
+    ...     result = my_task()
+    ...     print(result.result())
+
+    With a config file or dictionary:
+
     >>> with Workflow("config.yaml") as dfk:
     ...     result = my_task()
     ...     print(result.result())
@@ -69,7 +76,7 @@ class Workflow:
 
     def __init__(
         self,
-        config: Union[str, Path, Dict[str, Any]],
+        config: Optional[Union[str, Path, Dict[str, Any]]] = None,
         *,
         include: Optional[List[str]] = None,
         run_dir: Optional[str] = None,
@@ -79,7 +86,9 @@ class Workflow:
     ):
         """Initialize workflow configuration (does not start workflow yet)."""
         # Parse config
-        if isinstance(config, (str, Path)):
+        if config is None:
+            self.config_dict = {}
+        elif isinstance(config, (str, Path)):
             self.config_dict = configure.parse_file(str(config))
         else:
             self.config_dict = config

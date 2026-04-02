@@ -183,6 +183,25 @@ class TestWorkflowConfigTypes:
             result = future.result()
             assert result == 300
 
+    def test_workflow_with_none_config(self, tmp_path):
+        """Test Workflow with None config (uses default local executor)."""
+
+        @python_task
+        def simple_task(x):
+            return x * 2
+
+        # Test with explicit None
+        with Workflow(None, run_dir=str(tmp_path / "runinfo_none")):
+            future = simple_task(21, executor=["local"])
+            result = future.result()
+            assert result == 42
+
+        # Test with no argument (defaults to None)
+        with Workflow(run_dir=str(tmp_path / "runinfo_default")):
+            future = simple_task(30, executor=["local"])
+            result = future.result()
+            assert result == 60
+
     def test_workflow_from_file(self, config_file, tmp_path):
         """Test Workflow with a file path configuration."""
 

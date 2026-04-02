@@ -16,21 +16,55 @@ except PackageNotFoundError:
 
 __all__ = [
     "Workflow",
+    "AgentSystem",
+    "ChiltepinManager",
+    "chiltepin_agent",
+    "agent_action",
+    "agent_loop",
 ]
 
 
 def __getattr__(name):
-    """Lazy import of Workflow to avoid loading Parsl unnecessarily.
+    """Lazy import of workflow and agent classes to avoid loading dependencies unnecessarily.
 
-    The Workflow class is not imported until explicitly accessed, avoiding the
-    overhead of loading Parsl and its dependencies when they're not needed.
+    The following are lazy-loaded to avoid import overhead:
+    - Workflow: Avoids loading Parsl and its dependencies
+    - AgentSystem, ChiltepinManager: Avoids loading Academy agents framework
+    - chiltepin_agent, agent_action, agent_loop: Agent decorators from chiltepin.agents
+
     This also enables attribute-style access to submodules (e.g., chiltepin.configure).
     """
     if name in __all__:
-        from chiltepin.workflow import Workflow  # noqa: F401
+        if name == "Workflow":
+            from chiltepin.workflow import Workflow  # noqa: F401
 
-        globals()[name] = locals()[name]
-        return locals()[name]
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "AgentSystem":
+            from chiltepin.agents import AgentSystem  # noqa: F401
+
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "ChiltepinManager":
+            from chiltepin.agents import ChiltepinManager  # noqa: F401
+
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "chiltepin_agent":
+            from chiltepin.agents import chiltepin_agent  # noqa: F401
+
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "agent_action":
+            from chiltepin.agents import agent_action  # noqa: F401
+
+            globals()[name] = locals()[name]
+            return locals()[name]
+        elif name == "agent_loop":
+            from chiltepin.agents import agent_loop  # noqa: F401
+
+            globals()[name] = locals()[name]
+            return locals()[name]
 
     # Try to import as a submodule
     try:
