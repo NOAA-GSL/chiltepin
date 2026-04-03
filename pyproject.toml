@@ -26,7 +26,7 @@ maintainers = [
 description = "Federated NWP Workflow Tools"
 readme = "README.md"
 license = "Apache-2.0"
-keywords = ["federated", "workflow", "parsl", "globus-compute", "hpc", "scientific-computing"]
+keywords = ["federated", "workflow", "parsl", "globus-compute", "hpc", "scientific-computing", "agentic", "agents"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
