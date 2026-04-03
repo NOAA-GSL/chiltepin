@@ -88,6 +88,7 @@ Dependencies
 
 Chiltepin has the following core dependencies:
 
+* ``academy-py`` (>=0.3.1,<1.0.0)
 * ``globus-compute-sdk`` (>=4.3.0,<4.7.0)
 * ``globus-compute-endpoint`` (>=4.3.0,<4.7.0) - **Linux only**
 * ``globus-sdk``

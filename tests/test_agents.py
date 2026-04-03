@@ -10,7 +10,7 @@ from academy.agent import Agent
 
 import chiltepin.endpoint as endpoint
 from chiltepin.agents import agent_action, agent_loop, chiltepin_agent
-from chiltepin.tasks import python_task
+from chiltepin.tasks import bash_task, join_task, python_task
 
 # Get project root for PYTHONPATH
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
@@ -171,6 +171,59 @@ class PositionalArgsAgent:
     async def concat_strings(self, s1: str, s2: str, sep: str = " ") -> str:
         """Async action with mixed positional and keyword args."""
         return f"{s1}{sep}{s2}"
+
+
+@chiltepin_agent()
+class BashTaskAgent:
+    """Agent to test @bash_task decorated methods."""
+
+    def __init__(self, prefix: str):
+        self.prefix = prefix
+
+    @agent_action
+    @bash_task
+    def echo_message(self, message):
+        """Return bash command to echo a message."""
+        return f"echo '{self.prefix}: {message}'"
+
+    @agent_action
+    @bash_task
+    def write_file(self, filepath, content):
+        """Return bash command to write content to a file."""
+        return f"echo '{content}' > {filepath}"
+
+
+@chiltepin_agent()
+class JoinTaskAgent:
+    """Agent to test @join_task decorated methods."""
+
+    def __init__(self, multiplier: int):
+        self.multiplier = multiplier
+
+    @python_task
+    def _compute_part(self, x: int) -> int:
+        """Helper task for join demonstration."""
+        return x * self.multiplier
+
+    @python_task
+    def _sum_results(self, a: int, b: int) -> int:
+        """Sum two values - will receive resolved future values."""
+        return a + b
+
+    @agent_action
+    @join_task
+    def compute_sum(self, a: int, b: int):
+        """Join task that combines multiple task futures.
+
+        The join_task launches multiple tasks and returns the final future.
+        Parsl will automatically resolve dependencies.
+        """
+        # Launch multiple tasks
+        future_a = self._compute_part(a, executor=["test-executor"])
+        future_b = self._compute_part(b, executor=["test-executor"])
+        # Use another task to sum them - Parsl handles dependency resolution
+        # The @python_task decorator will automatically wait for future_a and future_b
+        return self._sum_results(future_a, future_b, executor=["test-executor"])
 
 
 @chiltepin_agent(agent_workflow_include=["test-executor"])
@@ -363,6 +416,55 @@ class ReverseOrderAgent:
         return self.value * x
 
 
+# Agent composition classes - demonstrating agents that use other agents
+@chiltepin_agent()
+class LowererAgent:
+    """Agent that converts text to lowercase."""
+
+    @agent_action
+    async def lower(self, text: str) -> str:
+        """Convert text to lowercase."""
+        return text.lower()
+
+
+@chiltepin_agent()
+class ReverserAgent:
+    """Agent that reverses text."""
+
+    @agent_action
+    async def reverse(self, text: str) -> str:
+        """Reverse text."""
+        return text[::-1]
+
+
+@chiltepin_agent()
+class CoordinatorAgent:
+    """Agent that coordinates other agents to process text."""
+
+    def __init__(self, lowerer, reverser):
+        """Initialize with handles to other agents.
+
+        Parameters
+        ----------
+        lowerer : Handle[LowererAgent]
+            Handle to the lowerer agent
+        reverser : Handle[ReverserAgent]
+            Handle to the reverser agent
+        """
+        self.lowerer = lowerer
+        self.reverser = reverser
+
+    @agent_action
+    async def process(self, text: str) -> str:
+        """Process text by lowering then reversing it.
+
+        This demonstrates agent composition - calling actions on other agents.
+        """
+        text = await self.lowerer.lower(text)
+        text = await self.reverser.reverse(text)
+        return text
+
+
 class TestChiltepinAgentDecorator:
     """Test the @chiltepin_agent decorator."""
 
@@ -498,6 +600,78 @@ class TestChiltepinAgentDecorator:
 
                 result = await agent.concat_strings(s1="a", s2="b", sep=":")
                 assert result == "a:b"
+        finally:
+            workflow.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_agent_actions_with_bash_task(self, tmp_path):
+        """Test that agent actions work with @bash_task decorator."""
+        from chiltepin import Workflow
+        from chiltepin.agents import AgentSystem
+
+        config = get_test_config()
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_system = AgentSystem(
+                workflow=workflow, executor_names=["test-executor"]
+            )
+            async with await agent_system.manager() as manager:
+                agent = await manager.launch(
+                    BashTaskAgent,
+                    agent_workflow_config=config,
+                    args=("TEST",),  # prefix="TEST"
+                    executor="test-executor",
+                )
+
+                # Test bash_task action - should return exit code 0 on success
+                result = await agent.echo_message("Hello World")
+                assert result == 0, "Bash task should return exit code 0 on success"
+
+                # Test bash_task action that writes a file
+                test_file = tmp_path / "test_output.txt"
+                result = await agent.write_file(str(test_file), "test content")
+                assert result == 0, "Bash task should return exit code 0 on success"
+
+                # Verify the file was created
+                assert test_file.exists(), "Bash task should have created the file"
+                assert test_file.read_text().strip() == "test content"
+        finally:
+            workflow.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_agent_actions_with_join_task(self, tmp_path):
+        """Test that agent actions work with @join_task decorator."""
+        from chiltepin import Workflow
+        from chiltepin.agents import AgentSystem
+
+        config = get_test_config()
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_system = AgentSystem(
+                workflow=workflow, executor_names=["test-executor"]
+            )
+            async with await agent_system.manager() as manager:
+                agent = await manager.launch(
+                    JoinTaskAgent,
+                    agent_workflow_config=config,
+                    args=(5,),  # multiplier=5
+                    executor="test-executor",
+                )
+
+                # Test join_task action - combines results from multiple tasks
+                # compute_sum(2, 3) -> (2*5) + (3*5) = 10 + 15 = 25
+                result = await agent.compute_sum(2, 3)
+                assert result == 25, "Join task should combine results correctly"
+
+                # Test with different values
+                result = await agent.compute_sum(4, 6)
+                assert result == 50, (
+                    "Join task should work with different inputs"
+                )  # (4*5) + (6*5) = 50
         finally:
             workflow.cleanup()
 
@@ -1262,6 +1436,67 @@ class TestEdgeCases:
         finally:
             workflow.cleanup()
 
+    @pytest.mark.asyncio
+    async def test_agent_composition(self, tmp_path):
+        """Test that agents can use other agents (agent composition pattern).
+
+        This demonstrates the pattern from agent_example1.py where a coordinator
+        agent receives handles to other agents and orchestrates them.
+        """
+        from chiltepin import Workflow
+        from chiltepin.agents import AgentSystem
+
+        # Need 3 workers to run 3 agents concurrently
+        config = {
+            "test-executor": {
+                "provider": "localhost",
+                "cores_per_node": 1,
+                "max_workers_per_node": 3,  # Need at least 3 for composition
+                "environment": [f"export PYTHONPATH=${{PYTHONPATH}}:{PROJECT_ROOT}"],
+            }
+        }
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_system = AgentSystem(
+                workflow=workflow, executor_names=["test-executor"]
+            )
+            async with await agent_system.manager() as manager:
+                # Launch the lowerer and reverser agents first
+                lowerer = await manager.launch(
+                    LowererAgent,
+                    agent_workflow_config=config,
+                    executor="test-executor",
+                )
+                reverser = await manager.launch(
+                    ReverserAgent,
+                    agent_workflow_config=config,
+                    executor="test-executor",
+                )
+
+                # Launch the coordinator agent, passing in handles to the other agents
+                coordinator = await manager.launch(
+                    CoordinatorAgent,
+                    agent_workflow_config=config,
+                    args=(lowerer, reverser),
+                    executor="test-executor",
+                )
+
+                # Test that the coordinator can orchestrate the other agents
+                text = "DEADBEEF"
+                expected = "feebdaed"  # lowercase then reversed
+                result = await coordinator.process(text)
+                assert result == expected, f"Expected {expected}, got {result}"
+
+                # Test with different input
+                text2 = "Hello World"
+                expected2 = "dlrow olleh"  # lowercase then reversed
+                result2 = await coordinator.process(text2)
+                assert result2 == expected2, f"Expected {expected2}, got {result2}"
+        finally:
+            workflow.cleanup()
+
 
 class DummyAcademyAgent(Agent):
     """A native Academy agent (not decorated with @chiltepin_agent)."""
@@ -1445,3 +1680,71 @@ def test_agent_loop_rejects_optional_params():
             @agent_loop
             async def bad_loop(self, shutdown, interval=1.0):  # Even with default
                 pass
+
+
+def test_bash_task_decorator_compatibility():
+    """Test that @agent_action works with @bash_task decorator.
+
+    This test verifies that the @bash_task decorator (which uses MethodWrapper)
+    properly preserves the _chiltepin_expose attribute so that @chiltepin_agent
+    can detect and wrap it correctly as an Academy action.
+    """
+
+    # Define agent class with bash_task decorated method
+    @chiltepin_agent()
+    class BashTaskTestAgent:
+        def __init__(self):
+            self.prefix = "TEST"
+
+        @agent_action
+        @bash_task
+        def run_command(self, cmd):
+            """Return bash command to execute."""
+            return f"echo '{self.prefix}: {cmd}'"
+
+    # If decorators are compatible, class should be created successfully
+    assert BashTaskTestAgent._is_chiltepin_agent
+    assert hasattr(BashTaskTestAgent, "run_command")
+
+    # The method should have been wrapped as an Academy action
+    # (which means @chiltepin_agent successfully detected the @agent_action marker)
+    method = getattr(BashTaskTestAgent, "run_command")
+    assert hasattr(method, "_agent_method_type")
+    assert method._agent_method_type == "action"
+
+    # Verify it's a callable method
+    assert callable(method)
+
+
+def test_join_task_decorator_compatibility():
+    """Test that @agent_action works with @join_task decorator.
+
+    This test verifies that the @join_task decorator (which uses MethodWrapper)
+    properly preserves the _chiltepin_expose attribute so that @chiltepin_agent
+    can detect and wrap it correctly as an Academy action.
+    """
+
+    # Define agent class with join_task decorated method
+    @chiltepin_agent()
+    class JoinTaskTestAgent:
+        def __init__(self):
+            self.value = 10
+
+        @agent_action
+        @join_task
+        def combine_results(self, x, y):
+            """Join task that combines results."""
+            return x + y + self.value
+
+    # If decorators are compatible, class should be created successfully
+    assert JoinTaskTestAgent._is_chiltepin_agent
+    assert hasattr(JoinTaskTestAgent, "combine_results")
+
+    # The method should have been wrapped as an Academy action
+    # (which means @chiltepin_agent successfully detected the @agent_action marker)
+    method = getattr(JoinTaskTestAgent, "combine_results")
+    assert hasattr(method, "_agent_method_type")
+    assert method._agent_method_type == "action"
+
+    # Verify it's a callable method
+    assert callable(method)
