@@ -18,9 +18,10 @@ be launched on remote resources and interacted with asynchronously through an ag
 
 .. note::
    **Decorator Order:**
-   The order of ``@agent_action`` and ``@python_task`` decorators does not affect behavior—both orders
-   are supported and tested. For consistency and readability, we recommend using ``@python_task``
-   outermost and ``@agent_action`` innermost (closest to the function), but either order will work.
+   The order of ``@agent_action`` and the chiltepin task decorators (``@python_task``, ``@bash_task``, ``@join_task``)
+   does not affect behavior—both orders are supported and tested. For consistency and readability, we recommend
+   using the task decorators (``@python_task``, ``@bash_task``, ``@join_task``) outermost and ``@agent_action``
+   innermost (closest to the function), but either order will work.
 
 .. important::
    ChiltepinManager and AgentSystem only support agents decorated with ``@chiltepin_agent``. Native
@@ -75,6 +76,40 @@ Use agents when you need:
 - **Remote interaction**: Asynchronous communication with computations on remote resources
 
 For one-off tasks without shared state, use :doc:`tasks` instead.
+
+.. important::
+   **Internet Access Requirement:**
+
+   Agents **must** be deployed to resources with internet access because they communicate
+   with the Academy Exchange server. This is a critical infrastructure requirement:
+
+   - Agents typically use a **localhost** provider (on the local machine or a remote endpoint)
+   - Compute nodes without internet access (common on HPC systems) **cannot** host agents
+   - Tasks launched by agents can run anywhere, but the agents themselves need connectivity
+
+   **Correct configuration** (agent on internet-connected resource):
+
+   .. code-block:: python
+
+      config = {
+          "agent-executor": {
+              "provider": "localhost",  # Runs on login node or local machine with internet
+          }
+      }
+
+   **Incorrect configuration** (agent on compute node without internet):
+
+   .. code-block:: python
+
+      # ❌ This will fail - compute nodes often lack internet access
+      config = {
+          "agent-executor": {
+              "provider": "slurm",  # Compute nodes typically cannot reach Exchange
+          }
+      }
+
+   To deploy agents to remote HPC systems, use a Globus Compute endpoint with localhost
+   provider running on a login node or other internet-connected resource.
 
 Basic Usage
 -----------
@@ -282,7 +317,8 @@ Asynchronous Actions
 Task-Decorated Actions
 ^^^^^^^^^^^^^^^^^^^^^^
 
-When using ``@python_task`` with ``@agent_action``, the order does not matter and both are supported:
+When using chiltepin task decorators (``@python_task``, ``@bash_task``, ``@join_task``) with ``@agent_action``,
+the order does not matter and both are supported:
 
 .. code-block:: python
 
@@ -389,6 +425,202 @@ You can also create it directly:
            agent_workflow_config=agent_config,
            agent_workflow_include=["compute"]
        )
+
+Agent Composition
+-----------------
+
+Agents can coordinate with other agents, enabling hierarchical or collaborative workflows.
+This pattern is useful when you want to:
+
+- **Decompose complex tasks**: Break functionality into specialized agent components
+- **Coordinate workflows**: Have a coordinator agent orchestrate multiple worker agents
+- **Build agent hierarchies**: Create supervisor agents that manage subordinate agents
+- **Enable collaboration**: Allow agents to request services from other agents
+
+.. note::
+   Remember: All agents require internet access to communicate with the Exchange server.
+   They must use providers (like localhost) that run on internet-connected resources.
+
+Basic Composition Pattern
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Pass agent handles as initialization parameters to create composition relationships:
+
+.. code-block:: python
+
+   from chiltepin.agents import chiltepin_agent, agent_action
+
+   @chiltepin_agent()
+   class LowererAgent:
+       """Agent that converts text to lowercase."""
+
+       @agent_action
+       async def lower(self, text: str) -> str:
+           """Convert text to lowercase."""
+           return text.lower()
+
+   @chiltepin_agent()
+   class ReverserAgent:
+       """Agent that reverses text."""
+
+       @agent_action
+       async def reverse(self, text: str) -> str:
+           """Reverse text."""
+           return text[::-1]
+
+   @chiltepin_agent()
+   class CoordinatorAgent:
+       """Agent that coordinates other agents to process text."""
+
+       def __init__(self, lowerer, reverser):
+           """Initialize with handles to other agents.
+
+           Parameters
+           ----------
+           lowerer : Handle[LowererAgent]
+               Handle to the lowerer agent
+           reverser : Handle[ReverserAgent]
+               Handle to the reverser agent
+           """
+           self.lowerer = lowerer
+           self.reverser = reverser
+
+       @agent_action
+       async def process(self, text: str) -> str:
+           """Process text by lowering then reversing it.
+
+           This demonstrates agent composition - calling actions on other agents.
+           """
+           # Call action on lowerer agent
+           text = await self.lowerer.lower(text)
+           # Call action on reverser agent
+           text = await self.reverser.reverse(text)
+           return text
+
+Launching Composed Agents
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Launch worker agents first, then pass their handles to the coordinator.
+
+**Example: All agents on the same endpoint:**
+
+.. code-block:: python
+
+   from chiltepin import Workflow, AgentSystem
+
+   async def main():
+       # Configuration: all 3 agents share one endpoint → need 3 workers
+       config = {
+           "agent-executor": {
+               "provider": "localhost",  # Local machine or remote endpoint
+               "cores_per_node": 1,
+               "max_workers_per_node": 3,  # CRITICAL: 3 concurrent agents = 3 workers
+           }
+       }
+
+       workflow = Workflow(config)
+       workflow.start()
+
+       agent_system = AgentSystem(
+           workflow=workflow,
+           executor_names=["agent-executor"]
+       )
+
+       async with await agent_system.manager() as manager:
+           # All three agents deployed to the same executor
+           lowerer = await manager.launch(
+               LowererAgent,
+               agent_workflow_config=config,
+               executor="agent-executor"  # Occupies worker 1
+           )
+
+           reverser = await manager.launch(
+               ReverserAgent,
+               agent_workflow_config=config,
+               executor="agent-executor"  # Occupies worker 2
+           )
+
+           # Launch coordinator agent with handles to workers
+           coordinator = await manager.launch(
+               CoordinatorAgent,
+               agent_workflow_config=config,
+               args=(lowerer, reverser),  # Pass agent handles
+               executor="agent-executor"  # Occupies worker 3
+           )
+
+           # Use the coordinator - it will call lowerer and reverser
+           result = await coordinator.process("Hello World")
+           print(f"Result: {result}")  # Output: "dlrow olleh"
+
+       workflow.cleanup()
+
+.. warning::
+   **Critical: Deadlock Risk with Insufficient Workers**
+
+   Agent composition requires careful resource provisioning. Each agent occupies a worker
+   slot **on the endpoint/provider where it runs**, and if agents call each other, you **must**
+   provision enough workers for all agents to run concurrently or you **will** experience deadlock.
+
+   **Scenario 1: Multiple agents on the same endpoint/provider**
+
+   In the example above, all 3 agents run on the same localhost provider:
+
+   - 3 agents (coordinator, lowerer, reverser) need to run concurrently
+   - The coordinator calls actions on lowerer and reverser
+   - All 3 agents must be active simultaneously
+   - Therefore, ``max_workers_per_node`` must be at least 3
+
+   .. code-block:: python
+
+      # All agents share the same provider → need 3 workers
+      config = {
+          "agent-executor": {
+              "provider": "localhost",  # or endpoint UUID for remote localhost
+              "max_workers_per_node": 3,  # REQUIRED: At least one per concurrent agent
+          }
+      }
+
+   **With insufficient workers**: If you set ``max_workers_per_node=1``, the first agent to be launched
+   occupies the only worker, then waits for other agents to start or respond, but they can't
+   start because no workers are available → **deadlock**.
+
+   **Scenario 2: Each agent on a different endpoint (advanced)**
+
+   Alternatively, you can deploy each agent to a different endpoint with ``max_workers_per_node=1``:
+
+   .. code-block:: python
+
+      # Each agent gets its own endpoint → 1 worker per endpoint is sufficient
+      config = {
+          "coordinator-executor": {
+              "endpoint": "coordinator-endpoint-uuid",
+              "provider": "localhost",
+              "max_workers_per_node": 1,  # Only runs coordinator
+          },
+          "lowerer-executor": {
+              "endpoint": "lowerer-endpoint-uuid",
+              "provider": "localhost",
+              "max_workers_per_node": 1,  # Only runs lowerer
+          },
+          "reverser-executor": {
+              "endpoint": "reverser-endpoint-uuid",
+              "provider": "localhost",
+              "max_workers_per_node": 1,  # Only runs reverser
+          },
+      }
+
+      # Launch each agent to its dedicated executor
+      lowerer = await manager.launch(LowererAgent, executor="lowerer-executor", ...)
+      reverser = await manager.launch(ReverserAgent, executor="reverser-executor", ...)
+      coordinator = await manager.launch(CoordinatorAgent, executor="coordinator-executor", ...)
+
+   This approach avoids worker contention but requires multiple endpoints with internet access.
+
+   **Best practice**:
+
+   - **Single endpoint**: Set ``max_workers_per_node`` ≥ number of concurrent agents
+   - **Multiple endpoints**: Each agent can use its own endpoint with ``max_workers_per_node=1``
+   - **Hybrid**: Mix approaches based on your infrastructure (e.g., similar agents share endpoints)
 
 Best Practices
 --------------

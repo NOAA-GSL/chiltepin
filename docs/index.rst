@@ -1,13 +1,30 @@
 Chiltepin Documentation
 =======================
 
+.. image:: https://img.shields.io/badge/License-Apache_2.0-blue.svg
+   :target: https://opensource.org/licenses/Apache-2.0
+   :alt: License
+
+.. image:: https://img.shields.io/pypi/v/chiltepin
+   :target: https://pypi.org/project/chiltepin/
+   :alt: PyPI - Version
+
 .. image:: https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml/badge.svg
    :target: https://github.com/NOAA-GSL/chiltepin/actions/workflows/test-suite.yaml
    :alt: ChiltepinTests
 
+.. image:: https://github.com/NOAA-GSL/chiltepin/actions/workflows/docs.yaml/badge.svg
+   :target: https://github.com/NOAA-GSL/chiltepin/actions/workflows/docs.yaml
+   :alt: Documentation
+
+.. image:: https://zenodo.org/badge/712000160.svg
+   :target: https://doi.org/10.5281/zenodo.19195670
+   :alt: DOI
+
 **Chiltepin** is a Python library for exploring federated agentic workflow capabilities
-using Parsl, Globus Compute, and Academy Agents. It provides tools and demonstrations for
-implementing distributed scientific workflows on HPC systems.
+using `Parsl <https://parsl-project.org/>`_, `Globus Compute <https://globus-compute.readthedocs.io/>`_,
+and `Academy Agents <https://docs.academy-agents.org/>`_. It provides tools and demonstrations for
+implementing distributed, agentic, exascale scientific workflows on HPC systems.
 
 .. warning::
 
@@ -33,11 +50,12 @@ Overview
 --------
 
 This repository is a collection of tools and demonstrations used for
-implementing distributed exascale scientific workflows. The
+implementing distributed, agentic, exascale scientific workflows. The
 project focuses on:
 
 * **Workflow management** using Parsl
 * **Federated distributed computing** with Globus Compute
+* **Autonomous workflow agents** with Academy Agents integration
 * **HPC integration** of multiple on-prem and/or cloud-based systems
 * **Container-based testing** with Docker and Slurm
 
@@ -46,7 +64,7 @@ Key Features
 
 * Configuration-based resource management for both HPC platforms and laptops
 * Support for both MPI (HPC) and non-MPI (HTC) applications
-* Agent-based workflows with Academy Agents integration
+* Agentic workflows with Academy Agents integration
 * Task decorators for seamless integration of Parsl and Globus Compute
 * Globus Compute endpoint management utilities
 * Dynamic distributed task execution across heterogeneous resources
@@ -77,10 +95,15 @@ API Reference
 
    api
 
-Legal Notice
-------------
+Disclaimer
+----------
 
-This repository is a scientific product and is not official communication of
-the National Oceanic and Atmospheric Administration, or the United States
-Department of Commerce. All NOAA GitHub project code is provided on an 'as is'
-basis and the user assumes responsibility for its use.
+This repository is a scientific product and is not official communication of the National Oceanic and Atmospheric
+Administration, or the United States Department of Commerce. All NOAA GitHub project code is provided on an ‘as
+is’ basis and the user assumes responsibility for its use. Any claims against the Department of Commerce or
+Department of Commerce bureaus stemming from the use of this GitHub project will be governed by all applicable
+Federal law. Any reference to specific commercial products, processes, or services by service mark, trademark,
+manufacturer, or otherwise, does not constitute or imply their endorsement, recommendation or favoring by the
+Department of Commerce. The Department of Commerce seal and logo, or the seal and logo of a DOC bureau, shall not
+be used in any manner to imply endorsement of any commercial product or activity by DOC or the United States
+Government.
