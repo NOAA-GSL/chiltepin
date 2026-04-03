@@ -36,7 +36,6 @@ from globus_compute_sdk.sdk.auth.globus_app import (
 )
 from globus_compute_sdk.sdk.web_client import WebClient
 from globus_sdk import ClientApp, GlobusApp, TransferClient, UserApp
-from globus_sdk.gare import GlobusAuthorizationParameters
 
 endpoint_template = """# This is the default user-endpoint-process (UEP) template provided with
 # newly-configured endpoints.  Endpoints generate a UEP-specific configuration
@@ -289,12 +288,7 @@ def login() -> Dict[str, Union[Client, TransferClient]]:
 
     # Initiate login for transfer client if necessary
     if transfer_app.login_required():
-        transfer_app.login(
-            auth_params=GlobusAuthorizationParameters(
-                session_required_single_domain=["rdhpcs.noaa.gov"],
-                prompt="login",
-            )
-        )
+        transfer_app.login()
 
     # Initiate login for academy app if necessary
     if academy_app.login_required():
