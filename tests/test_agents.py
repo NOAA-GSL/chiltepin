@@ -634,14 +634,7 @@ class TestChiltepinAgentDecorator:
                 result = await agent.write_file(str(test_file), "test content")
                 assert result == 0, "Bash task should return exit code 0 on success"
 
-                # Verify the file was created (may take a moment to appear)
-                import time
-
-                for _ in range(10):  # Wait up to 1 second
-                    if test_file.exists():
-                        break
-                    time.sleep(0.1)
-
+                # Verify the file was created
                 assert test_file.exists(), "Bash task should have created the file"
                 assert test_file.read_text().strip() == "test content"
         finally:
