@@ -533,6 +533,20 @@ def chiltepin_agent(
     def decorator(behavior_class: Type) -> Type[Agent]:
         """Inner decorator that receives the behavior class."""
 
+        # Check if the class itself is already decorated (double-decoration)
+        if getattr(behavior_class, "_is_chiltepin_agent", False):
+            raise TypeError(
+                f"Cannot apply @chiltepin_agent to '{behavior_class.__name__}' - it is already decorated.\n\n"
+                f"Double-decoration is not supported. Remove one of the @chiltepin_agent() decorators.\n\n"
+                f"If you meant to create a subclass, create an undecorated behavior class first:\n"
+                f"   class {behavior_class.__name__}Behavior:\n"
+                f"       @agent_action\n"
+                f"       async def method(self): ...\n\n"
+                f"   @chiltepin_agent()\n"
+                f"   class {behavior_class.__name__}(Behavior):\n"
+                f"       pass"
+            )
+
         # Check if user is trying to extend a decorated agent (unsupported pattern)
         # Use mro() to check entire inheritance chain, not just immediate parents
         for base in behavior_class.mro()[1:]:  # Skip first element (class itself)

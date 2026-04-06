@@ -1866,12 +1866,30 @@ def test_agent_actions_can_call_unexposed_helpers():
     assert hasattr(action, "_agent_method_type")
     assert action._agent_method_type == "action"
 
-    # The real test: verify action can call helpers when executed
-    # We can't fully test this without launching an agent, but we can verify
-    # the behavior instance has access to helpers
-    behavior_instance = BehaviorWithHelper(42)
-    assert behavior_instance._private_helper() == "helper_result_42"
-    assert behavior_instance.public_helper() == 84
+    # Test that the behavior instance (which actions execute on) can call helpers
+    # Create a wrapper instance (passing None for agent infrastructure params)
+    wrapper = AgentWithHelpers(42, agent_workflow_config=None)
+
+    # The wrapper should have created a behavior instance internally
+    assert hasattr(wrapper, "_behavior")
+    behavior = wrapper._behavior
+
+    # Verify the behavior instance is of the correct type
+    assert isinstance(behavior, BehaviorWithHelper)
+
+    # The behavior instance should have access to helpers
+    assert behavior._private_helper() == "helper_result_42"
+    assert behavior.public_helper() == 84
+
+    # Most importantly: verify the action method can execute and call helpers
+    import asyncio
+
+    result = asyncio.run(behavior.action_using_helpers())
+    assert result == {
+        "private": "helper_result_42",
+        "public": 84,
+        "value": 42,
+    }
 
 
 def test_agent_multiple_inheritance_mixin_pattern():
@@ -2024,3 +2042,28 @@ def test_extending_decorated_agent_grandparent_raises_error():
     error_message = str(exc_info.value)
     assert "Cannot extend decorated agent class" in error_message
     assert "GrandParentAgent" in error_message  # Should catch the grandparent
+
+
+def test_double_decorating_agent_raises_error():
+    """Test that applying @chiltepin_agent twice to the same class raises an error.
+
+    Double-decoration should be caught and raise a clear error message.
+    This prevents accidental misuse of the decorator.
+    """
+
+    # First decoration is fine
+    @chiltepin_agent()
+    class MyAgent:
+        @agent_action
+        async def my_action(self) -> str:
+            return "action"
+
+    # Attempting to decorate the already-decorated class should fail
+    with pytest.raises(TypeError) as exc_info:
+        MyAgent = chiltepin_agent()(MyAgent)  # Double decoration!
+
+    # Verify the error message is helpful
+    error_message = str(exc_info.value)
+    assert "already decorated" in error_message
+    assert "MyAgent" in error_message
+    assert "Double-decoration is not supported" in error_message

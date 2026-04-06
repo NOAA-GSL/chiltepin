@@ -946,9 +946,10 @@ extended further.
 
 **Why This Limitation Exists:**
 
-The ``@chiltepin_agent`` decorator wraps your behavior class inside an ``Agent`` subclass.
-After decoration, ``MyAgent`` is actually ``ChiltepinAgentWrapper(Agent)``, not the original
-``MyAgent`` class. This means:
+The ``@chiltepin_agent`` decorator dynamically creates and returns an ``Agent`` subclass
+wrapper around your behavior class, while preserving the original class name on the
+decorated result. In other words, after decoration, ``MyAgent`` is no longer the original
+undecorated behavior class, even though it still appears under the name ``MyAgent``. This means:
 
 - ❌ **Cannot extend decorated agents**: Subclassing a decorated agent gives you an Agent, not a behavior class
 - ✅ **Can extend undecorated behaviors**: Subclass undecorated classes, then decorate the child
