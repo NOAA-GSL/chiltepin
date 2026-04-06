@@ -534,7 +534,8 @@ def chiltepin_agent(
         """Inner decorator that receives the behavior class."""
 
         # Check if user is trying to extend a decorated agent (unsupported pattern)
-        for base in behavior_class.__bases__:
+        # Use mro() to check entire inheritance chain, not just immediate parents
+        for base in behavior_class.mro()[1:]:  # Skip first element (class itself)
             if isinstance(base, type) and getattr(base, "_is_chiltepin_agent", False):
                 # Found a decorated agent in the inheritance chain
                 original_name = getattr(base, "_behavior_class_name", base.__name__)

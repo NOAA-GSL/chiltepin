@@ -1811,11 +1811,15 @@ def test_agent_inheritance_pattern():
     assert hasattr(combined_method, "_agent_method_type")
     assert combined_method._agent_method_type == "action"
 
-    # Verify helper method is not exposed (no decorator)
+    # Verify helper method is not exposed as an action (no decorator)
     # It should exist in the base class but not be an action
     assert hasattr(BaseAgent, "helper_method")
-    # The helper shouldn't be wrapped as an action in the agent
-    # (it won't have _agent_method_type)
+    # The helper should be inherited but NOT wrapped as an action on ChildAgent
+    assert hasattr(ChildAgent, "helper_method")
+    helper_method = getattr(ChildAgent, "helper_method")
+    assert not hasattr(helper_method, "_agent_method_type")
+    # Verify it's the exact same method object from the base class
+    assert ChildAgent.helper_method is BaseAgent.helper_method
 
 
 def test_agent_multiple_inheritance_mixin_pattern():
@@ -1894,9 +1898,14 @@ def test_agent_multiple_inheritance_mixin_pattern():
     assert hasattr(name_method, "_agent_method_type")
     assert name_method._agent_method_type == "action"
 
-    # Verify non-decorated method is not exposed
+    # Verify non-decorated method is not exposed as an action
     assert hasattr(MonitoringMixin, "_internal_check")
-    # The agent should have the method but it shouldn't be an action
+    # The method should be inherited but NOT wrapped as an action on CombinedAgent
+    assert hasattr(CombinedAgent, "_internal_check")
+    internal_check = getattr(CombinedAgent, "_internal_check")
+    assert not hasattr(internal_check, "_agent_method_type")
+    # Verify it's the exact same method object from the mixin
+    assert CombinedAgent._internal_check is MonitoringMixin._internal_check
 
 
 def test_extending_decorated_agent_raises_error():
@@ -1930,3 +1939,40 @@ def test_extending_decorated_agent_raises_error():
     assert "@chiltepin_agent decorator wraps classes in an Agent" in error_message
     assert "undecorated base class" in error_message
     assert "Agent Inheritance" in error_message
+
+
+def test_extending_decorated_agent_grandparent_raises_error():
+    """Test that extending a decorated agent is caught even when not immediate parent.
+
+    The check should use mro() to catch decorated agents anywhere in the inheritance
+    chain, not just immediate parents. This test verifies that a decorated grandparent
+    is detected.
+    """
+
+    # Create a decorated grandparent
+    @chiltepin_agent()
+    class GrandParentAgent:
+        @agent_action
+        async def grandparent_action(self) -> str:
+            return "grandparent"
+
+    # Create undecorated middle parent - inherits from decorated agent
+    class MiddleParent(GrandParentAgent):
+        @agent_action
+        async def middle_action(self) -> str:
+            return "middle"
+
+    # Attempting to decorate a class that inherits from MiddleParent
+    # should detect GrandParentAgent in the mro() and fail
+    with pytest.raises(TypeError) as exc_info:
+
+        @chiltepin_agent()
+        class ChildAgent(MiddleParent):  # ← Should fail - GrandParentAgent is in mro()
+            @agent_action
+            async def child_action(self) -> str:
+                return "child"
+
+    # Verify the error message mentions GrandParentAgent
+    error_message = str(exc_info.value)
+    assert "Cannot extend decorated agent class" in error_message
+    assert "GrandParentAgent" in error_message  # Should catch the grandparent

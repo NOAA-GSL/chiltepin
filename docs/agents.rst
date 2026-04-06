@@ -163,7 +163,7 @@ wrapper classes when you need to deploy them:
    .. code-block:: python
 
       # Test behavior directly
-      def test_weather_behavior():
+      async def test_weather_behavior():
           behavior = WeatherModelBehavior("Boulder, CO")
           await behavior.set_temperature(25.0)
           assert await behavior.get_temperature() == 25.0
@@ -172,16 +172,17 @@ wrapper classes when you need to deploy them:
 
    .. code-block:: python
 
-      # Use as standalone behavior
-      local_weather = WeatherModelBehavior("Local")
-      temp = await local_weather.get_temperature()
+      async def example():
+          # Use as standalone behavior
+          local_weather = WeatherModelBehavior("Local")
+          temp = await local_weather.get_temperature()
 
-      # Deploy as remote agent
-      remote_weather = await manager.launch(
-          WeatherModelAgent,
-          args=("Remote",),
-          ...
-      )
+          # Deploy as remote agent
+          remote_weather = await manager.launch(
+              WeatherModelAgent,
+              args=("Remote",),
+              ...
+          )
 
 3. **Hierarchy Freedom**: Build complex behavior hierarchies, then wrap any level
 
@@ -219,6 +220,8 @@ wrapper classes when you need to deploy them:
    - 🔍 If your behavior has loops, it's designed for agent deployment
 
    .. code-block:: python
+
+      import asyncio
 
       # Behavior with loop - designed for agent deployment
       class MonitorBehavior:
@@ -359,48 +362,49 @@ Use ``AgentSystem`` to create a manager and launch agents:
 
    from chiltepin import Workflow, AgentSystem
    
-   # Configuration for the manager's workflow (where agents run)
-   manager_config = {
-       "manager-executor": {
-           "endpoint": ENDPOINT_UUID,
-           "provider": "localhost",
+   async def main():
+       # Configuration for the manager's workflow (where agents run)
+       manager_config = {
+           "manager-executor": {
+               "endpoint": ENDPOINT_UUID,
+               "provider": "localhost",
+           }
        }
-   }
-   
-   # Configuration for the agent's internal workflow (where tasks run)
-   agent_config = {
-       "compute": {
-           "provider": "slurm",
-           "partition": "compute",
-           # ... other config
+
+       # Configuration for the agent's internal workflow (where tasks run)
+       agent_config = {
+           "compute": {
+               "provider": "slurm",
+               "partition": "compute",
+               # ... other config
+           }
        }
-   }
-   
-   # Start workflow for hosting agents
-   workflow = Workflow(manager_config, include=["manager-executor"])
-   workflow.start()
-   
-   # Create agent system
-   agent_system = AgentSystem(
-       workflow=workflow,
-       executor_names=["manager-executor"],
-   )
-   
-   # Launch and interact with agent
-   async with await agent_system.manager() as manager:
-       model = await manager.launch(
-           WeatherModelAgent,           # Agent wrapper class
-           agent_workflow_config=agent_config,   # Agent's workflow config
-           agent_workflow_include=["compute"],   # Which executors to use
-           args=(25.0,),                # Arguments for __init__
-           executor="manager-executor"  # Where to run the agent
+
+       # Start workflow for hosting agents
+       workflow = Workflow(manager_config, include=["manager-executor"])
+       workflow.start()
+
+       # Create agent system
+       agent_system = AgentSystem(
+           workflow=workflow,
+           executor_names=["manager-executor"],
        )
-       
-       # Call agent actions
-       temp = await model.get_temperature()
-       forecast = await model.forecast(executor=["compute"])
-   
-   workflow.cleanup()
+
+       # Launch and interact with agent
+       async with await agent_system.manager() as manager:
+           model = await manager.launch(
+               WeatherModelAgent,           # Agent wrapper class
+               agent_workflow_config=agent_config,   # Agent's workflow config
+               agent_workflow_include=["compute"],   # Which executors to use
+               args=(25.0,),                # Arguments for __init__
+               executor="manager-executor"  # Where to run the agent
+           )
+
+           # Call agent actions
+           temp = await model.get_temperature()
+           forecast = await model.forecast(executor=["compute"])
+
+       workflow.cleanup()
 
 Runtime Configuration
 ---------------------
@@ -803,10 +807,11 @@ Launch worker agents first, then pass their handles to the coordinator.
           },
       }
 
-      # Launch each agent to its dedicated executor
-      lowerer = await manager.launch(LowererAgent, executor="lowerer-executor", ...)
-      reverser = await manager.launch(ReverserAgent, executor="reverser-executor", ...)
-      coordinator = await manager.launch(CoordinatorAgent, executor="coordinator-executor", ...)
+      # Launch each agent to its dedicated executor (inside async with manager context)
+      async with await agent_system.manager() as manager:
+          lowerer = await manager.launch(LowererAgent, executor="lowerer-executor", ...)
+          reverser = await manager.launch(ReverserAgent, executor="reverser-executor", ...)
+          coordinator = await manager.launch(CoordinatorAgent, executor="coordinator-executor", ...)
 
    This approach avoids worker contention but requires multiple endpoints with internet access.
 
