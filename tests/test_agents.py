@@ -2067,3 +2067,62 @@ def test_double_decorating_agent_raises_error():
     assert "already decorated" in error_message
     assert "MyAgent" in error_message
     assert "Double-decoration is not supported" in error_message
+
+
+def test_launching_undecorated_subclass_of_decorated_agent_raises_error(tmp_path):
+    """Test that launching a subclass of a decorated agent without decorating it fails.
+
+    If a user creates an undecorated subclass of a decorated agent and tries to launch it,
+    ChiltepinManager should detect this and provide a helpful error message. This prevents
+    confusing runtime failures where the subclass's methods aren't discovered.
+    """
+    from chiltepin import Workflow
+    from chiltepin.agents import AgentSystem
+
+    # Create a decorated parent agent
+    @chiltepin_agent()
+    class ParentAgent:
+        @agent_action
+        async def parent_action(self) -> str:
+            return "parent"
+
+    # Create an undecorated subclass (problematic pattern)
+    class ChildAgent(ParentAgent):
+        @agent_action
+        async def child_action(self) -> str:
+            return "child"
+
+    # Set up a minimal workflow and manager
+    config = {
+        "local": {
+            "provider": "local",
+            "max_workers_per_node": 1,
+        }
+    }
+
+    workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+    workflow.start()
+
+    try:
+        agent_system = AgentSystem(workflow=workflow, executor_names=["local"])
+
+        # Attempting to launch the undecorated subclass should fail
+        async def try_launch():
+            async with await agent_system.manager() as manager:
+                with pytest.raises(TypeError) as exc_info:
+                    await manager.launch(
+                        ChildAgent, agent_workflow_config=config, executor="local"
+                    )
+
+                # Verify the error message is helpful
+                error_message = str(exc_info.value)
+                assert "subclass of decorated agent" in error_message
+                assert "ParentAgent" in error_message
+                assert "not itself decorated" in error_message
+                assert "undecorated base behavior class" in error_message
+
+        import asyncio
+
+        asyncio.run(try_launch())
+    finally:
+        workflow.cleanup()
