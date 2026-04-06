@@ -534,7 +534,8 @@ def chiltepin_agent(
         """Inner decorator that receives the behavior class."""
 
         # Check if the class itself is already decorated (double-decoration)
-        if getattr(behavior_class, "_is_chiltepin_agent", False):
+        # Use __dict__ to distinguish direct decoration from inherited flag
+        if behavior_class.__dict__.get("_is_chiltepin_agent", False):
             raise TypeError(
                 f"Cannot apply @chiltepin_agent to '{behavior_class.__name__}' - it is already decorated.\n\n"
                 f"Double-decoration is not supported. Remove one of the @chiltepin_agent() decorators.\n\n"
@@ -543,15 +544,19 @@ def chiltepin_agent(
                 f"       @agent_action\n"
                 f"       async def method(self): ...\n\n"
                 f"   @chiltepin_agent()\n"
-                f"   class {behavior_class.__name__}(Behavior):\n"
+                f"   class {behavior_class.__name__}({behavior_class.__name__}Behavior):\n"
                 f"       pass"
             )
 
         # Check if user is trying to extend a decorated agent (unsupported pattern)
         # Use mro() to check entire inheritance chain, not just immediate parents
+        # Use __dict__ to identify the actually-decorated class (not intermediate classes
+        # that merely inherited the flag), so error messages are accurate
         for base in behavior_class.mro()[1:]:  # Skip first element (class itself)
-            if isinstance(base, type) and getattr(base, "_is_chiltepin_agent", False):
-                # Found a decorated agent in the inheritance chain
+            if isinstance(base, type) and base.__dict__.get(
+                "_is_chiltepin_agent", False
+            ):
+                # Found a decorated agent in the inheritance chain (directly decorated, not inherited)
                 original_name = getattr(base, "_behavior_class_name", base.__name__)
                 raise TypeError(
                     f"Cannot extend decorated agent class '{base.__name__}'.\n\n"

@@ -286,8 +286,8 @@ Create an undecorated behavior class, then wrap it for deployment:
        def __init__(self, temperature: float):
            self.temperature = temperature
        
-       @agent_action
        @python_task
+       @agent_action
        def forecast(self) -> str:
            """Generate a forecast based on current temperature."""
            import random
