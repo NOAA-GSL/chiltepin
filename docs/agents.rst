@@ -144,7 +144,7 @@ wrapper classes when you need to deploy them:
 
        @agent_loop
        async def update_temperature(self, shutdown):
-           """Background loop - ONLY runs when deployed as agent."""
+           """Background loop - runs automatically when deployed as agent."""
            import asyncio, random
            while not shutdown.is_set():
                await asyncio.sleep(1)
@@ -206,41 +206,42 @@ wrapper classes when you need to deploy them:
 .. important::
    **Understanding @agent_loop Methods:**
 
-   Methods decorated with ``@agent_loop`` are **lifecycle hooks** that only execute when
-   the behavior is deployed as an agent. They require the Agent infrastructure to:
+   Methods decorated with ``@agent_loop`` are **lifecycle hooks** that run automatically
+   as background tasks when the behavior is deployed as an agent. They rely on the Agent
+   infrastructure to:
 
    - Provide the ``shutdown`` event
-   - Run them as background tasks
+   - Schedule them as background tasks
    - Manage their lifecycle (startup/shutdown)
 
    **This means:**
 
    - ✅ ``@agent_action`` methods work on standalone behaviors AND agents
-   - ❌ ``@agent_loop`` methods ONLY work when deployed as agents
-   - 🔍 If your behavior has loops, it's designed for agent deployment
+   - ⚠️ ``@agent_loop`` methods are ordinary async methods, but they are only started automatically and lifecycle-managed when deployed as agents
+   - 🔍 If your behavior has loops, it's generally designed for agent deployment
 
    .. code-block:: python
 
       import asyncio
 
-      # Behavior with loop - designed for agent deployment
+      # Behavior with loop - designed for agent-managed execution
       class MonitorBehavior:
           @agent_loop
           async def heartbeat(self, shutdown):
-              """Only runs when deployed as agent."""
+              """Runs automatically when managed by an agent runtime."""
               while not shutdown.is_set():
                   await asyncio.sleep(1)
                   print("heartbeat")
 
-      # Test with caution - loops won't run
-      behavior = MonitorBehavior()  # ⚠️ heartbeat loop will NOT run
+      # Standalone instance - the loop exists, but it is not started automatically
+      behavior = MonitorBehavior()  # ⚠️ heartbeat will not auto-start here
 
       # Deploy as agent - loops activate automatically
       @chiltepin_agent()
       class MonitorAgent(MonitorBehavior):
           pass
 
-      agent = await manager.launch(MonitorAgent, ...)  # ✅ heartbeat runs
+      agent = await manager.launch(MonitorAgent, ...)  # ✅ heartbeat starts automatically
 
 **Alternative Pattern: Direct Decoration**
 
@@ -300,7 +301,7 @@ Create an undecorated behavior class, then wrap it for deployment:
        
        @agent_loop
        async def update_temperature(self, shutdown):
-           """Background loop - only runs when deployed as agent."""
+           """Background loop - runs automatically when deployed as agent."""
            import asyncio
            import random
            while not shutdown.is_set():
@@ -336,16 +337,16 @@ Key Features
 1. **Regular Python classes**: No special inheritance, fully serializable
 2. **Access instance state**: Task-decorated methods can access ``self.temperature``
 3. **Mixed sync/async**: Use ``@agent_action`` on both sync and async methods
-4. **Background loops**: Use ``@agent_loop`` on async methods - only active when deployed as agents
+4. **Background loops**: Use ``@agent_loop`` on async methods - automatically started and managed when deployed as agents
 5. **Infrastructure separation**: Workflow config passed via ``manager.launch()``, not ``__init__``
 6. **Testable behaviors**: Behaviors can be tested standalone, agents deployed remotely
 
 .. note::
-   **@agent_loop methods only run in agents**: Background loops require the Agent
+   **@agent_loop methods only run automatically in agents**: Background loops require the Agent
    infrastructure to provide the ``shutdown`` event and manage their lifecycle.
-   If you call methods on a standalone behavior instance, loops will not execute.
+   If you call methods on a standalone behavior instance, loops will not execute automatically.
    Only when you deploy the behavior as an agent using ``@chiltepin_agent`` and
-   ``manager.launch()`` will the loops activate.
+   ``manager.launch()`` will the loops activate automatically.
 
 .. note::
    **@agent_loop requires async methods**: The ``@agent_loop`` decorator can only be applied to
@@ -528,6 +529,32 @@ the order does not matter and both are supported:
            return x ** 2
 
 This allows the task to access instance state (``self``) while still executing remotely.
+
+.. note::
+   **Helper Methods and Internal Implementation:**
+
+   Methods without ``@agent_action`` or ``@agent_loop`` decorators are not exposed on the
+   agent proxy, but they **remain accessible to action methods** internally via ``self``.
+   This is by design and enables clean separation of public API from internal implementation.
+
+   .. code-block:: python
+
+      @chiltepin_agent()
+      class MyAgent:
+          def _internal_helper(self, x: int) -> int:
+              """Not exposed - but actions can call it."""
+              return x * 2
+
+          @agent_action
+          async def public_action(self, x: int) -> int:
+              """Exposed action that uses helper."""
+              # This works! Actions execute on the behavior instance
+              return self._internal_helper(x) + 10
+
+      # From outside:
+      agent = await manager.launch(MyAgent, ...)
+      result = await agent.public_action(5)  # ✅ Returns 20
+      # agent._internal_helper(5)  # ❌ AttributeError - not exposed
 
 Loop Decorators
 ---------------
@@ -1080,7 +1107,7 @@ Here's a complete example using the recommended behavior/agent wrapper pattern:
        
        @agent_loop
        async def update_temperature(self, shutdown: asyncio.Event):
-           """Simulate temperature changes - only runs when deployed as agent."""
+           """Simulate temperature changes - runs automatically when deployed as agent."""
            import asyncio
            import random
            

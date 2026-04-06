@@ -1811,15 +1811,67 @@ def test_agent_inheritance_pattern():
     assert hasattr(combined_method, "_agent_method_type")
     assert combined_method._agent_method_type == "action"
 
-    # Verify helper method is not exposed as an action (no decorator)
-    # It should exist in the base class but not be an action
+    # Verify undecorated method is not exposed on the decorated agent wrapper
+    # It should exist in the base class but not be exposed on the agent
     assert hasattr(BaseAgent, "helper_method")
-    # The helper should be inherited but NOT wrapped as an action on ChildAgent
-    assert hasattr(ChildAgent, "helper_method")
-    helper_method = getattr(ChildAgent, "helper_method")
-    assert not hasattr(helper_method, "_agent_method_type")
-    # Verify it's the exact same method object from the base class
-    assert ChildAgent.helper_method is BaseAgent.helper_method
+    # The decorated agent only exposes @agent_action/@agent_loop methods
+    assert not hasattr(ChildAgent, "helper_method")
+
+
+def test_agent_actions_can_call_unexposed_helpers():
+    """Test that exposed actions can call unexposed helper methods internally.
+
+    While helper methods are not exposed on the agent wrapper, they remain
+    accessible to action methods because actions execute on the behavior
+    instance which has normal inheritance.
+    """
+
+    # Define base class with helper method
+    class BehaviorWithHelper:
+        def __init__(self, value: int):
+            self.value = value
+
+        def _private_helper(self) -> str:
+            """Private helper - not exposed."""
+            return f"helper_result_{self.value}"
+
+        def public_helper(self) -> int:
+            """Public helper - not exposed (no decorator)."""
+            return self.value * 2
+
+        @agent_action
+        async def action_using_helpers(self) -> dict:
+            """Action that calls unexposed helper methods."""
+            # Both helpers should be accessible via self
+            private_result = self._private_helper()
+            public_result = self.public_helper()
+            return {
+                "private": private_result,
+                "public": public_result,
+                "value": self.value,
+            }
+
+    # Decorate the class
+    @chiltepin_agent()
+    class AgentWithHelpers(BehaviorWithHelper):
+        pass
+
+    # Verify helpers are not exposed on the agent wrapper
+    assert not hasattr(AgentWithHelpers, "_private_helper")
+    assert not hasattr(AgentWithHelpers, "public_helper")
+
+    # Verify the action IS exposed
+    assert hasattr(AgentWithHelpers, "action_using_helpers")
+    action = getattr(AgentWithHelpers, "action_using_helpers")
+    assert hasattr(action, "_agent_method_type")
+    assert action._agent_method_type == "action"
+
+    # The real test: verify action can call helpers when executed
+    # We can't fully test this without launching an agent, but we can verify
+    # the behavior instance has access to helpers
+    behavior_instance = BehaviorWithHelper(42)
+    assert behavior_instance._private_helper() == "helper_result_42"
+    assert behavior_instance.public_helper() == 84
 
 
 def test_agent_multiple_inheritance_mixin_pattern():
@@ -1898,14 +1950,10 @@ def test_agent_multiple_inheritance_mixin_pattern():
     assert hasattr(name_method, "_agent_method_type")
     assert name_method._agent_method_type == "action"
 
-    # Verify non-decorated method is not exposed as an action
+    # Verify non-decorated private method remains on the mixin itself
     assert hasattr(MonitoringMixin, "_internal_check")
-    # The method should be inherited but NOT wrapped as an action on CombinedAgent
-    assert hasattr(CombinedAgent, "_internal_check")
-    internal_check = getattr(CombinedAgent, "_internal_check")
-    assert not hasattr(internal_check, "_agent_method_type")
-    # Verify it's the exact same method object from the mixin
-    assert CombinedAgent._internal_check is MonitoringMixin._internal_check
+    # Private methods (starting with _) are not exposed on the agent wrapper
+    assert not hasattr(CombinedAgent, "_internal_check")
 
 
 def test_extending_decorated_agent_raises_error():
