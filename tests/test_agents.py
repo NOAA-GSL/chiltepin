@@ -2095,7 +2095,7 @@ def test_launching_undecorated_subclass_of_decorated_agent_raises_error(tmp_path
     # Set up a minimal workflow and manager
     config = {
         "local": {
-            "provider": "local",
+            "provider": "localhost",
             "max_workers_per_node": 1,
         }
     }
