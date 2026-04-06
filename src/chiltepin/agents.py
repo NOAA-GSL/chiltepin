@@ -112,13 +112,58 @@ class ChiltepinManager(Manager):
                 executor="ursa-service-gc"          # ← Manager executor
             )
         """
-        # Only allow launching agents decorated with @chiltepin_agent
-        if not getattr(agent_class, "_is_chiltepin_agent", False):
-            raise TypeError(
-                f"ChiltepinManager only supports agents decorated with @chiltepin_agent. "
-                f"Got: {agent_class.__module__}.{agent_class.__name__}. "
-                "Use the base Academy Manager for native agents."
-            )
+        # Validate that the agent class is properly decorated with @chiltepin_agent
+        # Use __dict__ to ensure the class itself is decorated, not just inheriting the flag
+        is_directly_decorated = agent_class.__dict__.get("_is_chiltepin_agent", False)
+        is_inherited_decorated = getattr(agent_class, "_is_chiltepin_agent", False)
+
+        if not is_directly_decorated:
+            # Check if this is a subclass of a decorated agent (problematic pattern)
+            if is_inherited_decorated:
+                # Find the decorated parent to provide a helpful error message
+                decorated_parent = None
+                for base in agent_class.mro()[1:]:
+                    if isinstance(base, type) and base.__dict__.get(
+                        "_is_chiltepin_agent", False
+                    ):
+                        decorated_parent = base
+                        break
+
+                parent_name = (
+                    decorated_parent.__name__
+                    if decorated_parent
+                    else "decorated parent"
+                )
+                original_behavior_name = (
+                    getattr(decorated_parent, "_behavior_class_name", parent_name)
+                    if decorated_parent
+                    else "Behavior"
+                )
+
+                raise TypeError(
+                    f"Cannot launch '{agent_class.__name__}' - it is a subclass of decorated agent '{parent_name}' but is not itself decorated.\n\n"
+                    f"Subclassing decorated agents is not supported. To use inheritance:\n\n"
+                    f"1. Create an undecorated base behavior class:\n"
+                    f"   class {original_behavior_name}Base:\n"
+                    f"       @agent_action\n"
+                    f"       async def shared_method(self): ...\n\n"
+                    f"2. Decorate each implementation separately:\n"
+                    f"   @chiltepin_agent()\n"
+                    f"   class {parent_name}({original_behavior_name}Base):\n"
+                    f"       pass\n\n"
+                    f"   @chiltepin_agent()\n"
+                    f"   class {agent_class.__name__}({original_behavior_name}Base):\n"
+                    f"       @agent_action\n"
+                    f"       async def new_method(self): ...\n\n"
+                    f"See the 'Agent Inheritance' section in the documentation for details."
+                )
+            else:
+                # Not decorated at all
+                raise TypeError(
+                    f"ChiltepinManager only supports agents decorated with @chiltepin_agent. "
+                    f"Got: {agent_class.__module__}.{agent_class.__name__}. "
+                    "Use the base Academy Manager for native agents."
+                )
 
         # If agent_workflow_config, agent_workflow_include, or agent_workflow_run_dir were provided, add them to the agent's kwargs
         if (
@@ -533,6 +578,47 @@ def chiltepin_agent(
     def decorator(behavior_class: Type) -> Type[Agent]:
         """Inner decorator that receives the behavior class."""
 
+        # Check if the class itself is already decorated (double-decoration)
+        # Use __dict__ to distinguish direct decoration from inherited flag
+        if behavior_class.__dict__.get("_is_chiltepin_agent", False):
+            raise TypeError(
+                f"Cannot apply @chiltepin_agent to '{behavior_class.__name__}' - it is already decorated.\n\n"
+                f"Double-decoration is not supported. Remove one of the @chiltepin_agent() decorators.\n\n"
+                f"If you meant to create a subclass, create an undecorated behavior class first:\n"
+                f"   class {behavior_class.__name__}Behavior:\n"
+                f"       @agent_action\n"
+                f"       async def method(self): ...\n\n"
+                f"   @chiltepin_agent()\n"
+                f"   class {behavior_class.__name__}({behavior_class.__name__}Behavior):\n"
+                f"       pass"
+            )
+
+        # Check if user is trying to extend a decorated agent (unsupported pattern)
+        # Use mro() to check entire inheritance chain, not just immediate parents
+        # Use __dict__ to identify the actually-decorated class (not intermediate classes
+        # that merely inherited the flag), so error messages are accurate
+        for base in behavior_class.mro()[1:]:  # Skip first element (class itself)
+            if isinstance(base, type) and base.__dict__.get(
+                "_is_chiltepin_agent", False
+            ):
+                # Found a decorated agent in the inheritance chain (directly decorated, not inherited)
+                original_name = getattr(base, "_behavior_class_name", base.__name__)
+                raise TypeError(
+                    f"Cannot extend decorated agent class '{base.__name__}'.\n\n"
+                    f"The @chiltepin_agent decorator wraps classes in an Agent, making them "
+                    f"unsuitable as base classes. To use inheritance:\n\n"
+                    f"1. Create an undecorated base class with shared behavior:\n"
+                    f"   class {original_name}Base:\n"
+                    f"       @agent_action\n"
+                    f"       async def shared_method(self): ...\n\n"
+                    f"2. Extend and decorate your specific implementation:\n"
+                    f"   @chiltepin_agent()\n"
+                    f"   class {behavior_class.__name__}({original_name}Base):\n"
+                    f"       @agent_action\n"
+                    f"       async def custom_method(self): ...\n\n"
+                    f"See the 'Agent Inheritance' section in the documentation for details."
+                )
+
         # Create a wrapper Agent class dynamically
         class ChiltepinAgentWrapper(Agent):
             # Note: Coverage excluded for __init__ and lifecycle methods below.
@@ -742,6 +828,9 @@ def chiltepin_agent(
 
         # Mark this as a chiltepin agent for ChiltepinManager validation
         ChiltepinAgentWrapper._is_chiltepin_agent = True
+
+        # Store original behavior class name for better error messages
+        ChiltepinAgentWrapper._behavior_class_name = behavior_class.__name__
 
         return ChiltepinAgentWrapper
 

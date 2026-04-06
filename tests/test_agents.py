@@ -1748,3 +1748,381 @@ def test_join_task_decorator_compatibility():
 
     # Verify it's a callable method
     assert callable(method)
+
+
+def test_agent_inheritance_pattern():
+    """Test that inheritance works when decorating the child class.
+
+    The supported pattern is to decorate only the final class in the hierarchy,
+    not intermediate parent classes. When you decorate a child class, both
+    parent and child methods marked with @agent_action or @agent_loop are
+    discovered and wrapped.
+    """
+
+    # Define base behavior class WITHOUT @chiltepin_agent decorator
+    class BaseBehavior:
+        def __init__(self, base_value: int):
+            self.base_value = base_value
+
+        @agent_action
+        async def base_method(self) -> int:
+            """Method from base class."""
+            return self.base_value
+
+        def helper_method(self) -> str:
+            """Helper method not exposed as action."""
+            return "helper"
+
+    # Define child class and ONLY decorate the child
+    @chiltepin_agent()
+    class ChildAgent(BaseBehavior):
+        def __init__(self, base_value: int, child_value: int):
+            super().__init__(base_value)
+            self.child_value = child_value
+
+        @agent_action
+        async def child_method(self) -> int:
+            """Method from child class."""
+            return self.child_value
+
+        @agent_action
+        async def combined_method(self) -> int:
+            """Method that uses both base and child state."""
+            return self.base_value + self.child_value
+
+    # Verify the child class is marked as a chiltepin agent
+    assert ChildAgent._is_chiltepin_agent
+
+    # Verify both base and child methods are wrapped as actions
+    assert hasattr(ChildAgent, "base_method")
+    assert hasattr(ChildAgent, "child_method")
+    assert hasattr(ChildAgent, "combined_method")
+
+    # Verify they have the _agent_method_type marker from Academy's @action
+    base_method = getattr(ChildAgent, "base_method")
+    assert hasattr(base_method, "_agent_method_type")
+    assert base_method._agent_method_type == "action"
+
+    child_method = getattr(ChildAgent, "child_method")
+    assert hasattr(child_method, "_agent_method_type")
+    assert child_method._agent_method_type == "action"
+
+    combined_method = getattr(ChildAgent, "combined_method")
+    assert hasattr(combined_method, "_agent_method_type")
+    assert combined_method._agent_method_type == "action"
+
+    # Verify undecorated method is not exposed on the decorated agent wrapper
+    # It should exist in the base class but not be exposed on the agent
+    assert hasattr(BaseBehavior, "helper_method")
+    # The decorated agent only exposes @agent_action/@agent_loop methods
+    assert not hasattr(ChildAgent, "helper_method")
+
+
+def test_agent_actions_can_call_unexposed_helpers():
+    """Test that exposed actions can call unexposed helper methods internally.
+
+    While helper methods are not exposed on the agent wrapper, they remain
+    accessible to action methods because actions execute on the behavior
+    instance which has normal inheritance.
+    """
+
+    # Define base class with helper method
+    class BehaviorWithHelper:
+        def __init__(self, value: int):
+            self.value = value
+
+        def _private_helper(self) -> str:
+            """Private helper - not exposed."""
+            return f"helper_result_{self.value}"
+
+        def public_helper(self) -> int:
+            """Public helper - not exposed (no decorator)."""
+            return self.value * 2
+
+        @agent_action
+        async def action_using_helpers(self) -> dict:
+            """Action that calls unexposed helper methods."""
+            # Both helpers should be accessible via self
+            private_result = self._private_helper()
+            public_result = self.public_helper()
+            return {
+                "private": private_result,
+                "public": public_result,
+                "value": self.value,
+            }
+
+    # Decorate the class
+    @chiltepin_agent()
+    class AgentWithHelpers(BehaviorWithHelper):
+        pass
+
+    # Verify helpers are not exposed on the agent wrapper
+    assert not hasattr(AgentWithHelpers, "_private_helper")
+    assert not hasattr(AgentWithHelpers, "public_helper")
+
+    # Verify the action IS exposed
+    assert hasattr(AgentWithHelpers, "action_using_helpers")
+    action = getattr(AgentWithHelpers, "action_using_helpers")
+    assert hasattr(action, "_agent_method_type")
+    assert action._agent_method_type == "action"
+
+    # Test that the behavior instance (which actions execute on) can call helpers
+    # Create a wrapper instance (passing None for agent infrastructure params)
+    wrapper = AgentWithHelpers(42, agent_workflow_config=None)
+
+    # The wrapper should have created a behavior instance internally
+    assert hasattr(wrapper, "_behavior")
+    behavior = wrapper._behavior
+
+    # Verify the behavior instance is of the correct type
+    assert isinstance(behavior, BehaviorWithHelper)
+
+    # The behavior instance should have access to helpers
+    assert behavior._private_helper() == "helper_result_42"
+    assert behavior.public_helper() == 84
+
+    # Most importantly: verify the action method can execute and call helpers
+    import asyncio
+
+    result = asyncio.run(behavior.action_using_helpers())
+    assert result == {
+        "private": "helper_result_42",
+        "public": 84,
+        "value": 42,
+    }
+
+
+def test_agent_multiple_inheritance_mixin_pattern():
+    """Test that multiple inheritance (mixins) works with @chiltepin_agent.
+
+    When a class inherits from multiple parent classes (mixins), all methods
+    marked with @agent_action or @agent_loop from all parents should be
+    discovered and wrapped when the final child class is decorated.
+    """
+
+    # Define mixin classes WITHOUT @chiltepin_agent decorator
+    class StorageMixin:
+        """Mixin providing storage operations."""
+
+        @agent_action
+        async def save(self, data: str) -> str:
+            """Save data."""
+            return f"saved: {data}"
+
+    class ProcessingMixin:
+        """Mixin providing processing operations."""
+
+        @agent_action
+        async def process(self, data: str) -> str:
+            """Process data."""
+            return data.upper()
+
+    class MonitoringMixin:
+        """Mixin providing monitoring operations."""
+
+        @agent_action
+        async def get_status(self) -> str:
+            """Get status."""
+            return "running"
+
+        def _internal_check(self) -> bool:
+            """Not decorated - won't be exposed."""
+            return True
+
+    # Combine mixins in a decorated class
+    @chiltepin_agent()
+    class CombinedAgent(StorageMixin, ProcessingMixin, MonitoringMixin):
+        """Agent combining multiple mixins."""
+
+        def __init__(self, name: str):
+            self.name = name
+
+        @agent_action
+        async def get_name(self) -> str:
+            """Method from the main class."""
+            return self.name
+
+    # Verify the class is marked as a chiltepin agent
+    assert CombinedAgent._is_chiltepin_agent
+
+    # Verify all methods from all mixins plus the child are wrapped
+    assert hasattr(CombinedAgent, "save")  # From StorageMixin
+    assert hasattr(CombinedAgent, "process")  # From ProcessingMixin
+    assert hasattr(CombinedAgent, "get_status")  # From MonitoringMixin
+    assert hasattr(CombinedAgent, "get_name")  # From CombinedAgent
+
+    # Verify they all have the _agent_method_type marker
+    save_method = getattr(CombinedAgent, "save")
+    assert hasattr(save_method, "_agent_method_type")
+    assert save_method._agent_method_type == "action"
+
+    process_method = getattr(CombinedAgent, "process")
+    assert hasattr(process_method, "_agent_method_type")
+    assert process_method._agent_method_type == "action"
+
+    status_method = getattr(CombinedAgent, "get_status")
+    assert hasattr(status_method, "_agent_method_type")
+    assert status_method._agent_method_type == "action"
+
+    name_method = getattr(CombinedAgent, "get_name")
+    assert hasattr(name_method, "_agent_method_type")
+    assert name_method._agent_method_type == "action"
+
+    # Verify non-decorated private method remains on the mixin itself
+    assert hasattr(MonitoringMixin, "_internal_check")
+    # Private methods (starting with _) are not exposed on the agent wrapper
+    assert not hasattr(CombinedAgent, "_internal_check")
+
+
+def test_extending_decorated_agent_raises_error():
+    """Test that trying to extend a decorated agent raises a helpful error.
+
+    Once a class is decorated with @chiltepin_agent, it becomes an Agent wrapper
+    and cannot be extended. This test verifies that attempting to do so raises
+    a clear TypeError with guidance on the correct pattern.
+    """
+
+    # Create a decorated agent
+    @chiltepin_agent()
+    class ParentAgent:
+        @agent_action
+        async def parent_action(self) -> str:
+            return "parent"
+
+    # Attempting to extend the decorated agent should raise TypeError
+    with pytest.raises(TypeError) as exc_info:
+
+        @chiltepin_agent()
+        class ChildAgent(ParentAgent):  # ← This should fail
+            @agent_action
+            async def child_action(self) -> str:
+                return "child"
+
+    # Verify the error message is helpful
+    error_message = str(exc_info.value)
+    assert "Cannot extend decorated agent class" in error_message
+    assert "ParentAgent" in error_message
+    assert "@chiltepin_agent decorator wraps classes in an Agent" in error_message
+    assert "undecorated base class" in error_message
+    assert "Agent Inheritance" in error_message
+
+
+def test_extending_decorated_agent_grandparent_raises_error():
+    """Test that extending a decorated agent is caught even when not immediate parent.
+
+    The check should use mro() to catch decorated agents anywhere in the inheritance
+    chain, not just immediate parents. This test verifies that a decorated grandparent
+    is detected.
+    """
+
+    # Create a decorated grandparent
+    @chiltepin_agent()
+    class GrandParentAgent:
+        @agent_action
+        async def grandparent_action(self) -> str:
+            return "grandparent"
+
+    # Create undecorated middle parent - inherits from decorated agent
+    class MiddleParent(GrandParentAgent):
+        @agent_action
+        async def middle_action(self) -> str:
+            return "middle"
+
+    # Attempting to decorate a class that inherits from MiddleParent
+    # should detect GrandParentAgent in the mro() and fail
+    with pytest.raises(TypeError) as exc_info:
+
+        @chiltepin_agent()
+        class ChildAgent(MiddleParent):  # ← Should fail - GrandParentAgent is in mro()
+            @agent_action
+            async def child_action(self) -> str:
+                return "child"
+
+    # Verify the error message mentions GrandParentAgent
+    error_message = str(exc_info.value)
+    assert "Cannot extend decorated agent class" in error_message
+    assert "GrandParentAgent" in error_message  # Should catch the grandparent
+
+
+def test_double_decorating_agent_raises_error():
+    """Test that applying @chiltepin_agent twice to the same class raises an error.
+
+    Double-decoration should be caught and raise a clear error message.
+    This prevents accidental misuse of the decorator.
+    """
+
+    # First decoration is fine
+    @chiltepin_agent()
+    class MyAgent:
+        @agent_action
+        async def my_action(self) -> str:
+            return "action"
+
+    # Attempting to decorate the already-decorated class should fail
+    with pytest.raises(TypeError) as exc_info:
+        MyAgent = chiltepin_agent()(MyAgent)  # Double decoration!
+
+    # Verify the error message is helpful
+    error_message = str(exc_info.value)
+    assert "already decorated" in error_message
+    assert "MyAgent" in error_message
+    assert "Double-decoration is not supported" in error_message
+
+
+def test_launching_undecorated_subclass_of_decorated_agent_raises_error(tmp_path):
+    """Test that launching a subclass of a decorated agent without decorating it fails.
+
+    If a user creates an undecorated subclass of a decorated agent and tries to launch it,
+    ChiltepinManager should detect this and provide a helpful error message. This prevents
+    confusing runtime failures where the subclass's methods aren't discovered.
+    """
+    from chiltepin import Workflow
+    from chiltepin.agents import AgentSystem
+
+    # Create a decorated parent agent
+    @chiltepin_agent()
+    class ParentAgent:
+        @agent_action
+        async def parent_action(self) -> str:
+            return "parent"
+
+    # Create an undecorated subclass (problematic pattern)
+    class ChildAgent(ParentAgent):
+        @agent_action
+        async def child_action(self) -> str:
+            return "child"
+
+    # Set up a minimal workflow and manager
+    config = {
+        "local": {
+            "provider": "localhost",
+            "max_workers_per_node": 1,
+        }
+    }
+
+    workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+    workflow.start()
+
+    try:
+        agent_system = AgentSystem(workflow=workflow, executor_names=["local"])
+
+        # Attempting to launch the undecorated subclass should fail
+        async def try_launch():
+            async with await agent_system.manager() as manager:
+                with pytest.raises(TypeError) as exc_info:
+                    await manager.launch(
+                        ChildAgent, agent_workflow_config=config, executor="local"
+                    )
+
+                # Verify the error message is helpful
+                error_message = str(exc_info.value)
+                assert "subclass of decorated agent" in error_message
+                assert "ParentAgent" in error_message
+                assert "not itself decorated" in error_message
+                assert "undecorated base behavior class" in error_message
+
+        import asyncio
+
+        asyncio.run(try_launch())
+    finally:
+        workflow.cleanup()

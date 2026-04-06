@@ -111,28 +111,183 @@ For one-off tasks without shared state, use :doc:`tasks` instead.
    To deploy agents to remote HPC systems, use a Globus Compute endpoint with localhost
    provider running on a login node or other internet-connected resource.
 
+Behaviors vs Agents
+-------------------
+
+Chiltepin uses a clean separation between **behavior classes** (domain logic) and **agent classes**
+(deployment wrappers). This design pattern provides flexibility, testability, and code reusability.
+
+**Recommended Pattern: Create Wrapper Classes**
+
+The recommended approach is to keep your behavior classes undecorated and create separate agent
+wrapper classes when you need to deploy them:
+
+.. code-block:: python
+
+   # 1. Define behavior class - pure domain logic, NO decorator
+   class WeatherModelBehavior:
+       """Reusable behavior class for weather modeling."""
+
+       def __init__(self, location: str):
+           self.location = location
+           self.temperature = 20.0
+
+       @agent_action
+       async def get_temperature(self) -> float:
+           """Get current temperature - works standalone or as agent."""
+           return self.temperature
+
+       @agent_action
+       async def set_temperature(self, temp: float) -> None:
+           """Set temperature - works standalone or as agent."""
+           self.temperature = temp
+
+       @agent_loop
+       async def update_temperature(self, shutdown):
+           """Background loop - runs automatically when deployed as agent."""
+           import asyncio, random
+           while not shutdown.is_set():
+               await asyncio.sleep(1)
+               self.temperature += random.uniform(-2, 2)
+
+   # 2. Create agent wrapper for deployment - just add decorator
+   @chiltepin_agent()
+   class WeatherModelAgent(WeatherModelBehavior):
+       """Agent deployment wrapper for WeatherModelBehavior."""
+       pass  # Inherits all behavior, decorator enables agent deployment
+
+**Benefits of This Pattern:**
+
+1. **Testability**: Test behavior logic without agent infrastructure
+
+   .. code-block:: python
+
+      # Test behavior directly
+      async def test_weather_behavior():
+          behavior = WeatherModelBehavior("Boulder, CO")
+          await behavior.set_temperature(25.0)
+          assert await behavior.get_temperature() == 25.0
+
+2. **Flexibility**: Use behaviors with or without agents
+
+   .. code-block:: python
+
+      async def example():
+          # Use as standalone behavior
+          local_weather = WeatherModelBehavior("Local")
+          temp = await local_weather.get_temperature()
+
+          # Deploy as remote agent
+          remote_weather = await manager.launch(
+              WeatherModelAgent,
+              args=("Remote",),
+              ...
+          )
+
+3. **Hierarchy Freedom**: Build complex behavior hierarchies, then wrap any level
+
+   .. code-block:: python
+
+      class BaseBehavior:
+          @agent_action
+          async def base_method(self): pass
+
+      class SpecializedBehavior(BaseBehavior):
+          @agent_action
+          async def specialized_method(self): pass
+
+      # Deploy the specialized behavior as an agent
+      @chiltepin_agent()
+      class SpecializedAgent(SpecializedBehavior):
+          pass
+
+4. **Separation of Concerns**: Behavior = "what it does", Agent = "where/how it runs"
+
+.. important::
+   **Understanding @agent_loop Methods:**
+
+   Methods decorated with ``@agent_loop`` are **lifecycle hooks** that run automatically
+   as background tasks when the behavior is deployed as an agent. They rely on the Agent
+   infrastructure to:
+
+   - Provide the ``shutdown`` event
+   - Schedule them as background tasks
+   - Manage their lifecycle (startup/shutdown)
+
+   **This means:**
+
+   - ✅ ``@agent_action`` methods work on standalone behaviors AND agents
+   - ⚠️ ``@agent_loop`` methods are ordinary async methods, but they are only started automatically and lifecycle-managed when deployed as agents
+   - 🔍 If your behavior has loops, it's generally designed for agent deployment
+
+   .. code-block:: python
+
+      import asyncio
+
+      # Behavior with loop - designed for agent-managed execution
+      class MonitorBehavior:
+          @agent_loop
+          async def heartbeat(self, shutdown):
+              """Runs automatically when managed by an agent runtime."""
+              while not shutdown.is_set():
+                  await asyncio.sleep(1)
+                  print("heartbeat")
+
+      # Standalone instance - the loop exists, but it is not started automatically
+      behavior = MonitorBehavior()  # ⚠️ heartbeat will not auto-start here
+
+      # Deploy as agent - loops activate automatically
+      @chiltepin_agent()
+      class MonitorAgent(MonitorBehavior):
+          pass
+
+      agent = await manager.launch(MonitorAgent, ...)  # ✅ heartbeat starts automatically
+
+**Alternative Pattern: Direct Decoration**
+
+You can also apply ``@chiltepin_agent`` directly to a class if you don't need the
+behavior/agent separation:
+
+.. code-block:: python
+
+   @chiltepin_agent()
+   class SimpleAgent:
+       """Combined behavior and agent - less flexible but more concise."""
+
+       def __init__(self, value: int):
+           self.value = value
+
+       @agent_action
+       async def get_value(self) -> int:
+           return self.value
+
+This is simpler for small, single-purpose agents but sacrifices testability and reusability.
+Use the wrapper pattern when building reusable components or complex behavior hierarchies.
+
 Basic Usage
 -----------
 
 Creating an Agent
 ^^^^^^^^^^^^^^^^^
 
-Use the ``@chiltepin_agent`` decorator to wrap a regular Python class:
+**Recommended: Behavior + Agent Wrapper Pattern**
+
+Create an undecorated behavior class, then wrap it for deployment:
 
 .. code-block:: python
 
    from chiltepin.agents import chiltepin_agent, agent_action, agent_loop
    from chiltepin.tasks import python_task
 
-   @chiltepin_agent(agent_workflow_include=["compute"])
-   class WeatherModel:
-       """A simple weather model agent."""
+   # 1. Define behavior class (undecorated, reusable)
+   class WeatherModelBehavior:
+       """Reusable weather model behavior."""
        
        def __init__(self, temperature: float):
            self.temperature = temperature
        
-       @agent_action
        @python_task
+       @agent_action
        def forecast(self) -> str:
            """Generate a forecast based on current temperature."""
            import random
@@ -146,21 +301,52 @@ Use the ``@chiltepin_agent`` decorator to wrap a regular Python class:
        
        @agent_loop
        async def update_temperature(self, shutdown):
-           """Background agent_loop that updates temperature."""
+           """Background loop - runs automatically when deployed as agent."""
            import asyncio
            import random
            while not shutdown.is_set():
                await asyncio.sleep(1)
                self.temperature += random.uniform(-2, 2)
 
+   # 2. Create agent wrapper (decorated, for deployment)
+   @chiltepin_agent(agent_workflow_include=["compute"])
+   class WeatherModelAgent(WeatherModelBehavior):
+       """Agent deployment wrapper."""
+       pass  # Inherits all behavior
+
+**Quick Pattern: Direct Decoration**
+
+For simple, single-purpose agents, you can decorate directly:
+
+.. code-block:: python
+
+   @chiltepin_agent(agent_workflow_include=["compute"])
+   class SimpleWeatherAgent:
+       """Combined behavior and agent."""
+
+       def __init__(self, temperature: float):
+           self.temperature = temperature
+
+       @agent_action
+       async def get_temperature(self) -> float:
+           return self.temperature
+
 Key Features
 ^^^^^^^^^^^^
 
-1. **Regular Python class**: No inheritance required, fully serializable
+1. **Regular Python classes**: No special inheritance, fully serializable
 2. **Access instance state**: Task-decorated methods can access ``self.temperature``
 3. **Mixed sync/async**: Use ``@agent_action`` on both sync and async methods
-4. **Background loops**: Use ``@agent_loop`` on async methods for continuous background processing or autonomous behavior
+4. **Background loops**: Use ``@agent_loop`` on async methods - automatically started and managed when deployed as agents
 5. **Infrastructure separation**: Workflow config passed via ``manager.launch()``, not ``__init__``
+6. **Testable behaviors**: Behaviors can be tested standalone, agents deployed remotely
+
+.. note::
+   **@agent_loop methods only run automatically in agents**: Background loops require the Agent
+   infrastructure to provide the ``shutdown`` event and manage their lifecycle.
+   If you call methods on a standalone behavior instance, loops will not execute automatically.
+   Only when you deploy the behavior as an agent using ``@chiltepin_agent`` and
+   ``manager.launch()`` will the loops activate automatically.
 
 .. note::
    **@agent_loop requires async methods**: The ``@agent_loop`` decorator can only be applied to
@@ -177,48 +363,49 @@ Use ``AgentSystem`` to create a manager and launch agents:
 
    from chiltepin import Workflow, AgentSystem
    
-   # Configuration for the manager's workflow (where agents run)
-   manager_config = {
-       "manager-executor": {
-           "endpoint": ENDPOINT_UUID,
-           "provider": "localhost",
+   async def main():
+       # Configuration for the manager's workflow (where agents run)
+       manager_config = {
+           "manager-executor": {
+               "endpoint": ENDPOINT_UUID,
+               "provider": "localhost",
+           }
        }
-   }
-   
-   # Configuration for the agent's internal workflow (where tasks run)
-   agent_config = {
-       "compute": {
-           "provider": "slurm",
-           "partition": "compute",
-           # ... other config
+
+       # Configuration for the agent's internal workflow (where tasks run)
+       agent_config = {
+           "compute": {
+               "provider": "slurm",
+               "partition": "compute",
+               # ... other config
+           }
        }
-   }
-   
-   # Start workflow for hosting agents
-   workflow = Workflow(manager_config, include=["manager-executor"])
-   workflow.start()
-   
-   # Create agent system
-   agent_system = AgentSystem(
-       workflow=workflow,
-       executor_names=["manager-executor"],
-   )
-   
-   # Launch and interact with agent
-   async with await agent_system.manager() as manager:
-       model = await manager.launch(
-           WeatherModel,
-           agent_workflow_config=agent_config,   # Agent's workflow config
-           agent_workflow_include=["compute"],   # Which executors to use
-           args=(25.0,),                # Arguments for __init__
-           executor="manager-executor"  # Where to run the agent
+
+       # Start workflow for hosting agents
+       workflow = Workflow(manager_config, include=["manager-executor"])
+       workflow.start()
+
+       # Create agent system
+       agent_system = AgentSystem(
+           workflow=workflow,
+           executor_names=["manager-executor"],
        )
-       
-       # Call agent actions
-       temp = await model.get_temperature()
-       forecast = await model.forecast(executor=["compute"])
-   
-   workflow.cleanup()
+
+       # Launch and interact with agent
+       async with await agent_system.manager() as manager:
+           model = await manager.launch(
+               WeatherModelAgent,           # Agent wrapper class
+               agent_workflow_config=agent_config,   # Agent's workflow config
+               agent_workflow_include=["compute"],   # Which executors to use
+               args=(25.0,),                # Arguments for __init__
+               executor="manager-executor"  # Where to run the agent
+           )
+
+           # Call agent actions
+           temp = await model.get_temperature()
+           forecast = await model.forecast(executor=["compute"])
+
+       workflow.cleanup()
 
 Runtime Configuration
 ---------------------
@@ -229,7 +416,7 @@ Infrastructure concerns (workflow config, executors, directories) are passed to
 .. code-block:: python
 
    model = await manager.launch(
-       WeatherModel,
+       WeatherModelAgent,                          # Agent wrapper class
        agent_workflow_config=agent_config,         # Workflow configuration dict or YAML path
        agent_workflow_include=["compute"],         # List of executors to include (None = all)
        agent_workflow_run_dir="/custom/path",      # Directory for Parsl runtime files
@@ -242,12 +429,18 @@ This separation keeps behavior classes focused on domain logic:
 
 .. code-block:: python
 
-   @chiltepin_agent()
-   class WeatherModel:
+   # Behavior class - pure domain logic
+   class WeatherModelBehavior:
        def __init__(self, temperature: float, units: str = "C"):
            # Only domain logic, no infrastructure concerns
            self.temperature = temperature
            self.units = units
+
+   # Agent wrapper - minimal, just deployment
+   @chiltepin_agent()
+   class WeatherModelAgent(WeatherModelBehavior):
+       """Deploy WeatherModelBehavior as an agent."""
+       pass
 
 Decorator Parameters
 ^^^^^^^^^^^^^^^^^^^^
@@ -256,14 +449,20 @@ The ``@chiltepin_agent`` decorator accepts default values that can be overridden
 
 .. code-block:: python
 
+   # Behavior with domain logic
+   class MyBehavior:
+       @agent_action
+       async def do_work(self): pass
+
+   # Agent wrapper with defaults
    @chiltepin_agent(agent_workflow_include=["default-compute"], agent_workflow_run_dir="./runs")
-   class MyAgent:
+   class MyAgent(MyBehavior):
        pass
    
    # Use decorator defaults
    agent1 = await manager.launch(MyAgent, agent_workflow_config=cfg)
    
-   # Override at runtime
+   # Override at runtime - more flexible
    agent2 = await manager.launch(
        MyAgent,
        agent_workflow_config=cfg,
@@ -330,6 +529,32 @@ the order does not matter and both are supported:
            return x ** 2
 
 This allows the task to access instance state (``self``) while still executing remotely.
+
+.. note::
+   **Helper Methods and Internal Implementation:**
+
+   Methods without ``@agent_action`` or ``@agent_loop`` decorators are not exposed on the
+   agent proxy, but they **remain accessible to action methods** internally via ``self``.
+   This is by design and enables clean separation of public API from internal implementation.
+
+   .. code-block:: python
+
+      @chiltepin_agent()
+      class MyAgent:
+          def _internal_helper(self, x: int) -> int:
+              """Not exposed - but actions can call it."""
+              return x * 2
+
+          @agent_action
+          async def public_action(self, x: int) -> int:
+              """Exposed action that uses helper."""
+              # This works! Actions execute on the behavior instance
+              return self._internal_helper(x) + 10
+
+      # From outside:
+      agent = await manager.launch(MyAgent, ...)
+      result = await agent.public_action(5)  # ✅ Returns 20
+      # agent._internal_helper(5)  # ❌ AttributeError - not exposed
 
 Loop Decorators
 ---------------
@@ -609,10 +834,11 @@ Launch worker agents first, then pass their handles to the coordinator.
           },
       }
 
-      # Launch each agent to its dedicated executor
-      lowerer = await manager.launch(LowererAgent, executor="lowerer-executor", ...)
-      reverser = await manager.launch(ReverserAgent, executor="reverser-executor", ...)
-      coordinator = await manager.launch(CoordinatorAgent, executor="coordinator-executor", ...)
+      # Launch each agent to its dedicated executor (inside async with manager context)
+      async with await agent_system.manager() as manager:
+          lowerer = await manager.launch(LowererAgent, executor="lowerer-executor", ...)
+          reverser = await manager.launch(ReverserAgent, executor="reverser-executor", ...)
+          coordinator = await manager.launch(CoordinatorAgent, executor="coordinator-executor", ...)
 
    This approach avoids worker contention but requires multiple endpoints with internet access.
 
@@ -703,10 +929,139 @@ Type hints improve code clarity and enable better IDE support:
        def mean(self) -> float:
            return sum(self.values) / len(self.values)
 
+Agent Inheritance
+^^^^^^^^^^^^^^^^^
+
+Agents support inheritance, but **only undecorated classes can be extended**. Apply
+``@chiltepin_agent`` only to the final "leaf" class in your hierarchy, not to intermediate
+parent classes. When you decorate a class, it becomes an Agent wrapper and cannot be
+extended further.
+
+.. important::
+   **Design for Extensibility:**
+
+   If you want to create reusable agent behavior that others can extend, **do not apply
+   the decorator** to the base class. Leave base classes undecorated and let users apply
+   ``@chiltepin_agent`` to their own specialized subclasses.
+
+**Why This Limitation Exists:**
+
+The ``@chiltepin_agent`` decorator dynamically creates and returns an ``Agent`` subclass
+wrapper around your behavior class, while preserving the original class name on the
+decorated result. In other words, after decoration, ``MyAgent`` is no longer the original
+undecorated behavior class, even though it still appears under the name ``MyAgent``. This means:
+
+- ❌ **Cannot extend decorated agents**: Subclassing a decorated agent gives you an Agent, not a behavior class
+- ✅ **Can extend undecorated behaviors**: Subclass undecorated classes, then decorate the child
+
+**Recommended Pattern:**
+
+.. code-block:: python
+
+   # Base behavior class - NOT decorated (designed for extension)
+   class ReusableAgentBehavior:
+       """Base class providing common agent functionality.
+
+       Leave this undecorated so others can extend it.
+       """
+       def __init__(self, base_value: int):
+           self.base_value = base_value
+
+       @agent_action
+       async def get_value(self) -> int:
+           """Common action available to all subclasses."""
+           return self.base_value
+
+       @agent_action
+       async def increment(self) -> None:
+           """Common mutation."""
+           self.base_value += 1
+
+       def _helper(self) -> str:
+           """Private helper - not exposed."""
+           return "helper"
+
+   # User extends and decorates their specific implementation
+   @chiltepin_agent()
+   class MySpecializedAgent(ReusableAgentBehavior):
+       """My custom agent extending the reusable base.
+
+       Apply decorator here - this is my final implementation.
+       """
+       def __init__(self, base_value: int, name: str):
+           super().__init__(base_value)
+           self.name = name
+
+       @agent_action
+       async def get_name(self) -> str:
+           """My custom action."""
+           return self.name
+
+       @agent_action
+       async def get_full_status(self) -> dict:
+           """Combines base and specialized behavior."""
+           return {
+               "name": self.name,
+               "value": self.base_value
+           }
+
+When launched, ``MySpecializedAgent`` exposes all actions from both the base class
+(``get_value``, ``increment``) and the specialized class (``get_name``, ``get_full_status``).
+
+**What NOT to Do:**
+
+.. code-block:: python
+
+   # ❌ DON'T: Decorating the base class
+   @chiltepin_agent()  # ← Prevents others from extending this
+   class MyAgent:
+       @agent_action
+       async def action1(self): pass
+
+   # This WON'T WORK - MyAgent is now an Agent subclass, not a behavior
+   class ExtendedAgent(MyAgent):  # ← Subclassing an Agent, not the behavior
+       @agent_action
+       async def action2(self): pass  # Won't be discovered correctly
+
+If you've already decorated a class and need to extend it, create a new undecorated
+base class with the shared behavior and decorate new leaf classes.
+
+**Multiple Inheritance (Mixins):**
+
+The pattern works well with mixins - create undecorated mixin classes and combine
+them in a decorated final class:
+
+.. code-block:: python
+
+   # Undecorated mixins - reusable across agents
+   class StorageMixin:
+       @agent_action
+       async def save(self, data: str) -> str:
+           return f"saved: {data}"
+
+   class ProcessingMixin:
+       @agent_action
+       async def process(self, data: str) -> str:
+           return data.upper()
+
+   # Combine mixins in your final decorated agent
+   @chiltepin_agent()
+   class MyAgent(StorageMixin, ProcessingMixin):
+       @agent_action
+       async def custom_action(self): pass
+
+All methods from all mixins (``save``, ``process``, ``custom_action``) will be exposed.
+
+**Summary:**
+
+- 📦 **Create libraries**: Provide undecorated base classes and mixins
+- 🎯 **Use libraries**: Extend undecorated classes, add your methods, then decorate
+- 🚫 **Never decorate**: Intermediate classes that others might extend
+
 Complete Example
 ----------------
 
-Here's a complete example combining all features:
+Here's a complete example using the recommended behavior/agent wrapper pattern:
 
 .. code-block:: python
 
@@ -718,9 +1073,9 @@ Here's a complete example combining all features:
    
    logger = logging.getLogger(__name__)
    
-   @chiltepin_agent(agent_workflow_include=["compute"])
-   class TemperatureModel:
-       """Agent that forecasts temperature with background updates."""
+   # 1. Define behavior class - pure domain logic, reusable, testable
+   class TemperatureModelBehavior:
+       """Reusable temperature model behavior."""
        
        def __init__(self, initial_temp: float, location: str):
            self.temperature = initial_temp
@@ -734,6 +1089,7 @@ Here's a complete example combining all features:
            import random
            conditions = ["sunny", "cloudy", "rainy", "snowy"]
            condition = random.choice(conditions)
+           self.forecast_count += 1
            return f"{self.location}: {condition}, {self.temperature:.1f}°C"
        
        @agent_action
@@ -752,7 +1108,7 @@ Here's a complete example combining all features:
        
        @agent_loop
        async def update_temperature(self, shutdown: asyncio.Event):
-           """Simulate temperature changes."""
+           """Simulate temperature changes - runs automatically when deployed as agent."""
            import asyncio
            import random
            
@@ -762,7 +1118,13 @@ Here's a complete example combining all features:
                self.temperature += random.uniform(-1, 1)
                # Keep reasonable bounds
                self.temperature = max(-50, min(50, self.temperature))
-   
+
+   # 2. Create agent wrapper for deployment
+   @chiltepin_agent(agent_workflow_include=["compute"])
+   class TemperatureModelAgent(TemperatureModelBehavior):
+       """Agent deployment wrapper for TemperatureModelBehavior."""
+       pass  # Inherits all behavior
+
    async def main():
        # Manager workflow configuration
        manager_config = {
@@ -793,9 +1155,9 @@ Here's a complete example combining all features:
        )
        
        async with await agent_system.manager() as manager:
-           # Launch agent with runtime configuration
+           # Launch agent wrapper with runtime configuration
            model = await manager.launch(
-               TemperatureModel,
+               TemperatureModelAgent,  # Deploy the agent wrapper
                agent_workflow_config=agent_config,
                agent_workflow_include=["compute"],
                args=(20.0, "Boulder, CO"),
