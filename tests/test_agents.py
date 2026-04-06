@@ -1760,7 +1760,7 @@ def test_agent_inheritance_pattern():
     """
 
     # Define base behavior class WITHOUT @chiltepin_agent decorator
-    class BaseAgent:
+    class BaseBehavior:
         def __init__(self, base_value: int):
             self.base_value = base_value
 
@@ -1775,7 +1775,7 @@ def test_agent_inheritance_pattern():
 
     # Define child class and ONLY decorate the child
     @chiltepin_agent()
-    class ChildAgent(BaseAgent):
+    class ChildAgent(BaseBehavior):
         def __init__(self, base_value: int, child_value: int):
             super().__init__(base_value)
             self.child_value = child_value
@@ -1813,7 +1813,7 @@ def test_agent_inheritance_pattern():
 
     # Verify undecorated method is not exposed on the decorated agent wrapper
     # It should exist in the base class but not be exposed on the agent
-    assert hasattr(BaseAgent, "helper_method")
+    assert hasattr(BaseBehavior, "helper_method")
     # The decorated agent only exposes @agent_action/@agent_loop methods
     assert not hasattr(ChildAgent, "helper_method")
 
