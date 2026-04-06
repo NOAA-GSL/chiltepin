@@ -533,6 +533,27 @@ def chiltepin_agent(
     def decorator(behavior_class: Type) -> Type[Agent]:
         """Inner decorator that receives the behavior class."""
 
+        # Check if user is trying to extend a decorated agent (unsupported pattern)
+        for base in behavior_class.__bases__:
+            if isinstance(base, type) and getattr(base, "_is_chiltepin_agent", False):
+                # Found a decorated agent in the inheritance chain
+                original_name = getattr(base, "_behavior_class_name", base.__name__)
+                raise TypeError(
+                    f"Cannot extend decorated agent class '{base.__name__}'.\n\n"
+                    f"The @chiltepin_agent decorator wraps classes in an Agent, making them "
+                    f"unsuitable as base classes. To use inheritance:\n\n"
+                    f"1. Create an undecorated base class with shared behavior:\n"
+                    f"   class {original_name}Base:\n"
+                    f"       @agent_action\n"
+                    f"       async def shared_method(self): ...\n\n"
+                    f"2. Extend and decorate your specific implementation:\n"
+                    f"   @chiltepin_agent()\n"
+                    f"   class {behavior_class.__name__}({original_name}Base):\n"
+                    f"       @agent_action\n"
+                    f"       async def custom_method(self): ...\n\n"
+                    f"See the 'Agent Inheritance' section in the documentation for details."
+                )
+
         # Create a wrapper Agent class dynamically
         class ChiltepinAgentWrapper(Agent):
             # Note: Coverage excluded for __init__ and lifecycle methods below.
@@ -742,6 +763,9 @@ def chiltepin_agent(
 
         # Mark this as a chiltepin agent for ChiltepinManager validation
         ChiltepinAgentWrapper._is_chiltepin_agent = True
+
+        # Store original behavior class name for better error messages
+        ChiltepinAgentWrapper._behavior_class_name = behavior_class.__name__
 
         return ChiltepinAgentWrapper
 
