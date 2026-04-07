@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-04-07
+
+### Changed
+- **Decorator Robustness**: Hardened `@chiltepin_agent` inheritance and validation logic
+  - Double-decoration now raises a clear `TypeError` instead of silently misbehaving
+  - Inheritance check uses `__dict__` instead of `getattr` so error messages always name
+    the actually-decorated ancestor rather than an intermediate inheriting class
+  - `ChiltepinManager.launch()` now detects and rejects undecorated subclasses of decorated
+    agents with a helpful error message guiding users to the correct pattern
+- **Documentation Accuracy**: Corrected agent documentation examples
+  - `@agent_loop` methods described more precisely: they are ordinary async methods that are
+    only *automatically scheduled and lifecycle-managed* when deployed as agents
+  - Fixed synchronous test function using `await` (missing `async def`)
+  - Added missing `import asyncio` to code examples that use `asyncio.sleep()`
+  - Wrapped bare `await` statements in examples inside proper `async def` functions
+  - Fixed docstrings on `@agent_loop` methods from "only runs when deployed" to
+    "runs automatically when deployed"
+- **Test Correctness**: Fixed and strengthened agent test suite
+  - `test_agent_inheritance_pattern`: renamed internal `BaseAgent` to `BaseBehavior` to
+    reflect that it is an undecorated behavior class, not an agent
+  - `test_agent_inheritance_pattern` and `test_agent_multiple_inheritance_mixin_pattern`:
+    added assertions that undecorated and private helper methods are absent from the
+    decorated agent wrapper class (not just absent from the action registry)
+  - Both tests now also assert helper methods are present on their original behavior/mixin
+    classes, confirming the decorator leaves them untouched
+  - `test_agent_actions_can_call_unexposed_helpers`: test now instantiates the wrapper and
+    exercises the action method directly rather than only checking the bare behavior instance
+
+### Added
+- **New Test Coverage**
+  - `test_agent_actions_can_call_unexposed_helpers`: verifies that exposed actions can call
+    private and public helper methods internally via the behavior instance
+  - `test_double_decorating_agent_raises_error`: verifies applying `@chiltepin_agent` twice
+    raises a descriptive `TypeError`
+  - `test_launching_undecorated_subclass_of_decorated_agent_raises_error`: verifies
+    `ChiltepinManager.launch()` rejects undecorated subclasses of decorated agents
+- **Documentation**: Added note on helper methods in `agents.rst` explaining that unexposed
+  methods remain callable internally by action methods
+
+[0.1.6]: https://github.com/NOAA-GSL/chiltepin/releases/tag/v0.1.6
+
 ## [0.1.5] - 2026-04-02
 
 ### Added
