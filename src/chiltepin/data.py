@@ -345,7 +345,7 @@ def delete(
     # client.add_app_data_access_scope([src_id, dst_id])
 
     # Build the delete data payload
-    task_data = globus_sdk.DeleteData(endpoint=src_id, recursive=True)
+    task_data = globus_sdk.DeleteData(endpoint=src_id, recursive=recursive)
     task_data.add_item(src_path)
 
     # Submit the deletion request
