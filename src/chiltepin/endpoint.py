@@ -34,7 +34,6 @@ from globus_compute_sdk.sdk.auth.auth_client import ComputeAuthClient
 from globus_compute_sdk.sdk.auth.globus_app import (
     get_globus_app as get_globus_compute_app,
 )
-from globus_compute_sdk.sdk.web_client import WebClient
 from globus_sdk import ClientApp, GlobusApp, TransferClient, UserApp
 
 endpoint_template = """# This is the default user-endpoint-process (UEP) template provided with
@@ -220,7 +219,6 @@ def get_chiltepin_apps() -> Tuple[GlobusApp, GlobusApp, GlobusApp]:
     compute_app = get_globus_compute_app()
     compute_app.add_scope_requirements(
         {
-            WebClient.scopes.resource_server: WebClient.default_scope_requirements,
             ComputeAuthClient.scopes.resource_server: ComputeAuthClient.default_scope_requirements,  # noqa E501
         }
     )
