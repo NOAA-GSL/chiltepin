@@ -9,8 +9,8 @@ name = "chiltepin"
 version = "0.1.6"
 dependencies = [
   "academy-py>=0.3.1,<1.0.0",
-  "globus-compute-sdk>=4.3.0,<4.7.0",
-  "globus-compute-endpoint>=4.3.0,<4.7.0; platform_system == 'Linux'",
+  "globus-compute-sdk>=4.3.0,<5",
+  "globus-compute-endpoint>=4.3.0,<5; platform_system == 'Linux'",
   "globus-sdk>=3.65.0",
   "parsl>=2025.12.1",
   "psutil<6.0",
@@ -81,6 +81,11 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = [
     "--import-mode=importlib",
+    # Use a basetemp under the project directory (on /home, a shared filesystem)
+    # rather than /tmp (node-local). This is required for Parsl's ZMQ-encrypted
+    # workers running on remote Slurm nodes, which must be able to read certificate
+    # files written by the interchange on the login node.
+    "--basetemp=tests/tmp",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
