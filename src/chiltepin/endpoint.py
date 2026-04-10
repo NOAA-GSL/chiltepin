@@ -63,81 +63,64 @@ endpoint_template = """# This is the default user-endpoint-process (UEP) templat
 # There are a number of example configurations available in the documentation:
 #    https://globus-compute.readthedocs.io/en/stable/endpoints.html#example-configurations
 
-debug: True
+{%- set provider = provider | default() -%}
+{%- set provider_type = provider == '"slurm"' and "SlurmProvider" or None -%}
+{%- set provider_type = provider == '"pbspro"' and "PBSProProvider" or provider_type -%}
+{%- set provider_type = provider_type or "LocalProvider" -%}
 
-endpoint_setup: {{ endpoint_setup|default() }}
+{%- set engine_type = "GlobusComputeEngine" -%}
+{%- if mpi -%}
+{%-   set launcher_type = "SimpleLauncher" -%}
+{%-   set engine_type = "GlobusMPIEngine" -%}
+{%-   set default_mpi_launcher = engine_type == "SlurmProvider" and "srun" or "mpiexec" -%}
+{%- else -%}
+{%-   set c_per_node = provider_type == "SlurmProvider" and "cores_per_node" or "cpus_per_node" -%}
+{%-   set launcher_type = provider_type == "SlurmProvider" and "SrunLauncher" or "" -%}
+{%-   set launcher_type = launcher_type or (provider_type == "PBSProProvider" and "MpiExecLauncher" or "") -%}
+{%-   set launcher_type = launcher_type or "SingleNodeLauncher" -%}
+{%- endif -%}
+
+debug: true
+
+idle_heartbeats_soft: 120
+idle_heartbeats_hard: 5760
+endpoint_setup: {{ endpoint_setup | default() }}
 
 engine:
-  {% if mpi %}
-  type: GlobusMPIEngine
-  max_workers_per_block: {{ max_mpi_apps|default(1) }}
-  {% if provider == '"slurm"' %}
-  {% set default_mpi_launcher = "srun" %}
-  {% else %}
-  {% set default_mpi_launcher = "mpiexec" %}
-  {% endif %}
-  mpi_launcher: {{ mpi_launcher|default(default_mpi_launcher) }}
-  {% else %}
-  type: GlobusComputeEngine
-  {% endif %}
-  run_in_sandbox: True
+  type: {{ engine_type }}
+  {%- if mpi %}
+
+  max_workers_per_block: {{ max_mpi_apps | default(1) }}
+  mpi_launcher: {{ mpi_launcher | default(default_mpi_launcher) }}
+  {%- endif %}
+
+  run_in_sandbox: true
 
   provider:
-    {% if provider == '"slurm"' %}
-    type: SlurmProvider
-    {% elif provider == '"pbspro"' %}
-    type: PBSProProvider
-    {% else %}
-    type: LocalProvider
-    {% endif %}
+    type: {{ provider_type }}
     launcher:
-      {% if mpi %}
-      type: SimpleLauncher
-      {% else %}
-      {% if provider == '"slurm"' %}
-      type: SrunLauncher
-      {% elif provider == '"pbspro"' %}
-      type: MpiExecLauncher
-      {% else %}
-      type: SingleNodeLauncher
-      {% endif %}
-      {% endif %}
+      type: {{ launcher_type }}
 
-    init_blocks: {{ init_blocks|default(0) }}
-    min_blocks: {{ min_blocks|default(0) }}
-    max_blocks: {{ max_blocks|default(1) }}
-    worker_init: {{ worker_init|default() }}
+    init_blocks: {{ init_blocks | default(0) }}
+    min_blocks: {{ min_blocks | default(0) }}
+    max_blocks: {{ max_blocks | default(1) }}
+    worker_init: {{ worker_init | default() }}
 
-    {% if provider != '"localhost"' %}
-    {% if not mpi %}
-    {% if provider == '"slurm"' %}
-    cores_per_node: {{ cores_per_node|default(1) }}
-    {% elif provider == '"pbspro"' %}
-    cpus_per_node: {{ cores_per_node|default(1) }}
-    {% endif %}
-    {% endif %}
-    nodes_per_block: {{ nodes_per_block|default(1) }}
-    {% if provider == '"slurm"' %}
-    exclusive: {{ exclusive|default("True") }}
-    partition: {{ partition|default() }}
-    qos: {{ queue|default() }}
-    {% elif provider == '"pbspro"' %}
-    queue: {{ queue|default() }}
-    {% endif %}
-    account: {{ account|default() }}
-    walltime: {{ walltime|default("00:10:00") }}
-    {% endif %}
-
-# Endpoints will be restarted when a user submits new tasks to the
-# web-services, so eagerly shut down if endpoint is idle.  At 30s/hb (default
-# value), 10 heartbeats is 300s.
-idle_heartbeats_soft: 120
-
-# If endpoint is *apparently* idle (e.g., outstanding tasks, but no movement)
-# for this many heartbeats, then shutdown anyway.  At 30s/hb (default value),
-# 5,760 heartbeats == "48 hours".  (Note that this value will be ignored if
-# idle_heartbeats_soft is 0 or not set.)
-idle_heartbeats_hard: 5760
+{% if provider_type != "LocalProvider" -%}
+    {%- if not mpi %}
+    {{ c_per_node }}: {{ cores_per_node | default(1) }}
+    {%- endif %}
+    nodes_per_block: {{ nodes_per_block | default(1) }}
+    {% if provider_type == "SlurmProvider" -%}
+    exclusive: {{ exclusive | default("true") }}
+    partition: {{ partition | default() }}
+    qos: {{ queue | default() }}
+    {% elif provider_type == "PBSProProvider" -%}
+    queue: {{ queue | default() }}
+    {%- endif %}
+    account: {{ account | default() }}
+    walltime: {{ walltime | default("00:10:00") }}
+{% endif -%}
 """
 
 # Set the UUID of the default Chiltepin thick client
