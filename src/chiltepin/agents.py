@@ -204,8 +204,10 @@ class AgentSystem:
         The Workflow instance to use for executing tasks and agents
     executor_names : List[str]
         List of executor names for running agents on Parsl executors
-    exchange_address : str
-        The exchange server address
+    exchange_address : Optional[str]
+        The exchange server address. If None (default), academy's built-in
+        default exchange URL is used, which matches the API version of the
+        installed academy release.
     auth_method : str
         Authentication method (default: "globus")
 
@@ -224,7 +226,6 @@ class AgentSystem:
         agent_system = AgentSystem(
             workflow=workflow,
             executor_names=["my-executor"],
-            exchange_address="https://exchange.academy-agents.org"
         )
 
         async with await agent_system.manager() as manager:
@@ -239,7 +240,7 @@ class AgentSystem:
         self,
         workflow: Workflow,
         executor_names: List[str],
-        exchange_address: str = "https://exchange.academy-agents.org",
+        exchange_address: Optional[str] = None,
         auth_method: str = "globus",
     ) -> None:
         """Initialize the AgentSystem.
@@ -250,8 +251,10 @@ class AgentSystem:
             The Workflow instance with started dfk
         executor_names : List[str]
             List of executor names for running agents on Parsl executors
-        exchange_address : str
-            The exchange server address
+        exchange_address : Optional[str]
+            The exchange server address. If None (default), academy's built-in
+            default exchange URL is used, which matches the API version of the
+            installed academy release.
         auth_method : str
             Authentication method for accessing the exchange (default: "globus")
         """
@@ -299,12 +302,19 @@ class AgentSystem:
         if self._executors is None:
             self._create_executors()
 
+        # Only pass url= when the caller supplied an explicit address. When
+        # None, academy uses its own DEFAULT_EXCHANGE_URL, which tracks the
+        # exchange server's API version for the installed academy release.
+        # (Academy 0.5.0 moved the public exchange to a versioned "/v1" URL;
+        # hardcoding the old unversioned address makes the server reject
+        # messages with 400 Bad Request.)
+        factory_kwargs: Dict[str, Any] = {"auth_method": self.auth_method}
+        if self.exchange_address is not None:
+            factory_kwargs["url"] = self.exchange_address
+
         # Return the ChiltepinManager context manager
         return await ChiltepinManager.from_exchange_factory(
-            factory=HttpExchangeFactory(
-                self.exchange_address,
-                auth_method=self.auth_method,
-            ),
+            factory=HttpExchangeFactory(**factory_kwargs),
             executors=self._executors,
         )
 

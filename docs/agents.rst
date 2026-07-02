@@ -606,7 +606,6 @@ an Academy Manager with ParslPoolExecutors:
    
    async with await Manager.from_exchange_factory(
        factory=HttpExchangeFactory(
-           "https://exchange.academy-agents.org",
            auth_method="globus"
        ),
        executors=executors
@@ -640,7 +639,6 @@ You can also create it directly:
    
    async with await ChiltepinManager.from_exchange_factory(
        factory=HttpExchangeFactory(
-           "https://exchange.academy-agents.org",
            auth_method="globus"
        ),
        executors=my_executors

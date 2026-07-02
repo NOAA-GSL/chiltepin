@@ -560,6 +560,41 @@ def is_running(
     return endpoint.get("status", None) == "Running"
 
 
+def _link_token_store(config_dir: str) -> None:
+    """Make Globus auth tokens reachable from a custom endpoint config dir.
+
+    globus-compute-endpoint >=4.8 resolves the Globus SDK token store
+    (``storage.db``) relative to the endpoint config dir (via the
+    ``GLOBUS_COMPUTE_USER_DIR`` environment variable that the ``-c/--config-dir``
+    flag sets). Because :func:`login` writes tokens to the default
+    ``$HOME/.globus_compute``, an endpoint launched with a custom config dir would
+    not find them and would attempt an interactive login, which aborts when run as
+    a daemon. This symlinks the default token store into the custom config dir so
+    the two stay in sync on token refresh. It is a no-op when the config dir is the
+    default location, when a token store already exists there, or when no default
+    token store exists (e.g. client-credential auth needs none).
+
+    Parameters
+    ----------
+    config_dir : str
+        Path to the custom endpoint configuration directory.
+    """
+    default_store = Path.home() / ".globus_compute" / "storage.db"
+    custom_store = Path(os.path.abspath(config_dir)) / "storage.db"
+
+    # Nothing to do if the config dir is the default, a token store (or symlink)
+    # is already present, or there is no default token store to link.
+    if custom_store == default_store:
+        return
+    if custom_store.exists() or custom_store.is_symlink():
+        return
+    if not default_store.exists():
+        return
+
+    custom_store.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(default_store, custom_store)
+
+
 def start(
     name: str,
     config_dir: Optional[str] = None,
@@ -588,6 +623,17 @@ def start(
     # Make sure we are logged in
     if login_required():
         raise RuntimeError("Chiltepin login is required")
+
+    # Ensure Globus auth tokens are available in a custom config dir. In
+    # globus-compute-endpoint >=4.8, the -c/--config-dir flag also relocates the
+    # SDK token store (storage.db) into the config dir via the
+    # GLOBUS_COMPUTE_USER_DIR environment variable. Because chiltepin login()
+    # stores tokens in the default $HOME/.globus_compute, an endpoint started in a
+    # custom config dir would find no credentials and abort on an interactive
+    # login prompt (its stdin is /dev/null). Link the default token store into the
+    # custom config dir so registration authenticates non-interactively.
+    if config_dir:
+        _link_token_store(config_dir)
 
     # Build the globus-compute-endpoint command to run
     command = ["globus-compute-endpoint"]
@@ -742,29 +788,42 @@ def stop(
         else Path.home() / ".globus_compute" / name
     )
 
-    # Track elapsed time to enforce timeout across both subprocess and wait loop
+    # Track elapsed time to enforce timeout across all stop attempts
     start_time = time.time()
 
-    try:
-        Endpoint.stop_endpoint(config_path, get_config(config_path), remote=False)
-    except psutil.TimeoutExpired:
-        # Try one more time if we get a psutil timeout, since that can happen if the endpoint
-        # enters a bad state and fails to stop within the expected time.
-        Endpoint.stop_endpoint(config_path, get_config(config_path), remote=False)
-
-    # Wait for endpoint to enter "Stopped" state
+    # Issue the stop and poll until the endpoint has actually stopped.
+    #
+    # globus-compute-endpoint sends SIGTERM to the endpoint and waits a fixed 10s
+    # grace period for it to exit. When the endpoint is slow to shut down -- e.g.
+    # it still has an interchange and worker blocks to reap after running tasks --
+    # that grace period is exceeded, and different versions signal this in
+    # different ways: <=4.7 raises psutil.TimeoutExpired, while >=4.8 logs a
+    # warning and calls sys.exit(-1) instead. In both cases SIGTERM has already
+    # been sent, so we tolerate the signal and keep polling. Re-issuing
+    # stop_endpoint completes the cleanup once the processes have exited, and the
+    # overall timeout bounds how long we wait -- surfacing a clean TimeoutError
+    # rather than letting a stray SystemExit escape into the caller (which would
+    # otherwise abort, for example, a pytest fixture teardown).
     while True:
-        # Calculate remaining timeout for this iteration
-        if timeout is not None:
-            elapsed = time.time() - start_time
-            if elapsed > timeout:
-                raise TimeoutError(
-                    f"Timeout of {timeout}s exceeded while waiting for endpoint '{name}' to stop"
-                )
+        try:
+            Endpoint.stop_endpoint(config_path, get_config(config_path), remote=False)
+        except psutil.TimeoutExpired:
+            pass
+        except SystemExit as e:
+            # Only tolerate the non-zero "slow shutdown" exit; re-raise a clean
+            # exit so an intentional interpreter shutdown is never swallowed.
+            if e.code in (0, None):
+                raise
 
-        # Check if endpoint is still running, passing remaining timeout to prevent hanging
+        # The endpoint is stopped once it no longer reports as running
         if not is_running(name, config_dir):
             break
+
+        # Enforce the overall timeout
+        if timeout is not None and time.time() - start_time > timeout:
+            raise TimeoutError(
+                f"Timeout of {timeout}s exceeded while waiting for endpoint '{name}' to stop"
+            )
 
         time.sleep(1)
 

@@ -12,6 +12,7 @@ __pycache__
 # Ignore test output
 tests/test_output/
 tests/tmp/
+parsl_runinfo_*
 
 # Ignore coverage files
 .coverage

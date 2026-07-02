@@ -846,7 +846,12 @@ class TestStop:
                             endpoint.stop("test_endpoint", timeout=0.1)
 
     def test_with_psutil_timeout(self):
-        """Test that stop retries when psutil.TimeoutExpired is raised."""
+        """Test that stop tolerates psutil.TimeoutExpired and re-issues the stop.
+
+        globus-compute-endpoint <=4.7 raises psutil.TimeoutExpired when the
+        endpoint is slow to shut down. stop() should swallow it and keep trying
+        while the endpoint is still running, rather than propagating it.
+        """
         with patch("chiltepin.endpoint.login_required", return_value=False):
             with patch("chiltepin.endpoint.get_config"):
                 with patch("chiltepin.endpoint.Endpoint.stop_endpoint") as mock_stop:
@@ -854,11 +859,50 @@ class TestStop:
 
                     # First call raises TimeoutExpired, second succeeds
                     mock_stop.side_effect = [psutil.TimeoutExpired(1), None]
-                    with patch("chiltepin.endpoint.is_running", return_value=False):
+                    # Still running right after the timeout, stopped after retry
+                    with patch(
+                        "chiltepin.endpoint.is_running",
+                        side_effect=[True, False],
+                    ):
                         # Should not raise an exception
                         endpoint.stop("test_endpoint", timeout=5)
-                        # Verify stop_endpoint was called twice
+                        # Verify stop_endpoint was retried once the endpoint was
+                        # still running after the first (timed-out) attempt
                         assert mock_stop.call_count == 2
+
+    def test_with_system_exit(self):
+        """Test that stop tolerates the SystemExit(-1) slow-shutdown signal.
+
+        globus-compute-endpoint >=4.8 no longer raises psutil.TimeoutExpired on a
+        slow shutdown; instead stop_endpoint logs a warning and calls
+        sys.exit(-1). stop() should treat that as a transient timeout and retry
+        while the endpoint is still running, rather than letting SystemExit
+        escape into the caller.
+        """
+        with patch("chiltepin.endpoint.login_required", return_value=False):
+            with patch("chiltepin.endpoint.get_config"):
+                with patch("chiltepin.endpoint.Endpoint.stop_endpoint") as mock_stop:
+                    # First call exits non-zero (slow shutdown), second succeeds
+                    mock_stop.side_effect = [SystemExit(-1), None]
+                    with patch(
+                        "chiltepin.endpoint.is_running",
+                        side_effect=[True, False],
+                    ):
+                        # Should not raise an exception
+                        endpoint.stop("test_endpoint", timeout=5)
+                        assert mock_stop.call_count == 2
+
+    def test_clean_system_exit_propagates(self):
+        """Test that a clean SystemExit from stop_endpoint is not swallowed."""
+        with patch("chiltepin.endpoint.login_required", return_value=False):
+            with patch("chiltepin.endpoint.get_config"):
+                with patch("chiltepin.endpoint.Endpoint.stop_endpoint") as mock_stop:
+                    # A zero/None exit code is an intentional shutdown, not the
+                    # slow-shutdown signal, so it must propagate.
+                    mock_stop.side_effect = SystemExit(0)
+                    with patch("chiltepin.endpoint.is_running", return_value=False):
+                        with pytest.raises(SystemExit):
+                            endpoint.stop("test_endpoint", timeout=5)
 
 
 @pytest.mark.skipif(
