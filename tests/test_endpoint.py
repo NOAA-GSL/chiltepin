@@ -5,6 +5,7 @@ import os
 import pathlib
 import platform
 import shutil
+import subprocess
 import tempfile
 import time
 from unittest.mock import MagicMock, mock_open, patch
@@ -689,138 +690,58 @@ class TestStart:
             with pytest.raises(RuntimeError, match="Chiltepin login is required"):
                 endpoint.start("test_endpoint")
 
-    def test_timeout(self):
-        """Test that start raises TimeoutError when endpoint doesn't start in time."""
+    def test_communicate_timeout(self):
+        """Test that start raises TimeoutError when communicate() times out."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
-            with patch("os.fork", return_value=1):  # Parent process
-                with patch("os.waitpid"):
-                    with patch("chiltepin.endpoint.is_running", return_value=False):
-                        with patch(
-                            "chiltepin.endpoint._read_startup_errors", return_value=""
-                        ):
-                            with pytest.raises(TimeoutError, match="Timeout of"):
-                                endpoint.start("test_endpoint", timeout=0.1)
-
-    def test_timeout_with_errors(self):
-        """Test that start raises TimeoutError with error message when available."""
-        start_time = [time.time()]
-
-        def mock_read_errors(path, max_size=10240):
-            # Return error message after timeout is exceeded
-            # This simulates error file being written just as timeout occurs
-            elapsed = time.time() - start_time[0]
-            if elapsed > 0.1:  # After timeout
-                return "Error starting endpoint"
-            return ""  # Before timeout
-
-        with patch("chiltepin.endpoint.login_required", return_value=False):
-            with patch("os.fork", return_value=1):  # Parent process
-                with patch("os.waitpid"):
-                    with patch("chiltepin.endpoint.is_running", return_value=False):
-                        with patch(
-                            "chiltepin.endpoint._read_startup_errors",
-                            side_effect=mock_read_errors,
-                        ):
-                            with pytest.raises(TimeoutError, match="Startup errors:"):
-                                endpoint.start("test_endpoint", timeout=0.1)
-
-    def test_failure_with_errors(self):
-        """Test that start raises RuntimeError when endpoint fails to start with errors."""
-        call_count = [0]
-
-        def mock_is_running(*args, **kwargs):
-            call_count[0] += 1
-            return False
-
-        with patch("chiltepin.endpoint.login_required", return_value=False):
-            with patch("os.fork", return_value=1):  # Parent process
-                with patch("os.waitpid"):
-                    with patch(
-                        "chiltepin.endpoint.is_running", side_effect=mock_is_running
+            with patch("chiltepin.endpoint._link_token_store"):
+                # Create a mock process that times out during communicate()
+                mock_process = MagicMock()
+                mock_process.communicate.side_effect = subprocess.TimeoutExpired(
+                    cmd="globus-compute-endpoint", timeout=5
+                )
+                with patch("subprocess.Popen", return_value=mock_process):
+                    with pytest.raises(
+                        TimeoutError,
+                        match="globus-compute-endpoint start command timed out",
                     ):
-                        with patch(
-                            "chiltepin.endpoint._read_startup_errors",
-                            return_value="Fatal error",
-                        ):
-                            with pytest.raises(
-                                RuntimeError, match="Endpoint.*failed to start"
-                            ):
-                                endpoint.start("test_endpoint", timeout=5)
+                        endpoint.start("test_endpoint", timeout=5)
+                    # Verify cleanup was called
+                    mock_process.kill.assert_called_once()
+                    mock_process.wait.assert_called_once()
 
-    def test_cleanup_error(self):
-        """Test that start handles OSError gracefully when cleaning up temp file."""
+    def test_start_command_failure(self):
+        """Test that start raises RuntimeError when start command fails."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
-            with patch("os.fork", return_value=1):  # Parent process
-                with patch("os.waitpid"):
-                    with patch("chiltepin.endpoint.is_running", return_value=True):
-                        with patch(
-                            "chiltepin.endpoint._read_startup_errors", return_value=""
+            with patch("chiltepin.endpoint._link_token_store"):
+                # Create a mock process that fails with non-zero exit code
+                mock_process = MagicMock()
+                mock_process.communicate.return_value = (
+                    "Error: endpoint configuration not found",
+                    None,
+                )
+                mock_process.returncode = 1
+                with patch("subprocess.Popen", return_value=mock_process):
+                    with pytest.raises(
+                        RuntimeError, match="Failed to start endpoint.*test_endpoint"
+                    ):
+                        endpoint.start("test_endpoint", timeout=5)
+
+    def test_polling_timeout(self):
+        """Test that start raises TimeoutError when polling for Running state times out."""
+        with patch("chiltepin.endpoint.login_required", return_value=False):
+            with patch("chiltepin.endpoint._link_token_store"):
+                # Create a mock process that succeeds
+                mock_process = MagicMock()
+                mock_process.communicate.return_value = ("", None)
+                mock_process.returncode = 0
+                with patch("subprocess.Popen", return_value=mock_process):
+                    # Mock is_running to always return False (never reaches Running state)
+                    with patch("chiltepin.endpoint.is_running", return_value=False):
+                        with pytest.raises(
+                            TimeoutError,
+                            match="Timeout of.*exceeded while waiting for endpoint",
                         ):
-                            with patch(
-                                "os.unlink", side_effect=OSError("Cannot remove")
-                            ):
-                                # Should not raise an exception despite unlink error
-                                endpoint.start("test_endpoint", timeout=5)
-
-
-class TestReadStartupErrors:
-    """Tests for _read_startup_errors() helper function."""
-
-    def test_with_content(self):
-        """Test _read_startup_errors returns content when file exists and has data."""
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            f.write("Error: Something went wrong\n")
-            temp_path = f.name
-
-        try:
-            error_msg = endpoint._read_startup_errors(temp_path)
-            assert error_msg == "Error: Something went wrong"
-        finally:
-            os.unlink(temp_path)
-
-    def test_empty_file(self):
-        """Test _read_startup_errors returns empty string for empty file."""
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            temp_path = f.name
-
-        try:
-            error_msg = endpoint._read_startup_errors(temp_path)
-            assert error_msg == ""
-        finally:
-            os.unlink(temp_path)
-
-    def test_nonexistent_file(self):
-        """Test _read_startup_errors returns empty string for nonexistent file."""
-        error_msg = endpoint._read_startup_errors("/nonexistent/file.txt")
-        assert error_msg == ""
-
-    def test_with_max_size(self):
-        """Test _read_startup_errors respects max_size parameter."""
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            f.write("A" * 100)
-            temp_path = f.name
-
-        try:
-            error_msg = endpoint._read_startup_errors(temp_path, max_size=50)
-            assert len(error_msg) <= 50
-        finally:
-            os.unlink(temp_path)
-
-    def test_with_io_error(self):
-        """Test _read_startup_errors handles IOError gracefully."""
-        # Use a mock to simulate an IOError when reading
-        with patch("os.path.exists", return_value=True):
-            with patch("os.path.getsize", return_value=100):
-                with patch("builtins.open", side_effect=IOError("Read error")):
-                    error_msg = endpoint._read_startup_errors("/some/path")
-                    assert error_msg == ""
-
-    def test_with_os_error(self):
-        """Test _read_startup_errors handles OSError gracefully."""
-        # Use a mock to simulate an OSError
-        with patch("os.path.exists", side_effect=OSError("Path error")):
-            error_msg = endpoint._read_startup_errors("/some/path")
-            assert error_msg == ""
+                            endpoint.start("test_endpoint", timeout=0.1)
 
 
 class TestLinkTokenStore:

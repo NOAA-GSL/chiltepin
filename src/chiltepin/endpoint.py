@@ -618,6 +618,9 @@ def start(
     """
     _check_endpoint_management_available()
 
+    # Track start time for timeout enforcement
+    start_time = time.time()
+
     # Make sure we are logged in
     if login_required():
         raise RuntimeError("Chiltepin login is required")
@@ -633,121 +636,55 @@ def start(
     if config_dir:
         _link_token_store(config_dir)
 
-    # Build the globus-compute-endpoint command to run
+
+    # Build the globus-compute-endpoint command to run with --detach flag
     command = ["globus-compute-endpoint"]
     if config_dir:
         command.append("-c")
         command.append(f"{os.path.abspath(config_dir)}")
     command.append("start")
+    command.append("--detach")
     command.append(name)
 
-    # Create a temporary file to capture initial stderr for failure detection
-    temp_stderr = tempfile.NamedTemporaryFile(
-        mode="w+", prefix=f"chiltepin_start_{name}_", suffix=".err", delete=False
+    # Start the endpoint as a detached process
+    # The --detach flag handles all the process daemonization for us
+    p = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
     )
-    temp_stderr_path = temp_stderr.name
-    temp_stderr.close()
 
-    # Run the command as a detached daemon process using double-fork
-    # to completely disconnect from the parent process tree.
-    # NOTE: subprocess.Popen with start_new_session=True does not work to
-    # fully detach the process because globus-compute-endpoint uses psutil
-    # to manage subprocesses, and psutil requires the parent process to still
-    # be alive to avoid orphaning the child processes it creates. The double-fork
-    # method is used here to create a new session and then immediately exit
-    # the first child, leaving the grandchild process running as a daemon that
-    # is not a child of the original parent process.
-    pid = os.fork()
-    if pid == 0:  # pragma: no cover
-        # First child - create new session (runs in forked process, untestable)
-        os.setsid()
-        # Fork again
-        pid2 = os.fork()
-        if pid2 == 0:
-            # Second child (grandchild) - this becomes the daemon
-            # Redirect stdin and stdout to /dev/null, but stderr to temp file
-            # so we can capture immediate failures
-            devnull = os.open(os.devnull, os.O_RDWR)
-            os.dup2(devnull, 0)  # Redirect stdin to /dev/null
-            os.dup2(devnull, 1)  # Redirect stdout to /dev/null
-            # Redirect stderr to temp file for failure detection
-            stderr_fd = os.open(
-                temp_stderr_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND
-            )
-            os.dup2(stderr_fd, 2)
-            if devnull > 2:
-                os.close(devnull)
-            if stderr_fd > 2:
-                os.close(stderr_fd)
-            # Execute the endpoint command
-            os.execvp(command[0], command)
-        else:
-            # First child exits immediately
-            os._exit(0)
-    else:
-        # Parent waits for first child to exit
-        os.waitpid(pid, 0)
+    try:
+        stdout, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Kill the process if it times out
+        p.kill()
+        # Wait for it to actually terminate
+        p.wait()
+        raise TimeoutError(
+            f"globus-compute-endpoint start command timed out after {timeout} seconds"
+        )
+
+    if p.returncode != 0:
+        raise RuntimeError(f"Failed to start endpoint '{name}': {stdout}")
 
     # Wait for endpoint to enter "Running" state
-    start_time = time.time()
-    try:
-        while True:
-            # Calculate remaining timeout for this iteration
-            if timeout is not None:
-                elapsed = time.time() - start_time
-                if elapsed > timeout:
-                    # Check for error output before timing out
-                    error_msg = _read_startup_errors(temp_stderr_path)
-                    timeout_msg = f"Timeout of {timeout}s exceeded while waiting for endpoint '{name}' to start"
-                    if error_msg:
-                        raise TimeoutError(
-                            f"{timeout_msg}\n\nStartup errors:\n{error_msg}"
-                        )
-                    raise TimeoutError(timeout_msg)
-
-            # Check if endpoint is running, passing remaining timeout to prevent hanging
-            if is_running(name, config_dir):
-                break
-
-            # Check for errors immediately - if the endpoint failed, report it
-            error_msg = _read_startup_errors(temp_stderr_path)
-            if error_msg:
-                raise RuntimeError(
-                    f"Endpoint '{name}' failed to start. Error output:\n{error_msg}"
+    while True:
+        # Calculate remaining timeout for this iteration
+        if timeout is not None:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                raise TimeoutError(
+                    f"Timeout of {timeout}s exceeded while waiting for endpoint '{name}' to start"
                 )
 
-            time.sleep(1)
-    finally:
-        # Clean up temporary error file
-        try:
-            os.unlink(temp_stderr_path)
-        except OSError:
-            pass
+        # Check if endpoint is running
+        if is_running(name, config_dir):
+            break
 
-
-def _read_startup_errors(stderr_path: str, max_size: int = 10240) -> str:
-    """Read initial error output from endpoint startup.
-
-    Parameters
-    ----------
-    stderr_path : str
-        Path to the temporary stderr file
-    max_size : int
-        Maximum number of bytes to read from the file
-
-    Returns
-    -------
-    str
-        Error content if any, empty string otherwise
-    """
-    try:
-        if os.path.exists(stderr_path) and os.path.getsize(stderr_path) > 0:
-            with open(stderr_path, "r") as f:
-                content = f.read(max_size)
-                return content.strip()
-    except (OSError, IOError):
-        pass
-    return ""
+        time.sleep(1)
 
 
 def stop(
