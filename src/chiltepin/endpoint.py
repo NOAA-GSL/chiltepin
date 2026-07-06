@@ -141,7 +141,7 @@ idle_heartbeats_hard: 5760
 """
 
 # Set the UUID of the default Chiltepin thick client
-CHILTEPIN_CLIENT_UUID = "42e9e804-0bcd-4c3d-881b-8e270e3c2163"
+CHILTEPIN_CLIENT_UUID = "7d8b6bed-4a3d-4bf7-93c5-9fc58569e4e5"
 
 
 def _check_endpoint_management_available():
@@ -277,8 +277,6 @@ def login() -> Dict[str, Union[Client, TransferClient]]:
     transfer_client = TransferClient(app=transfer_app)
 
     # We don't need an Academy client instance
-
-    # transfer_client.add_app_data_access_scope("d75f3e86-df3c-4734-8b9d-f182346b4bbd")
 
     # Initiate login for compute client if necessary
     if compute_app.login_required():

@@ -284,7 +284,7 @@ def transfer(
                 "err.info"
             )
         else:
-            raise RuntimeError(err)
+            raise RuntimeError(str(err))
 
 
 def delete(
@@ -366,4 +366,4 @@ def delete(
                 "err.info"
             )
         else:
-            raise RuntimeError(err)
+            raise RuntimeError(str(err))
