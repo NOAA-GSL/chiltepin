@@ -823,6 +823,67 @@ class TestReadStartupErrors:
             assert error_msg == ""
 
 
+class TestLinkTokenStore:
+    """Tests for the _link_token_store() helper function."""
+
+    def test_noop_for_default_config_dir(self, tmp_path, monkeypatch):
+        """No link is made when the config dir is the default location."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        default_dir = tmp_path / ".globus_compute"
+        default_dir.mkdir()
+        (default_dir / "storage.db").write_text("tokens")
+
+        # config_dir == default location: should return early untouched
+        endpoint._link_token_store(str(default_dir))
+
+        assert (default_dir / "storage.db").is_file()
+        assert not (default_dir / "storage.db").is_symlink()
+
+    def test_noop_when_no_default_store(self, tmp_path, monkeypatch):
+        """No link is made when there is no default token store to link."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".globus_compute").mkdir()  # exists, but has no storage.db
+        custom_dir = tmp_path / "custom"
+        custom_dir.mkdir()
+
+        endpoint._link_token_store(str(custom_dir))
+
+        assert not (custom_dir / "storage.db").exists()
+        assert not (custom_dir / "storage.db").is_symlink()
+
+    def test_noop_when_store_already_present(self, tmp_path, monkeypatch):
+        """An existing token store in the custom dir is left untouched."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        default_dir = tmp_path / ".globus_compute"
+        default_dir.mkdir()
+        (default_dir / "storage.db").write_text("default tokens")
+        custom_dir = tmp_path / "custom"
+        custom_dir.mkdir()
+        (custom_dir / "storage.db").write_text("existing tokens")
+
+        endpoint._link_token_store(str(custom_dir))
+
+        assert not (custom_dir / "storage.db").is_symlink()
+        assert (custom_dir / "storage.db").read_text() == "existing tokens"
+
+    def test_links_default_store_into_custom_dir(self, tmp_path, monkeypatch):
+        """The default token store is symlinked into a custom config dir."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        default_dir = tmp_path / ".globus_compute"
+        default_dir.mkdir()
+        default_store = default_dir / "storage.db"
+        default_store.write_text("tokens")
+        custom_dir = tmp_path / "custom"
+        custom_dir.mkdir()
+
+        endpoint._link_token_store(str(custom_dir))
+
+        custom_store = custom_dir / "storage.db"
+        assert custom_store.is_symlink()
+        assert os.path.realpath(custom_store) == os.path.realpath(default_store)
+        assert custom_store.read_text() == "tokens"
+
+
 @pytest.mark.skipif(
     platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
     reason="Endpoint management requires Linux and globus-compute-endpoint",
