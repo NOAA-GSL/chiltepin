@@ -198,6 +198,8 @@ jobs:
         name: Start Slurm cluster containers
         run: |
           cd docker
+          # Use Ubuntu 24.04 for ARM64 - better ARM64 package support than 26.04
+          export UBUNTU_VERSION=24.04
           export DOCKER_CLIENT_TIMEOUT=600
           export COMPOSE_HTTP_TIMEOUT=600
           docker compose version
@@ -211,12 +213,12 @@ jobs:
           # Install on frontend
           docker exec frontend bash -c "sudo apt-get update && sudo apt-get install -y software-properties-common"
           docker exec frontend bash -c "sudo add-apt-repository -y ppa:deadsnakes/ppa"
-          docker exec frontend bash -c "sudo apt-get update && sudo apt-get install -y python${{ env.LATEST_PYTHON_VERSION }} python${{ env.LATEST_PYTHON_VERSION }}-venv python${{ env.LATEST_PYTHON_VERSION }}-dev python${{ env.LATEST_PYTHON_VERSION }}-distutils curl"
+          docker exec frontend bash -c "sudo apt-get update && sudo apt-get install -y python${{ env.LATEST_PYTHON_VERSION }} python${{ env.LATEST_PYTHON_VERSION }}-venv python${{ env.LATEST_PYTHON_VERSION }}-dev"
           # Install on all compute nodes
           for node in node1 node2 node3 node4 node5; do
             docker exec $node bash -c "sudo apt-get update && sudo apt-get install -y software-properties-common"
             docker exec $node bash -c "sudo add-apt-repository -y ppa:deadsnakes/ppa"
-            docker exec $node bash -c "sudo apt-get update && sudo apt-get install -y python${{ env.LATEST_PYTHON_VERSION }} python${{ env.LATEST_PYTHON_VERSION }}-venv python${{ env.LATEST_PYTHON_VERSION }}-dev python${{ env.LATEST_PYTHON_VERSION }}-distutils curl"
+            docker exec $node bash -c "sudo apt-get update && sudo apt-get install -y python${{ env.LATEST_PYTHON_VERSION }} python${{ env.LATEST_PYTHON_VERSION }}-venv python${{ env.LATEST_PYTHON_VERSION }}-dev"
           done
       -
         name: Copy test files to work directory
@@ -225,9 +227,7 @@ jobs:
       -
         name: Install chiltepin package
         run: |
-          # Create venv without pip (ensurepip may fail on ARM64), then install pip manually
-          docker exec frontend bash -l -c "cd work ; module use /opt/spack-stack/envs/unified-env/modules/Core ; module load stack-gcc; module load stack-openmpi ; python${{ env.LATEST_PYTHON_VERSION }} -m venv --without-pip .venv-py${{ env.LATEST_PYTHON_VERSION }}"
-          docker exec frontend bash -l -c "cd work ; source .venv-py${{ env.LATEST_PYTHON_VERSION }}/bin/activate ; curl -sS https://bootstrap.pypa.io/get-pip.py | python"
+          docker exec frontend bash -l -c "cd work ; module use /opt/spack-stack/envs/unified-env/modules/Core ; module load stack-gcc; module load stack-openmpi ; python${{ env.LATEST_PYTHON_VERSION }} -m venv .venv-py${{ env.LATEST_PYTHON_VERSION }}"
           docker exec frontend bash -l -c "cd work ; source .venv-py${{ env.LATEST_PYTHON_VERSION }}/bin/activate ; pip install -e .[test]"
       -
         name: Run test suite
