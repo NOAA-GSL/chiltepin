@@ -13,7 +13,7 @@ mpi:
   walltime: "1:00:00"
   environment: &common-env
     - "source /usr/lmod/lmod/init/bash"
-    - "module use /opt/spack-stack/envs/unified-env/install/modulefiles/Core"
+    - "module use /opt/spack-stack/envs/unified-env/modules/Core"
     - "module load stack-gcc"
     - "module load stack-openmpi"
     - "export CHILTEPIN_MPIF90=$MPIF90"

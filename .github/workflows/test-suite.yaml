@@ -85,7 +85,7 @@ jobs:
       -
         name: Install chiltepin package
         run: |
-          docker exec frontend bash -l -c "cd work ; module use /opt/spack-stack/envs/unified-env/install/modulefiles/Core ; module load stack-gcc; module load stack-openmpi ; python${{ matrix.python-version }} -m venv .venv-py${{ matrix.python-version }}"
+          docker exec frontend bash -l -c "cd work ; module use /opt/spack-stack/envs/unified-env/modules/Core ; module load stack-gcc; module load stack-openmpi ; python${{ matrix.python-version }} -m venv .venv-py${{ matrix.python-version }}"
           docker exec frontend bash -l -c "cd work ; source .venv-py${{ matrix.python-version }}/bin/activate ; pip install -e .[test]"
       -
         name: Run test suite with coverage
@@ -225,7 +225,7 @@ jobs:
       -
         name: Install chiltepin package
         run: |
-          docker exec frontend bash -l -c "cd work ; module use /opt/spack-stack/envs/unified-env/install/modulefiles/Core ; module load stack-gcc; module load stack-openmpi ; python${{ env.LATEST_PYTHON_VERSION }} -m venv .venv-py${{ env.LATEST_PYTHON_VERSION }}"
+          docker exec frontend bash -l -c "cd work ; module use /opt/spack-stack/envs/unified-env/modules/Core ; module load stack-gcc; module load stack-openmpi ; python${{ env.LATEST_PYTHON_VERSION }} -m venv .venv-py${{ env.LATEST_PYTHON_VERSION }}"
           docker exec frontend bash -l -c "cd work ; source .venv-py${{ env.LATEST_PYTHON_VERSION }}/bin/activate ; pip install -e .[test]"
       -
         name: Run test suite

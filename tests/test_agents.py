@@ -973,6 +973,56 @@ class TestChiltepinManager:
 class TestAgentSystem:
     """Test the AgentSystem class."""
 
+    async def test_manager_passes_custom_exchange_address(self):
+        """manager() forwards a custom exchange_address to HttpExchangeFactory."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from chiltepin.agents import AgentSystem
+
+        agent_system = AgentSystem(
+            workflow=MagicMock(),
+            executor_names=["test-executor"],
+            exchange_address="https://custom.example.com",
+        )
+        # Pre-populate executors so manager() skips _create_executors(), which
+        # would otherwise require a started workflow.
+        agent_system._executors = {}
+
+        with patch("chiltepin.agents.HttpExchangeFactory") as mock_factory:
+            with patch(
+                "chiltepin.agents.ChiltepinManager.from_exchange_factory",
+                new_callable=AsyncMock,
+            ):
+                await agent_system.manager()
+
+        # A custom address must be forwarded as url=
+        mock_factory.assert_called_once_with(
+            auth_method="globus",
+            url="https://custom.example.com",
+        )
+
+    async def test_manager_omits_url_by_default(self):
+        """manager() lets academy pick its default URL when address is None."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from chiltepin.agents import AgentSystem
+
+        agent_system = AgentSystem(
+            workflow=MagicMock(),
+            executor_names=["test-executor"],
+        )
+        agent_system._executors = {}
+
+        with patch("chiltepin.agents.HttpExchangeFactory") as mock_factory:
+            with patch(
+                "chiltepin.agents.ChiltepinManager.from_exchange_factory",
+                new_callable=AsyncMock,
+            ):
+                await agent_system.manager()
+
+        # No url= is passed, so academy uses its own DEFAULT_EXCHANGE_URL
+        mock_factory.assert_called_once_with(auth_method="globus")
+
     def test_agent_system_requires_started_workflow(self):
         """Test that AgentSystem raises error if workflow not started."""
         from chiltepin import Workflow
