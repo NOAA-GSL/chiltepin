@@ -6,8 +6,6 @@ import pathlib
 import platform
 import shutil
 import subprocess
-import tempfile
-import time
 from unittest.mock import MagicMock, mock_open, patch
 from uuid import UUID
 

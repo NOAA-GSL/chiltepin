@@ -636,7 +636,6 @@ def start(
     if config_dir:
         _link_token_store(config_dir)
 
-
     # Build the globus-compute-endpoint command to run with --detach flag
     command = ["globus-compute-endpoint"]
     if config_dir:
