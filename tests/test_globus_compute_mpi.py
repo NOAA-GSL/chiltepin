@@ -56,13 +56,13 @@ def config(config_file):
     # Delete test endpoint if it already exists from a previous test run
     ep_list = endpoint.show(config_dir=f"{output_dir}/.globus_compute")
     if "test" in ep_list:
-        endpoint.delete("test", config_dir=f"{output_dir}/.globus_compute", timeout=15)
+        endpoint.delete("test", config_dir=f"{output_dir}/.globus_compute", timeout=60)
 
     # Configure the test endpoint
-    endpoint.configure("test", config_dir=f"{output_dir}/.globus_compute", timeout=15)
+    endpoint.configure("test", config_dir=f"{output_dir}/.globus_compute", timeout=60)
 
     # Start the test endpoint
-    endpoint.start("test", config_dir=f"{output_dir}/.globus_compute", timeout=15)
+    endpoint.start("test", config_dir=f"{output_dir}/.globus_compute", timeout=60)
 
     # Update YAML config with the test endpoint ids
     ep_info = endpoint.show(config_dir=f"{output_dir}/.globus_compute")
@@ -84,10 +84,10 @@ def config(config_file):
         yield {"output_dir": output_dir}
 
     # Stop the test endpoint now that tests are done
-    endpoint.stop("test", config_dir=f"{output_dir}/.globus_compute", timeout=15)
+    endpoint.stop("test", config_dir=f"{output_dir}/.globus_compute", timeout=60)
 
     # Delete the test endpoint
-    endpoint.delete("test", config_dir=f"{output_dir}/.globus_compute", timeout=15)
+    endpoint.delete("test", config_dir=f"{output_dir}/.globus_compute", timeout=60)
 
 
 # Test endpoint use
