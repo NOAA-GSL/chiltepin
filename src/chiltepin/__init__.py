@@ -16,8 +16,8 @@ except PackageNotFoundError:
 
 __all__ = [
     "Workflow",
-    "AgentSystem",
-    "ChiltepinManager",
+    "Manager",
+    "AgentRuntime",
     "chiltepin_agent",
     "agent_action",
     "agent_loop",
@@ -29,7 +29,7 @@ def __getattr__(name):
 
     The following are lazy-loaded to avoid import overhead:
     - Workflow: Avoids loading Parsl and its dependencies
-    - AgentSystem, ChiltepinManager: Avoids loading Academy agents framework
+    - Manager, AgentRuntime: Avoids loading Academy agents framework
     - chiltepin_agent, agent_action, agent_loop: Agent decorators from chiltepin.agents
 
     This also enables attribute-style access to submodules (e.g., chiltepin.configure).
@@ -40,13 +40,13 @@ def __getattr__(name):
 
             globals()[name] = locals()[name]
             return locals()[name]
-        elif name == "AgentSystem":
-            from chiltepin.agents import AgentSystem  # noqa: F401
+        elif name == "Manager":
+            from chiltepin.manager import Manager  # noqa: F401
 
             globals()[name] = locals()[name]
             return locals()[name]
-        elif name == "ChiltepinManager":
-            from chiltepin.agents import ChiltepinManager  # noqa: F401
+        elif name == "AgentRuntime":
+            from chiltepin.agent_runtime import AgentRuntime  # noqa: F401
 
             globals()[name] = locals()[name]
             return locals()[name]

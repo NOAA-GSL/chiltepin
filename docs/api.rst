@@ -39,6 +39,20 @@ Agents Module
    :members:
    :show-inheritance:
 
+Manager Module
+--------------
+
+.. automodule:: chiltepin.manager
+   :members:
+   :show-inheritance:
+
+Agent Runtime Module
+--------------------
+
+.. automodule:: chiltepin.agent_runtime
+   :members:
+   :show-inheritance:
+
 Data Module
 -----------
 

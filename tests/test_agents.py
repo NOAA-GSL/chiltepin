@@ -472,7 +472,7 @@ class TestChiltepinAgentDecorator:
     async def test_basic_agent_creation(self, tmp_path):
         """Test that @chiltepin_agent creates a working agent."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -480,10 +480,10 @@ class TestChiltepinAgentDecorator:
 
         try:
             # It is ok to use public Academy exchange for tests
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     BasicTestAgent,
                     agent_workflow_config=config,
@@ -500,17 +500,17 @@ class TestChiltepinAgentDecorator:
     async def test_action_decorator_with_python_task(self, tmp_path):
         """Test @agent_action decorator with @python_task."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     ComputeAgent,
                     agent_workflow_config=config,
@@ -527,17 +527,17 @@ class TestChiltepinAgentDecorator:
     async def test_action_decorator_with_async_method(self, tmp_path):
         """Test @agent_action decorator with async methods."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     AsyncAgent, agent_workflow_config=config, executor="test-executor"
                 )
@@ -553,17 +553,17 @@ class TestChiltepinAgentDecorator:
     async def test_agent_actions_with_positional_arguments(self, tmp_path):
         """Test that agent actions support positional arguments."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     PositionalArgsAgent,
                     agent_workflow_config=config,
@@ -607,17 +607,17 @@ class TestChiltepinAgentDecorator:
     async def test_agent_actions_with_bash_task(self, tmp_path):
         """Test that agent actions work with @bash_task decorator."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     BashTaskAgent,
                     agent_workflow_config=config,
@@ -644,17 +644,17 @@ class TestChiltepinAgentDecorator:
     async def test_agent_actions_with_join_task(self, tmp_path):
         """Test that agent actions work with @join_task decorator."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     JoinTaskAgent,
                     agent_workflow_config=config,
@@ -679,17 +679,17 @@ class TestChiltepinAgentDecorator:
     async def test_loop_decorator(self, tmp_path):
         """Test @agent_loop decorator for background tasks."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     LoopAgent, agent_workflow_config=config, executor="test-executor"
                 )
@@ -717,7 +717,7 @@ class TestChiltepinAgentDecorator:
     async def test_runtime_config_override(self, tmp_path):
         """Test runtime override of decorator defaults."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         # Create two different configs
         config1 = get_test_config("executor-1")
@@ -728,11 +728,11 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["executor-1", "executor-2"]
             )
 
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 # Launch with runtime override
                 agent = await manager.launch(
                     ConfigAgent,
@@ -750,17 +750,17 @@ class TestChiltepinAgentDecorator:
     async def test_mixed_sync_async_actions(self, tmp_path):
         """Test agent with both sync and async actions."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     MixedAgent,
                     agent_workflow_config=config,
@@ -783,17 +783,17 @@ class TestChiltepinAgentDecorator:
     async def test_private_methods_not_exposed(self, tmp_path):
         """Test that private methods are not exposed as actions."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     PrivateMethodAgent,
                     agent_workflow_config=config,
@@ -814,17 +814,17 @@ class TestChiltepinAgentDecorator:
     async def test_agent_with_no_actions(self, tmp_path):
         """Test that agent with no @agent_action methods still works."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 # Should launch successfully even with no actions
                 agent = await manager.launch(
                     EmptyAgent, agent_workflow_config=config, executor="test-executor"
@@ -835,28 +835,28 @@ class TestChiltepinAgentDecorator:
             workflow.cleanup()
 
 
-class TestChiltepinManager:
-    """Test the ChiltepinManager class."""
+class TestManager:
+    """Test the Manager class."""
 
     @pytest.mark.asyncio
     async def test_manager_launch_with_config_param(self, tmp_path):
-        """Test that ChiltepinManager passes config parameter correctly."""
+        """Test that Manager passes config parameter correctly."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
-                # Verify manager is ChiltepinManager
-                from chiltepin.agents import ChiltepinManager
+            async with await agent_runtime.manager() as manager:
+                # Verify manager is Manager
+                from chiltepin import Manager
 
-                assert isinstance(manager, ChiltepinManager)
+                assert isinstance(manager, Manager)
 
                 # Launch agent with config - agent will use this config for its internal workflow
                 agent = await manager.launch(
@@ -875,9 +875,9 @@ class TestChiltepinManager:
 
     @pytest.mark.asyncio
     async def test_manager_launch_with_include_param(self, tmp_path):
-        """Test that ChiltepinManager passes include parameter correctly."""
+        """Test that Manager passes include parameter correctly."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         # Create config with two executors
         config = {
@@ -898,10 +898,10 @@ class TestChiltepinManager:
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["executor-1", "executor-2"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 # Launch agent with agent_workflow_include=["executor-1"] only
                 agent = await manager.launch(
                     ComputeAgent,
@@ -926,21 +926,21 @@ class TestChiltepinManager:
 
     @pytest.mark.asyncio
     async def test_manager_launch_with_run_dir_param(self, tmp_path):
-        """Test that ChiltepinManager passes run_dir parameter correctly."""
+        """Test that Manager passes run_dir parameter correctly."""
         import os
 
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 # Use a unique directory name to verify it gets created
                 custom_run_dir = str(tmp_path / "custom_agent_runinfo")
                 assert not os.path.exists(custom_run_dir), (
@@ -970,30 +970,30 @@ class TestChiltepinManager:
             workflow.cleanup()
 
 
-class TestAgentSystem:
-    """Test the AgentSystem class."""
+class TestAgentRuntime:
+    """Test the AgentRuntime class."""
 
     async def test_manager_passes_custom_exchange_address(self):
         """manager() forwards a custom exchange_address to HttpExchangeFactory."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
-        agent_system = AgentSystem(
+        agent_runtime = AgentRuntime(
             workflow=MagicMock(),
             executor_names=["test-executor"],
             exchange_address="https://custom.example.com",
         )
         # Pre-populate executors so manager() skips _create_executors(), which
         # would otherwise require a started workflow.
-        agent_system._executors = {}
+        agent_runtime._executors = {}
 
-        with patch("chiltepin.agents.HttpExchangeFactory") as mock_factory:
+        with patch("chiltepin.agent_runtime.HttpExchangeFactory") as mock_factory:
             with patch(
-                "chiltepin.agents.ChiltepinManager.from_exchange_factory",
+                "chiltepin.agent_runtime.Manager.from_exchange_factory",
                 new_callable=AsyncMock,
             ):
-                await agent_system.manager()
+                await agent_runtime.manager()
 
         # A custom address must be forwarded as url=
         mock_factory.assert_called_once_with(
@@ -1005,34 +1005,34 @@ class TestAgentSystem:
         """manager() lets academy pick its default URL when address is None."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
-        agent_system = AgentSystem(
+        agent_runtime = AgentRuntime(
             workflow=MagicMock(),
             executor_names=["test-executor"],
         )
-        agent_system._executors = {}
+        agent_runtime._executors = {}
 
-        with patch("chiltepin.agents.HttpExchangeFactory") as mock_factory:
+        with patch("chiltepin.agent_runtime.HttpExchangeFactory") as mock_factory:
             with patch(
-                "chiltepin.agents.ChiltepinManager.from_exchange_factory",
+                "chiltepin.agent_runtime.Manager.from_exchange_factory",
                 new_callable=AsyncMock,
             ):
-                await agent_system.manager()
+                await agent_runtime.manager()
 
         # No url= is passed, so academy uses its own DEFAULT_EXCHANGE_URL
         mock_factory.assert_called_once_with(auth_method="globus")
 
-    def test_agent_system_requires_started_workflow(self):
-        """Test that AgentSystem raises error if workflow not started."""
+    def test_agent_runtime_requires_started_workflow(self):
+        """Test that AgentRuntime raises error if workflow not started."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config)
 
-        # Create AgentSystem (should work)
-        agent_system = AgentSystem(
+        # Create AgentRuntime (should work)
+        agent_runtime = AgentRuntime(
             workflow=workflow,
             executor_names=["test-executor"],
             exchange_address="https://test.example.com",
@@ -1040,12 +1040,12 @@ class TestAgentSystem:
 
         # But trying to create executors should fail
         with pytest.raises(RuntimeError, match="Workflow must be started"):
-            agent_system._create_executors()
+            agent_runtime._create_executors()
 
-    def test_agent_system_creates_executors(self, tmp_path):
-        """Test that AgentSystem creates ParslPoolExecutors correctly."""
+    def test_agent_runtime_creates_executors(self, tmp_path):
+        """Test that AgentRuntime creates ParslPoolExecutors correctly."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = {
             "test-executor-1": {
@@ -1066,28 +1066,28 @@ class TestAgentSystem:
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow,
                 executor_names=["test-executor-1", "test-executor-2"],
                 exchange_address="https://test.example.com",
             )
 
             # Executors should not be created yet
-            assert agent_system.executors is None
+            assert agent_runtime.executors is None
 
             # Create executors explicitly
-            agent_system._create_executors()
+            agent_runtime._create_executors()
 
             # Now executors should exist
-            assert agent_system.executors is not None
-            assert len(agent_system.executors) == 2
-            assert "test-executor-1" in agent_system.executors
-            assert "test-executor-2" in agent_system.executors
+            assert agent_runtime.executors is not None
+            assert len(agent_runtime.executors) == 2
+            assert "test-executor-1" in agent_runtime.executors
+            assert "test-executor-2" in agent_runtime.executors
 
             # Verify they're ParslPoolExecutors
             from parsl.concurrent import ParslPoolExecutor
 
-            for executor in agent_system.executors.values():
+            for executor in agent_runtime.executors.values():
                 assert isinstance(executor, ParslPoolExecutor)
 
         finally:
@@ -1101,17 +1101,17 @@ class TestIntegration:
     async def test_full_workflow_with_chiltepin_agent(self, tmp_path):
         """Complete integration test with @chiltepin_agent decorator."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     FullAgent,
                     agent_workflow_config=config,
@@ -1151,7 +1151,7 @@ class TestIntegration:
         explicit run_dir specification. Each agent gets a unique UUID-based run_dir.
         """
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         # Need 2 workers to run 2 agents concurrently
         config = {
@@ -1166,10 +1166,10 @@ class TestIntegration:
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 # Launch agents without agent_workflow_run_dir - each gets auto-generated unique path
                 agent1 = await manager.launch(
                     Agent1, agent_workflow_config=config, executor="test-executor"
@@ -1191,17 +1191,17 @@ class TestIntegration:
     async def test_agent_with_complex_state(self, tmp_path):
         """Test agent with complex state objects."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     StatefulAgent,
                     agent_workflow_config=config,
@@ -1228,17 +1228,17 @@ class TestEdgeCases:
     async def test_sync_action_without_task_decorator(self, tmp_path):
         """Test sync agent_action that returns a plain value (not a Future)."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     PlainSyncAgent,
                     agent_workflow_config=config,
@@ -1252,19 +1252,19 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_manager_launch_with_kwargs(self, tmp_path):
-        """Test ChiltepinManager.launch with additional kwargs."""
+        """Test Manager.launch with additional kwargs."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     KwargsAgent,
                     agent_workflow_config=config,
@@ -1284,17 +1284,17 @@ class TestEdgeCases:
     async def test_agent_with_method_returning_future(self, tmp_path):
         """Test agent with sync method that returns a Future (AppFuture from task)."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     FutureReturnAgent,
                     agent_workflow_config=config,
@@ -1312,17 +1312,17 @@ class TestEdgeCases:
     async def test_agent_without_explicit_markers(self, tmp_path):
         """Test agent class with methods that have no @agent_action or @agent_loop decorators."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     NoMarkersAgent,
                     agent_workflow_config=config,
@@ -1339,17 +1339,17 @@ class TestEdgeCases:
     async def test_pure_async_actions(self, tmp_path):
         """Test agent with async actions (no @python_task)."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     AsyncActionAgent,
                     agent_workflow_config=config,
@@ -1370,17 +1370,17 @@ class TestEdgeCases:
     async def test_agent_with_mixed_attributes(self, tmp_path):
         """Test agent with callable/non-callable attributes."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 # This agent has non-callable attributes and overridden object methods
                 agent = await manager.launch(
                     MixedAttributesAgent,
@@ -1397,17 +1397,17 @@ class TestEdgeCases:
     async def test_agent_lifecycle_methods(self, tmp_path):
         """Test that agent_on_startup/shutdown are called."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     LifecycleTestAgent,
                     agent_workflow_config=config,
@@ -1424,17 +1424,17 @@ class TestEdgeCases:
     async def test_verify_loop_method_execution(self, tmp_path):
         """Explicitly verify agent_loop methods execute."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 # Launch agent with agent_loop method
                 agent = await manager.launch(
                     LoopAgent, agent_workflow_config=config, executor="test-executor"
@@ -1456,17 +1456,17 @@ class TestEdgeCases:
     async def test_decorator_order_equivalence(self, tmp_path):
         """Test that @agent_action/@python_task order does not affect behavior."""
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     ReverseOrderAgent,
                     agent_workflow_config=config,
@@ -1494,7 +1494,7 @@ class TestEdgeCases:
         agent receives handles to other agents and orchestrates them.
         """
         from chiltepin import Workflow
-        from chiltepin.agents import AgentSystem
+        from chiltepin import AgentRuntime
 
         # Need 3 workers to run 3 agents concurrently
         config = {
@@ -1509,10 +1509,10 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_system = AgentSystem(
+            agent_runtime = AgentRuntime(
                 workflow=workflow, executor_names=["test-executor"]
             )
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 # Launch the lowerer and reverser agents first
                 lowerer = await manager.launch(
                     LowererAgent,
@@ -1556,22 +1556,22 @@ class DummyAcademyAgent(Agent):
         self.value = value
 
 
-def test_chiltepin_manager_rejects_native_academy_agent(tmp_path):
-    """Test that ChiltepinManager rejects non-chiltepin agents with a clear error."""
+def test_manager_rejects_native_academy_agent(tmp_path):
+    """Test that Manager rejects non-chiltepin agents with a clear error."""
     import pytest
 
     from chiltepin import Workflow
-    from chiltepin.agents import AgentSystem
+    from chiltepin import AgentRuntime
 
     config = {"test-executor": {"provider": "localhost"}}
     workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
     workflow.start()
 
     try:
-        agent_system = AgentSystem(workflow=workflow, executor_names=["test-executor"])
+        agent_runtime = AgentRuntime(workflow=workflow, executor_names=["test-executor"])
 
         async def try_launch():
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 with pytest.raises(
                     TypeError,
                     match="only supports agents decorated with @chiltepin_agent",
@@ -2123,11 +2123,11 @@ def test_launching_undecorated_subclass_of_decorated_agent_raises_error(tmp_path
     """Test that launching a subclass of a decorated agent without decorating it fails.
 
     If a user creates an undecorated subclass of a decorated agent and tries to launch it,
-    ChiltepinManager should detect this and provide a helpful error message. This prevents
+    Manager should detect this and provide a helpful error message. This prevents
     confusing runtime failures where the subclass's methods aren't discovered.
     """
     from chiltepin import Workflow
-    from chiltepin.agents import AgentSystem
+    from chiltepin import AgentRuntime
 
     # Create a decorated parent agent
     @chiltepin_agent()
@@ -2154,11 +2154,11 @@ def test_launching_undecorated_subclass_of_decorated_agent_raises_error(tmp_path
     workflow.start()
 
     try:
-        agent_system = AgentSystem(workflow=workflow, executor_names=["local"])
+        agent_runtime = AgentRuntime(workflow=workflow, executor_names=["local"])
 
         # Attempting to launch the undecorated subclass should fail
         async def try_launch():
-            async with await agent_system.manager() as manager:
+            async with await agent_runtime.manager() as manager:
                 with pytest.raises(TypeError) as exc_info:
                     await manager.launch(
                         ChildAgent, agent_workflow_config=config, executor="local"
