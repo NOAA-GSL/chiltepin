@@ -313,7 +313,7 @@ def chiltepin_agent(
         # Launch agent using decorator defaults (agent_workflow_include=["ursa-compute"])
         async with await agent_runtime.manager() as manager:
             model = await manager.launch(
-                MyModel, 
+                MyModel,
                 agent_workflow_config=agent_config,
                 args=(25,),
                 executor="manager-executor"

@@ -471,8 +471,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_basic_agent_creation(self, tmp_path):
         """Test that @chiltepin_agent creates a working agent."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -499,8 +498,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_action_decorator_with_python_task(self, tmp_path):
         """Test @agent_action decorator with @python_task."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -526,8 +524,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_action_decorator_with_async_method(self, tmp_path):
         """Test @agent_action decorator with async methods."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -552,8 +549,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_agent_actions_with_positional_arguments(self, tmp_path):
         """Test that agent actions support positional arguments."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -606,8 +602,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_agent_actions_with_bash_task(self, tmp_path):
         """Test that agent actions work with @bash_task decorator."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -643,8 +638,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_agent_actions_with_join_task(self, tmp_path):
         """Test that agent actions work with @join_task decorator."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -678,8 +672,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_loop_decorator(self, tmp_path):
         """Test @agent_loop decorator for background tasks."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -716,8 +709,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_runtime_config_override(self, tmp_path):
         """Test runtime override of decorator defaults."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         # Create two different configs
         config1 = get_test_config("executor-1")
@@ -749,8 +741,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_mixed_sync_async_actions(self, tmp_path):
         """Test agent with both sync and async actions."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -782,8 +773,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_private_methods_not_exposed(self, tmp_path):
         """Test that private methods are not exposed as actions."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -813,8 +803,7 @@ class TestChiltepinAgentDecorator:
     @pytest.mark.asyncio
     async def test_agent_with_no_actions(self, tmp_path):
         """Test that agent with no @agent_action methods still works."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -841,8 +830,7 @@ class TestManager:
     @pytest.mark.asyncio
     async def test_manager_launch_with_config_param(self, tmp_path):
         """Test that Manager passes config parameter correctly."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -876,8 +864,7 @@ class TestManager:
     @pytest.mark.asyncio
     async def test_manager_launch_with_include_param(self, tmp_path):
         """Test that Manager passes include parameter correctly."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         # Create config with two executors
         config = {
@@ -929,8 +916,7 @@ class TestManager:
         """Test that Manager passes run_dir parameter correctly."""
         import os
 
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1025,8 +1011,7 @@ class TestAgentRuntime:
 
     def test_agent_runtime_requires_started_workflow(self):
         """Test that AgentRuntime raises error if workflow not started."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config)
@@ -1044,8 +1029,7 @@ class TestAgentRuntime:
 
     def test_agent_runtime_creates_executors(self, tmp_path):
         """Test that AgentRuntime creates ParslPoolExecutors correctly."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = {
             "test-executor-1": {
@@ -1100,8 +1084,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_full_workflow_with_chiltepin_agent(self, tmp_path):
         """Complete integration test with @chiltepin_agent decorator."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1150,8 +1133,7 @@ class TestIntegration:
         prevent Parsl directory collisions when multiple agents are launched without
         explicit run_dir specification. Each agent gets a unique UUID-based run_dir.
         """
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         # Need 2 workers to run 2 agents concurrently
         config = {
@@ -1190,8 +1172,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_agent_with_complex_state(self, tmp_path):
         """Test agent with complex state objects."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1227,8 +1208,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_sync_action_without_task_decorator(self, tmp_path):
         """Test sync agent_action that returns a plain value (not a Future)."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1253,8 +1233,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_manager_launch_with_kwargs(self, tmp_path):
         """Test Manager.launch with additional kwargs."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1283,8 +1262,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_agent_with_method_returning_future(self, tmp_path):
         """Test agent with sync method that returns a Future (AppFuture from task)."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1311,8 +1289,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_agent_without_explicit_markers(self, tmp_path):
         """Test agent class with methods that have no @agent_action or @agent_loop decorators."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1338,8 +1315,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_pure_async_actions(self, tmp_path):
         """Test agent with async actions (no @python_task)."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1369,8 +1345,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_agent_with_mixed_attributes(self, tmp_path):
         """Test agent with callable/non-callable attributes."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1396,8 +1371,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_agent_lifecycle_methods(self, tmp_path):
         """Test that agent_on_startup/shutdown are called."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1423,8 +1397,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_verify_loop_method_execution(self, tmp_path):
         """Explicitly verify agent_loop methods execute."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1455,8 +1428,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_decorator_order_equivalence(self, tmp_path):
         """Test that @agent_action/@python_task order does not affect behavior."""
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
@@ -1493,8 +1465,7 @@ class TestEdgeCases:
         This demonstrates the pattern from agent_example1.py where a coordinator
         agent receives handles to other agents and orchestrates them.
         """
-        from chiltepin import Workflow
-        from chiltepin import AgentRuntime
+        from chiltepin import AgentRuntime, Workflow
 
         # Need 3 workers to run 3 agents concurrently
         config = {
@@ -1560,15 +1531,16 @@ def test_manager_rejects_native_academy_agent(tmp_path):
     """Test that Manager rejects non-chiltepin agents with a clear error."""
     import pytest
 
-    from chiltepin import Workflow
-    from chiltepin import AgentRuntime
+    from chiltepin import AgentRuntime, Workflow
 
     config = {"test-executor": {"provider": "localhost"}}
     workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
     workflow.start()
 
     try:
-        agent_runtime = AgentRuntime(workflow=workflow, executor_names=["test-executor"])
+        agent_runtime = AgentRuntime(
+            workflow=workflow, executor_names=["test-executor"]
+        )
 
         async def try_launch():
             async with await agent_runtime.manager() as manager:
@@ -2126,8 +2098,7 @@ def test_launching_undecorated_subclass_of_decorated_agent_raises_error(tmp_path
     Manager should detect this and provide a helpful error message. This prevents
     confusing runtime failures where the subclass's methods aren't discovered.
     """
-    from chiltepin import Workflow
-    from chiltepin import AgentRuntime
+    from chiltepin import AgentRuntime, Workflow
 
     # Create a decorated parent agent
     @chiltepin_agent()
