@@ -642,14 +642,14 @@ Manager
 ----------------
 
 ``Manager`` is a custom ``Manager`` subclass that intercepts ``launch()``
-to support Chiltepin-specific parameters (``config``, ``include``, ``run_dir``).
+to support Chiltepin-specific parameters (``agent_workflow_config``, ``agent_workflow_include``, ``agent_workflow_run_dir``).
 It's created automatically by ``AgentRuntime.manager()``.
 
 You can also create it directly:
 
 .. code-block:: python
 
-   from chiltepin.agents import Manager
+   from chiltepin import Manager
    from academy.exchange.cloud.client import HttpExchangeFactory
    
    async with await Manager.from_exchange_factory(
