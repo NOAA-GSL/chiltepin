@@ -257,7 +257,7 @@ def chiltepin_agent(
                 MyModel,
                 agent_workflow_config=agent_config,         # ← Workflow config used by the agent's workflow context
                 args=(25.0,),                               # ← Behavior args only (domain logic)
-                agent_workflow_include=["runtime-executor"], # ← Override decorator default
+                agent_workflow_include=["compute-executor"], # ← Override decorator default
                 executor="manager-executor"                 # ← Where to run the agent
             )
             result = await model.get_temperature()
@@ -333,7 +333,7 @@ def chiltepin_agent(
                 agent_workflow_config=agent_config,
                 args=(25,),
                 agent_workflow_include=["runtime-executor"],  # ← Override decorator's agent_workflow_include
-                executor="manager-executor"
+                executor="compute-executor"
             )
 
             result = await model.run_model()
