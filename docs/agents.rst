@@ -400,7 +400,7 @@ Use ``AgentRuntime`` to create a manager and launch agents:
        workflow = Workflow(manager_config, include=["manager-executor"])
        workflow.start()
 
-       # Create agent system
+       # Create agent runtime
        agent_runtime = AgentRuntime(
            workflow=workflow,
            executor_names=["manager-executor"],
@@ -1161,7 +1161,7 @@ Here's a complete example using the recommended behavior/agent wrapper pattern:
        workflow = Workflow(manager_config, include=["manager-executor"])
        workflow.start()
        
-       # Create agent system
+       # Create agent runtime
        agent_runtime = AgentRuntime(
            workflow=workflow,
            executor_names=["manager-executor"],

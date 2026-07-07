@@ -238,6 +238,10 @@ def chiltepin_agent(
             def __init__(self, temperature):  # ← No parsl config! Pure domain logic
                 self.temperature = temperature
 
+        # Define configurations
+        manager_config = {"manager-executor": {"provider": "localhost"}}
+        agent_config = {"compute-executor": {"provider": "slurm", "partition": "compute"}}
+
         # Create workflow and agent runtime
         workflow = Workflow(manager_config, include=["manager-executor"])
         workflow.start()
@@ -300,6 +304,10 @@ def chiltepin_agent(
             def _private_helper(self):
                 # Not decorated with @agent_action, won't be exposed
                 pass
+
+        # Define configurations
+        manager_config = {"manager-executor": {"provider": "localhost"}}
+        agent_config = {"compute-executor": {"provider": "slurm", "partition": "compute"}}
 
         # Create workflow and agent runtime
         workflow = Workflow(manager_config, include=["manager-executor"])
