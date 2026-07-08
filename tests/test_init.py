@@ -130,8 +130,8 @@ class TestSubmoduleAccess:
     @pytest.mark.parametrize(
         "attr, expected_module",
         [
-            ("AgentSystem", "chiltepin.agents"),
-            ("ChiltepinManager", "chiltepin.agents"),
+            ("AgentRuntime", "chiltepin.agent_runtime"),
+            ("Manager", "chiltepin.manager"),
             ("chiltepin_agent", "chiltepin.agents"),
             ("agent_action", "chiltepin.agents"),
             ("agent_loop", "chiltepin.agents"),

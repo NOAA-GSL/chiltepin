@@ -17,6 +17,21 @@ be launched on remote resources and interacted with asynchronously through an ag
    `Academy documentation <https://docs.academy-agents.org/latest/get-started/>`_.
 
 .. note::
+   **Module Organization:**
+   
+   Chiltepin's agent functionality is split across three focused modules:
+   
+   - **chiltepin.agents**: Agent decorators (``@chiltepin_agent``, ``@agent_action``, ``@agent_loop``)
+   - **chiltepin.manager**: Manager class for launching agents with workflow configuration
+   - **chiltepin.agent_runtime**: AgentRuntime class for simplified agent runtime setup
+   
+   You can import these from the main package:
+   
+   .. code-block:: python
+   
+      from chiltepin import Manager, AgentRuntime, chiltepin_agent, agent_action, agent_loop
+
+.. note::
    **Decorator Order:**
    The order of ``@agent_action`` and the chiltepin task decorators (``@python_task``, ``@bash_task``, ``@join_task``)
    does not affect behavior—both orders are supported and tested. For consistency and readability, we recommend
@@ -24,8 +39,8 @@ be launched on remote resources and interacted with asynchronously through an ag
    innermost (closest to the function), but either order will work.
 
 .. important::
-   ChiltepinManager and AgentSystem only support agents decorated with ``@chiltepin_agent``. Native
-   Academy agents (not decorated) are not supported and will raise an error if launched with ChiltepinManager.
+   Manager and AgentRuntime only support agents decorated with ``@chiltepin_agent``. Native
+   Academy agents (not decorated) are not supported and will raise an error if launched with Manager.
    Use the base Academy Manager for native agents.
 
 .. warning::
@@ -61,8 +76,8 @@ Chiltepin provides five main components for agent-based workflows:
 - **@chiltepin_agent**: Decorator to wrap a regular Python class as an agent
 - **@agent_action**: Decorator to mark methods that should be exposed as agent actions (works with sync or async)
 - **@agent_loop**: Decorator to mark async methods that should run as background loops (must be async)
-- **AgentSystem**: Helper class to simplify Academy Manager setup with Parsl executors
-- **ChiltepinManager**: Custom Manager that supports workflow configuration parameters
+- **AgentRuntime**: Helper class to simplify Academy Manager setup with Parsl executors
+- **Manager**: Custom Manager that supports workflow configuration parameters
 
 When to Use Agents
 ------------------
@@ -357,11 +372,11 @@ Key Features
 Launching Agents
 ^^^^^^^^^^^^^^^^
 
-Use ``AgentSystem`` to create a manager and launch agents:
+Use ``AgentRuntime`` to create a manager and launch agents:
 
 .. code-block:: python
 
-   from chiltepin import Workflow, AgentSystem
+   from chiltepin import Workflow, AgentRuntime
    
    async def main():
        # Configuration for the manager's workflow (where agents run)
@@ -385,14 +400,14 @@ Use ``AgentSystem`` to create a manager and launch agents:
        workflow = Workflow(manager_config, include=["manager-executor"])
        workflow.start()
 
-       # Create agent system
-       agent_system = AgentSystem(
+       # Create agent runtime
+       agent_runtime = AgentRuntime(
            workflow=workflow,
            executor_names=["manager-executor"],
        )
 
        # Launch and interact with agent
-       async with await agent_system.manager() as manager:
+       async with await agent_runtime.manager() as manager:
            model = await manager.launch(
                WeatherModelAgent,           # Agent wrapper class
                agent_workflow_config=agent_config,   # Agent's workflow config
@@ -585,17 +600,17 @@ Use ``@agent_loop`` to create background tasks that run continuously:
 
 The ``shutdown`` event is provided automatically and signals when the agent is shutting down.
 
-AgentSystem Helper
+AgentRuntime Helper
 -------------------
 
-The ``AgentSystem`` class simplifies setup by wrapping the complexity of creating
+The ``AgentRuntime`` class simplifies setup by wrapping the complexity of creating
 an Academy Manager with ParslPoolExecutors:
 
 .. code-block:: python
 
-   from chiltepin import Workflow, AgentSystem
+   from chiltepin import Workflow, AgentRuntime
    
-   # Without AgentSystem (manual setup)
+   # Without AgentRuntime (manual setup)
    from academy.manager import Manager
    from academy.exchange.cloud.client import HttpExchangeFactory
    from parsl.concurrent import ParslPoolExecutor
@@ -613,31 +628,31 @@ an Academy Manager with ParslPoolExecutors:
        # Use manager
        pass
    
-   # With AgentSystem (simplified)
-   agent_system = AgentSystem(
+   # With AgentRuntime (simplified)
+   agent_runtime = AgentRuntime(
        workflow=workflow,
        executor_names=["my-exec"],
    )
    
-   async with await agent_system.manager() as manager:
-       # Use manager - ChiltepinManager with config/include/run_dir support
+   async with await agent_runtime.manager() as manager:
+       # Use manager - Manager with config/include/run_dir support
        pass
 
-ChiltepinManager
+Manager
 ----------------
 
-``ChiltepinManager`` is a custom ``Manager`` subclass that intercepts ``launch()``
-to support Chiltepin-specific parameters (``config``, ``include``, ``run_dir``).
-It's created automatically by ``AgentSystem.manager()``.
+``Manager`` is a custom ``Manager`` subclass that intercepts ``launch()``
+to support Chiltepin-specific parameters (``agent_workflow_config``, ``agent_workflow_include``, ``agent_workflow_run_dir``).
+It's created automatically by ``AgentRuntime.manager()``.
 
 You can also create it directly:
 
 .. code-block:: python
 
-   from chiltepin.agents import ChiltepinManager
+   from chiltepin import Manager
    from academy.exchange.cloud.client import HttpExchangeFactory
    
-   async with await ChiltepinManager.from_exchange_factory(
+   async with await Manager.from_exchange_factory(
        factory=HttpExchangeFactory(
            auth_method="globus"
        ),
@@ -729,7 +744,7 @@ Launch worker agents first, then pass their handles to the coordinator.
 
 .. code-block:: python
 
-   from chiltepin import Workflow, AgentSystem
+   from chiltepin import Workflow, AgentRuntime
 
    async def main():
        # Configuration: all 3 agents share one endpoint → need 3 workers
@@ -744,12 +759,12 @@ Launch worker agents first, then pass their handles to the coordinator.
        workflow = Workflow(config)
        workflow.start()
 
-       agent_system = AgentSystem(
+       agent_runtime = AgentRuntime(
            workflow=workflow,
            executor_names=["agent-executor"]
        )
 
-       async with await agent_system.manager() as manager:
+       async with await agent_runtime.manager() as manager:
            # All three agents deployed to the same executor
            lowerer = await manager.launch(
                LowererAgent,
@@ -833,7 +848,7 @@ Launch worker agents first, then pass their handles to the coordinator.
       }
 
       # Launch each agent to its dedicated executor (inside async with manager context)
-      async with await agent_system.manager() as manager:
+      async with await agent_runtime.manager() as manager:
           lowerer = await manager.launch(LowererAgent, executor="lowerer-executor", ...)
           reverser = await manager.launch(ReverserAgent, executor="reverser-executor", ...)
           coordinator = await manager.launch(CoordinatorAgent, executor="coordinator-executor", ...)
@@ -1065,7 +1080,7 @@ Here's a complete example using the recommended behavior/agent wrapper pattern:
 
    import asyncio
    import logging
-   from chiltepin import Workflow, AgentSystem
+   from chiltepin import Workflow, AgentRuntime
    from chiltepin.agents import chiltepin_agent, agent_action, agent_loop
    from chiltepin.tasks import python_task
    
@@ -1146,13 +1161,13 @@ Here's a complete example using the recommended behavior/agent wrapper pattern:
        workflow = Workflow(manager_config, include=["manager-executor"])
        workflow.start()
        
-       # Create agent system
-       agent_system = AgentSystem(
+       # Create agent runtime
+       agent_runtime = AgentRuntime(
            workflow=workflow,
            executor_names=["manager-executor"],
        )
        
-       async with await agent_system.manager() as manager:
+       async with await agent_runtime.manager() as manager:
            # Launch agent wrapper with runtime configuration
            model = await manager.launch(
                TemperatureModelAgent,  # Deploy the agent wrapper
