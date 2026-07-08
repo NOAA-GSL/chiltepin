@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Conda environment for MPAS multi-agent example
+#
+# This environment includes:
+# - Python 3.11
+# - uwtools: Configuration management (from ufs-community channel)
+#
+# Note: chiltepin is NOT installed here because the PyPI version (0.1.6) has
+# outdated dependency constraints. Install from local source instead:
+#   pip install -e ../../[test]
+#
+# Note: Build tools (compilers, make, cmake) and system utilities (git, wget, curl)
+# are NOT included. They should be provided by the system (HPC modules) or container.
+
+name: mpas-example
+
+channels:
+  - ufs-community
+  - conda-forge
+  # Note: defaults channel omitted to reduce conflicts
+
+dependencies:
+  # Python
+  - python=3.11
+
+  # uwtools from ufs-community channel
+  # Note: Official docs recommend: conda install -c ufs-community -c conda-forge --override-channels uwtools
+  # This environment.yml approach uses channel priority instead (ufs-community is first)
+  - uwtools

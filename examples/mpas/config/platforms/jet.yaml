@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Platform-specific configuration for NOAA RDHPCS Jet
+#
+# This file is automatically loaded when platform: jet is set in user_config.yaml
+
+# Workflow executor configurations for Jet
+workflow:
+  # Build executor
+  build-executor:
+    provider: "slurm"
+    partition: "sjet"  # Jet service partition for builds
+    nodes_per_block: 1
+    cores_per_node: 4
+    max_blocks: 2
+    walltime: "01:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.7.4"
+      - "module load hdf5/1.10.6"
+
+  # Compute executor
+  compute-executor:
+    provider: "slurm"
+    partition: "xjet"  # Jet compute partition
+    nodes_per_block: 2
+    cores_per_node: 24
+    max_blocks: 1
+    walltime: "02:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.7.4"
+      - "module load hdf5/1.10.6"
+      - "module load pnetcdf/1.12.1"
+
+# Agent workflow configuration for Jet
+agent_workflow:
+  build-executor:
+    provider: "slurm"
+    partition: "sjet"
+    nodes_per_block: 1
+    cores_per_node: 4
+    max_blocks: 2
+    walltime: "01:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.7.4"
+
+  compute-executor:
+    provider: "slurm"
+    partition: "xjet"
+    nodes_per_block: 2
+    cores_per_node: 24
+    max_blocks: 1
+    walltime: "02:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.7.4"
+      - "module load hdf5/1.10.6"
+
+# Jet-specific paths
+paths:
+  # Default experiment directory on Jet
+  experiment_dir: /lfs4/HFIP/${USER}/mpas_experiments/run_$(date +%Y%m%d_%H%M%S)
+
+# Notes for Jet users:
+# - Login nodes: jet-login-[1-8].boulder.rdhpcs.noaa.gov
+# - Lustre filesystems: /lfs4 and /mnt/lfs4
+# - Home directory quota: 50 GB
+# - LFS4 quota: varies by allocation
+# - Compute nodes (xjet): 24 cores per node (2x Intel Xeon E5-2695v4)
+# - Service nodes (sjet): 24 cores per node
