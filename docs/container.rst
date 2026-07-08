@@ -40,7 +40,7 @@ Once the container is built and running, you can access it with a bash shell:
 
 .. code-block:: console
 
-   $ docker exec -it frontend bash -l
+   $ docker exec -it chiltepin-frontend bash -l
 
 This will log you into the frontend node of the Slurm cluster.
 
