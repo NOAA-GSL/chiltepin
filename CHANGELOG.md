@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-07-08
+
+### Changed
+- **Agent Module Refactoring**: Reorganized agent system for better maintainability
+  - Split monolithic `agents.py` into three focused modules:
+    - `agents.py`: Core decorators and agent definition logic
+    - `agent_runtime.py`: Runtime management and execution (renamed from `AgentSystem`)
+    - `manager.py`: Workflow-aware manager (renamed from `ChiltepinManager`)
+  - Renamed `ChiltepinManager` → `Manager` for clearer API semantics
+  - Renamed `AgentSystem` → `AgentRuntime` to better reflect its purpose
+  - Updated documentation and examples to reflect new module structure
+- **Docker Container Naming**: Renamed Docker containers to avoid collisions with other development environments
+- **Dependency Updates**: Updated dependency versions to match current implementation requirements
+- **Endpoint Management**: Replaced fork-based endpoint start with new `--detach` option
+  - More robust endpoint lifecycle management
+  - Better process handling on Linux platforms
+  - Improved reliability for long-running endpoints
+
+### Fixed
+- **Globus Compute Compatibility**: Fixed API usage errors to support latest Globus Compute versions
+  - Updated minimum `globus-compute-sdk` and `globus-compute-endpoint` versions to support Globus SDK API changes
+  - Resolved authentication and endpoint registration issues with newer Globus APIs
+- **Dependency Compatibility**: Fixed issues introduced by newer package versions
+  - Resolved module path handling issues
+  - Fixed serialization problems with exceptions during data transfers
+  - Improved error handling for transfer failures
+- **Test Reliability**: Increased timeout for Globus Compute endpoint start in tests to reduce flakiness
+
+[0.1.7]: https://github.com/NOAA-GSL/chiltepin/releases/tag/v0.1.7
+
 ## [0.1.6] - 2026-04-07
 
 ### Changed
