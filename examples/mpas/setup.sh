@@ -29,6 +29,18 @@ command_exists() {
 if command_exists conda; then
     echo "✓ Conda found: $(which conda)"
     CONDA_EXE=$(which conda)
+elif [ -d "$HOME/miniforge3" ]; then
+    echo "✓ Miniforge found at $HOME/miniforge3 (not in PATH)"
+    CONDA_EXE="$HOME/miniforge3/bin/conda"
+    
+    # Make sure conda is initialized
+    if [ -f "$HOME/.bashrc" ]; then
+        if ! grep -q "conda initialize" "$HOME/.bashrc"; then
+            echo "  Initializing conda in .bashrc..."
+            "$CONDA_EXE" init bash
+            echo "  Note: You may need to restart your shell or run 'source ~/.bashrc'"
+        fi
+    fi
 else
     echo "✗ Conda not found. Installing Miniforge..."
     
@@ -57,13 +69,9 @@ else
     cd "$SCRIPT_DIR"
     rm -rf "$TEMP_DIR"
     
-    # Source bashrc to get conda in PATH
-    if [ -f "$HOME/.bashrc" ]; then
-        source "$HOME/.bashrc"
-    fi
-    
     CONDA_EXE="$HOME/miniforge3/bin/conda"
     echo "✓ Miniforge installed successfully (includes mamba for faster operations)"
+    echo "  Note: You may need to restart your shell or run 'source ~/.bashrc'"
 fi
 
 echo ""
@@ -80,20 +88,12 @@ if $CONDA_EXE env list | grep -q "^${ENV_NAME} "; then
         echo "  Keeping existing environment. Update it with:"
         echo "    conda activate ${ENV_NAME}"
         echo "    conda env update -f ${SCRIPT_DIR}/environment.yml"
-        echo "    pip install -e ${SCRIPT_DIR}/../..[test]"
         exit 0
     fi
 fi
 
 echo "Creating conda environment '${ENV_NAME}'..."
 $CONDA_EXE env create -f "${SCRIPT_DIR}/environment.yml" -n "$ENV_NAME"
-
-echo ""
-echo "Installing chiltepin from local source with upgraded dependencies..."
-# Install from local source (not PyPI) to get latest dependency constraints
-eval "$($CONDA_EXE shell.bash hook)"
-conda activate "$ENV_NAME"
-pip install -e "${SCRIPT_DIR}/../..[test]"
 
 echo ""
 echo "=========================================="
@@ -113,4 +113,8 @@ echo ""
 echo "To run tests:"
 echo "  conda activate ${ENV_NAME}"
 echo "  pytest tests/ -v"
+echo ""
+echo "Note: For chiltepin development, you can install from local source:"
+echo "  conda activate ${ENV_NAME}"
+echo "  pip install -e ${SCRIPT_DIR}/../..[test]"
 echo ""

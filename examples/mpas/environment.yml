@@ -5,10 +5,7 @@
 # This environment includes:
 # - Python 3.11
 # - uwtools: Configuration management (from ufs-community channel)
-#
-# Note: chiltepin is NOT installed here because the PyPI version (0.1.6) has
-# outdated dependency constraints. Install from local source instead:
-#   pip install -e ../../[test]
+# - chiltepin: Workflow management (from PyPI via pip)
 #
 # Note: Build tools (compilers, make, cmake) and system utilities (git, wget, curl)
 # are NOT included. They should be provided by the system (HPC modules) or container.
@@ -28,3 +25,8 @@ dependencies:
   # Note: Official docs recommend: conda install -c ufs-community -c conda-forge --override-channels uwtools
   # This environment.yml approach uses channel priority instead (ufs-community is first)
   - uwtools
+
+  # Pip packages (chiltepin is only available on PyPI)
+  - pip
+  - pip:
+    - chiltepin[test]
