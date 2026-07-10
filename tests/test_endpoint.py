@@ -861,6 +861,7 @@ class TestIsOnline:
 
     def test_endpoint_not_online_returns_false(self):
         """ENDPOINT_NOT_ONLINE should be treated as not-ready, not fatal."""
+
         class FakeComputeAPIError(ComputeAPIError):
             def __init__(self):
                 self.code = "ENDPOINT_NOT_ONLINE"

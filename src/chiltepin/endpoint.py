@@ -33,8 +33,8 @@ from globus_compute_sdk.sdk.auth.auth_client import ComputeAuthClient
 from globus_compute_sdk.sdk.auth.globus_app import (
     get_globus_app as get_globus_compute_app,
 )
-from globus_sdk.services.compute.errors import ComputeAPIError
 from globus_sdk import ClientApp, GlobusApp, TransferClient, UserApp
+from globus_sdk.services.compute.errors import ComputeAPIError
 
 endpoint_template = """# This is the default user-endpoint-process (UEP) template provided with
 # newly-configured endpoints.  Endpoints generate a UEP-specific configuration
