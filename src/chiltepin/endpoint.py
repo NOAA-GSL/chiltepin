@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 
-import psutil
 import yaml
 
 # Try to import globus-compute-endpoint (Linux-only on conda-forge)
@@ -34,6 +33,7 @@ from globus_compute_sdk.sdk.auth.auth_client import ComputeAuthClient
 from globus_compute_sdk.sdk.auth.globus_app import (
     get_globus_app as get_globus_compute_app,
 )
+from globus_sdk.services.compute.errors import ComputeAPIError
 from globus_sdk import ClientApp, GlobusApp, TransferClient, UserApp
 
 endpoint_template = """# This is the default user-endpoint-process (UEP) template provided with
@@ -558,6 +558,51 @@ def is_running(
     return endpoint.get("status", None) == "Running"
 
 
+def is_online(
+    name: str,
+    config_dir: Optional[str] = None,
+    compute_client: Optional[Client] = None,
+) -> bool:
+    """Return True if the endpoint is online to the Compute service.
+
+    Parameters
+    ----------
+
+    name: str
+        Name of the endpoint to check
+
+    config_dir: str | None
+        Path to endpoint configuration directory where endpoint information
+        is stored. If None (the default), then $HOME/.globus_compute is used
+
+    compute_client: Client | None
+        Optional pre-initialized Globus Compute client. If not provided, one
+        is created via login().
+
+    Returns
+    -------
+
+    bool
+    """
+    endpoints = show(config_dir)
+    endpoint_id = endpoints.get(name, {}).get("id", None)
+    if not endpoint_id:
+        return False
+
+    client = compute_client or login()["compute"]
+
+    try:
+        status = client.get_endpoint_status(endpoint_id).get("status", "")
+    except ComputeAPIError as e:
+        if getattr(e, "code", None) == "ENDPOINT_NOT_ONLINE":
+            return False
+        raise RuntimeError(
+            f"Failed while checking online status for endpoint '{name}'"
+        ) from e
+
+    return status == "online"
+
+
 def _link_token_store(config_dir: str) -> None:
     """Make Globus auth tokens reachable from a custom endpoint config dir.
 
@@ -685,6 +730,23 @@ def start(
 
         time.sleep(1)
 
+    # Wait for endpoint to be online from the Compute service perspective.
+    # This avoids races where the local process is running but has not yet
+    # signaled readiness to the service API used for task submission.
+    compute_client = login()["compute"]
+    while True:
+        if timeout is not None:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                raise TimeoutError(
+                    f"Timeout of {timeout}s exceeded while waiting for endpoint '{name}' to become online"
+                )
+
+        if is_online(name, config_dir, compute_client=compute_client):
+            break
+
+        time.sleep(1)
+
 
 def stop(
     name: str,
@@ -693,7 +755,7 @@ def stop(
 ):
     """Stop the specified Globus Compute Endpoint
 
-    This is a thin wrapper around the globus-compute-endpoint stop command
+    This is a thin wrapper around the Endpoint.stop_endpoint API
 
     Parameters
     ----------
@@ -722,42 +784,31 @@ def stop(
         else Path.home() / ".globus_compute" / name
     )
 
-    # Track elapsed time to enforce timeout across all stop attempts
+    # Track start time for timeout enforcement across stop + status polling.
     start_time = time.time()
 
-    # Issue the stop and poll until the endpoint has actually stopped.
-    #
-    # globus-compute-endpoint sends SIGTERM to the endpoint and waits a fixed 10s
-    # grace period for it to exit. When the endpoint is slow to shut down -- e.g.
-    # it still has an interchange and worker blocks to reap after running tasks --
-    # that grace period is exceeded, and different versions signal this in
-    # different ways: <=4.7 raises psutil.TimeoutExpired, while >=4.8 logs a
-    # warning and calls sys.exit(-1) instead. In both cases SIGTERM has already
-    # been sent, so we tolerate the signal and keep polling. Re-issuing
-    # stop_endpoint completes the cleanup once the processes have exited, and the
-    # overall timeout bounds how long we wait -- surfacing a clean TimeoutError
-    # rather than letting a stray SystemExit escape into the caller (which would
-    # otherwise abort, for example, a pytest fixture teardown).
+    # Get the endpoint config
+    try:
+        ep_config = get_config(config_path)
+    except Exception as e:
+        raise RuntimeError(f"Error loading endpoint config for '{name}'") from e
+
+    # Stop the endpoint
+    try:
+        Endpoint.stop_endpoint(config_path, ep_config, remote=False)
+    except Exception as e:
+        raise RuntimeError(f"Failed to stop endpoint '{name}'") from e
+
+    # Poll until endpoint leaves Running state.
     while True:
-        try:
-            Endpoint.stop_endpoint(config_path, get_config(config_path), remote=False)
-        except psutil.TimeoutExpired:
-            pass
-        except SystemExit as e:
-            # Only tolerate the non-zero "slow shutdown" exit; re-raise a clean
-            # exit so an intentional interpreter shutdown is never swallowed.
-            if e.code in (0, None):
-                raise
-
-        # The endpoint is stopped once it no longer reports as running
-        if not is_running(name, config_dir):
-            break
-
-        # Enforce the overall timeout
+        # Enforce overall timeout across command + status polling.
         if timeout is not None and time.time() - start_time > timeout:
             raise TimeoutError(
                 f"Timeout of {timeout}s exceeded while waiting for endpoint '{name}' to stop"
             )
+
+        if not is_running(name, config_dir):
+            break
 
         time.sleep(1)
 

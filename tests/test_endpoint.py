@@ -11,6 +11,7 @@ from uuid import UUID
 
 import pytest
 import yaml
+from globus_sdk.services.compute.errors import ComputeAPIError
 
 import chiltepin.endpoint as endpoint
 
@@ -741,6 +742,33 @@ class TestStart:
                         ):
                             endpoint.start("test_endpoint", timeout=0.1)
 
+    def test_online_polling_timeout(self):
+        """Test that start raises TimeoutError when endpoint never becomes online."""
+        with patch("chiltepin.endpoint.login_required", return_value=False):
+            with patch("chiltepin.endpoint._link_token_store"):
+                mock_process = MagicMock()
+                mock_process.communicate.return_value = ("", None)
+                mock_process.returncode = 0
+                with patch("subprocess.Popen", return_value=mock_process):
+                    with patch("chiltepin.endpoint.is_running", return_value=True):
+                        with patch(
+                            "chiltepin.endpoint.show",
+                            return_value={"test_endpoint": {"id": "ep-123"}},
+                        ):
+                            mock_client = MagicMock()
+                            mock_client.get_endpoint_status.return_value = {
+                                "status": "offline"
+                            }
+                            with patch(
+                                "chiltepin.endpoint.login",
+                                return_value={"compute": mock_client},
+                            ):
+                                with pytest.raises(
+                                    TimeoutError,
+                                    match="Timeout of.*waiting for endpoint 'test_endpoint' to become online",
+                                ):
+                                    endpoint.start("test_endpoint", timeout=0.1)
+
 
 class TestLinkTokenStore:
     """Tests for the _link_token_store() helper function."""
@@ -807,6 +835,75 @@ class TestLinkTokenStore:
     platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
     reason="Endpoint management requires Linux and globus-compute-endpoint",
 )
+class TestIsOnline:
+    """Tests for is_online() function."""
+
+    def test_missing_endpoint_id_returns_false(self):
+        """No endpoint id means endpoint is not online yet."""
+        with patch("chiltepin.endpoint.show", return_value={"test_endpoint": {}}):
+            assert endpoint.is_online("test_endpoint") is False
+
+    def test_online_status_returns_true(self):
+        """Online status from Compute service should return True."""
+        mock_client = MagicMock()
+        mock_client.get_endpoint_status.return_value = {"status": "online"}
+        with patch(
+            "chiltepin.endpoint.show",
+            return_value={"test_endpoint": {"id": "ep-123"}},
+        ):
+            assert (
+                endpoint.is_online(
+                    "test_endpoint",
+                    compute_client=mock_client,
+                )
+                is True
+            )
+
+    def test_endpoint_not_online_returns_false(self):
+        """ENDPOINT_NOT_ONLINE should be treated as not-ready, not fatal."""
+        class FakeComputeAPIError(ComputeAPIError):
+            def __init__(self):
+                self.code = "ENDPOINT_NOT_ONLINE"
+
+        mock_client = MagicMock()
+        mock_client.get_endpoint_status.side_effect = FakeComputeAPIError()
+        with patch(
+            "chiltepin.endpoint.show",
+            return_value={"test_endpoint": {"id": "ep-123"}},
+        ):
+            assert (
+                endpoint.is_online(
+                    "test_endpoint",
+                    compute_client=mock_client,
+                )
+                is False
+            )
+
+    def test_unexpected_compute_api_error_raises_runtime_error(self):
+        """Non-ENDPOINT_NOT_ONLINE API errors should raise RuntimeError."""
+
+        class FakeComputeAPIError(ComputeAPIError):
+            def __init__(self):
+                self.code = "SOME_OTHER_ERROR"
+
+        mock_client = MagicMock()
+        mock_client.get_endpoint_status.side_effect = FakeComputeAPIError()
+
+        with patch(
+            "chiltepin.endpoint.show",
+            return_value={"test_endpoint": {"id": "ep-123"}},
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="Failed while checking online status for endpoint 'test_endpoint'",
+            ):
+                endpoint.is_online("test_endpoint", compute_client=mock_client)
+
+
+@pytest.mark.skipif(
+    platform.system() != "Linux" or not endpoint.ENDPOINT_MANAGEMENT_AVAILABLE,
+    reason="Endpoint management requires Linux and globus-compute-endpoint",
+)
 class TestStop:
     """Tests for stop() function."""
 
@@ -816,73 +913,74 @@ class TestStop:
             with pytest.raises(RuntimeError, match="Chiltepin login is required"):
                 endpoint.stop("test_endpoint")
 
-    def test_timeout(self):
-        """Test that stop raises TimeoutError when endpoint doesn't stop in time."""
+    def test_with_config_error(self):
+        """Test that stop raises RuntimeError when get_config fails."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
-            with patch("chiltepin.endpoint.get_config"):
+            with patch(
+                "chiltepin.endpoint.get_config", side_effect=Exception("Config error")
+            ):
+                with pytest.raises(
+                    RuntimeError,
+                    match="Error loading endpoint config for 'test_endpoint'",
+                ):
+                    endpoint.stop("test_endpoint", timeout=5)
+
+    def test_stop_endpoint_failure(self):
+        """Test that stop raises RuntimeError when Endpoint.stop_endpoint fails."""
+        with patch("chiltepin.endpoint.login_required", return_value=False):
+            with patch("chiltepin.endpoint.get_config", return_value=MagicMock()):
+                with patch(
+                    "chiltepin.endpoint.Endpoint.stop_endpoint",
+                    side_effect=Exception("stop failed"),
+                ):
+                    with pytest.raises(
+                        RuntimeError, match="Failed to stop endpoint 'test_endpoint'"
+                    ):
+                        endpoint.stop("test_endpoint", timeout=5)
+
+    def test_system_exit_propagates(self):
+        """Test that SystemExit from stop_endpoint is not swallowed."""
+        with patch("chiltepin.endpoint.login_required", return_value=False):
+            with patch("chiltepin.endpoint.get_config", return_value=MagicMock()):
+                with patch(
+                    "chiltepin.endpoint.Endpoint.stop_endpoint",
+                    side_effect=SystemExit(-1),
+                ):
+                    with pytest.raises(SystemExit):
+                        endpoint.stop("test_endpoint", timeout=5)
+
+    def test_polling_timeout(self):
+        """Test that stop raises TimeoutError when polling for stopped state times out."""
+        with patch("chiltepin.endpoint.login_required", return_value=False):
+            with patch("chiltepin.endpoint.get_config", return_value=MagicMock()):
                 with patch("chiltepin.endpoint.Endpoint.stop_endpoint"):
+                    # Mock is_running to always return True (never stops)
                     with patch("chiltepin.endpoint.is_running", return_value=True):
-                        with pytest.raises(TimeoutError, match="Timeout of"):
+                        with pytest.raises(
+                            TimeoutError,
+                            match="Timeout of.*exceeded while waiting for endpoint",
+                        ):
                             endpoint.stop("test_endpoint", timeout=0.1)
 
-    def test_with_psutil_timeout(self):
-        """Test that stop tolerates psutil.TimeoutExpired and re-issues the stop.
-
-        globus-compute-endpoint <=4.7 raises psutil.TimeoutExpired when the
-        endpoint is slow to shut down. stop() should swallow it and keep trying
-        while the endpoint is still running, rather than propagating it.
-        """
+    def test_command_with_config_dir(self):
+        """Test that stop uses expected config path and endpoint config."""
         with patch("chiltepin.endpoint.login_required", return_value=False):
-            with patch("chiltepin.endpoint.get_config"):
-                with patch("chiltepin.endpoint.Endpoint.stop_endpoint") as mock_stop:
-                    import psutil
-
-                    # First call raises TimeoutExpired, second succeeds
-                    mock_stop.side_effect = [psutil.TimeoutExpired(1), None]
-                    # Still running right after the timeout, stopped after retry
-                    with patch(
-                        "chiltepin.endpoint.is_running",
-                        side_effect=[True, False],
-                    ):
-                        # Should not raise an exception
-                        endpoint.stop("test_endpoint", timeout=5)
-                        # Verify stop_endpoint was retried once the endpoint was
-                        # still running after the first (timed-out) attempt
-                        assert mock_stop.call_count == 2
-
-    def test_with_system_exit(self):
-        """Test that stop tolerates the SystemExit(-1) slow-shutdown signal.
-
-        globus-compute-endpoint >=4.8 no longer raises psutil.TimeoutExpired on a
-        slow shutdown; instead stop_endpoint logs a warning and calls
-        sys.exit(-1). stop() should treat that as a transient timeout and retry
-        while the endpoint is still running, rather than letting SystemExit
-        escape into the caller.
-        """
-        with patch("chiltepin.endpoint.login_required", return_value=False):
-            with patch("chiltepin.endpoint.get_config"):
-                with patch("chiltepin.endpoint.Endpoint.stop_endpoint") as mock_stop:
-                    # First call exits non-zero (slow shutdown), second succeeds
-                    mock_stop.side_effect = [SystemExit(-1), None]
-                    with patch(
-                        "chiltepin.endpoint.is_running",
-                        side_effect=[True, False],
-                    ):
-                        # Should not raise an exception
-                        endpoint.stop("test_endpoint", timeout=5)
-                        assert mock_stop.call_count == 2
-
-    def test_clean_system_exit_propagates(self):
-        """Test that a clean SystemExit from stop_endpoint is not swallowed."""
-        with patch("chiltepin.endpoint.login_required", return_value=False):
-            with patch("chiltepin.endpoint.get_config"):
-                with patch("chiltepin.endpoint.Endpoint.stop_endpoint") as mock_stop:
-                    # A zero/None exit code is an intentional shutdown, not the
-                    # slow-shutdown signal, so it must propagate.
-                    mock_stop.side_effect = SystemExit(0)
+            config_dir = "/tmp/my-config"
+            mock_ep_config = MagicMock()
+            with patch(
+                "chiltepin.endpoint.get_config", return_value=mock_ep_config
+            ) as mock_get_config:
+                with patch(
+                    "chiltepin.endpoint.Endpoint.stop_endpoint"
+                ) as mock_stop_endpoint:
                     with patch("chiltepin.endpoint.is_running", return_value=False):
-                        with pytest.raises(SystemExit):
-                            endpoint.stop("test_endpoint", timeout=5)
+                        endpoint.stop("test_endpoint", config_dir=config_dir, timeout=5)
+
+            expected_path = pathlib.Path(config_dir) / "test_endpoint"
+            mock_get_config.assert_called_once_with(expected_path)
+            mock_stop_endpoint.assert_called_once_with(
+                expected_path, mock_ep_config, remote=False
+            )
 
 
 @pytest.mark.skipif(
