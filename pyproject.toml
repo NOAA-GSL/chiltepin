@@ -9,8 +9,8 @@ name = "chiltepin"
 version = "0.1.7"
 dependencies = [
   "academy-py>=0.5.0,<1.0.0",
-  "globus-compute-sdk>=4.13.0,<5",
-  "globus-compute-endpoint>=4.13.0,<5; platform_system == 'Linux'",
+  "globus-compute-sdk>=4.14.0,<5",
+  "globus-compute-endpoint>=4.14.0,<5; platform_system == 'Linux'",
   "globus-sdk>=4.8.0",
   "parsl>=2026.4.20",
   "psutil<6.0",
