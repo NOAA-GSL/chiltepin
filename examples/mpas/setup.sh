@@ -1,120 +1,101 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 
-# Setup script for MPAS multi-agent example
-# This script:
-# 1. Checks for or installs Miniforge (conda-forge + mamba)
-# 2. Creates conda environment with uwtools
-# 3. Pip installs chiltepin from PyPI into the conda environment
+# Setup script for the MPAS multi-agent example.
+# Source this script so it can activate the conda environment in the
+# current shell.
 
-set -e  # Exit on error
+ERREXIT_ENABLED=0
+case $- in
+    *e*) ERREXIT_ENABLED=1 ;;
+esac
+
+set -e
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "This script must be sourced, not executed."
+    echo "Use: source ./setup.sh"
+    return 1 2>/dev/null || exit 1
+fi
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ENV_NAME="mpas-example"
-MINIFORGE_VERSION="latest"
 MINIFORGE_INSTALLER="Miniforge3-Linux-x86_64.sh"
 MINIFORGE_URL="https://github.com/conda-forge/miniforge/releases/latest/download/${MINIFORGE_INSTALLER}"
+MINIFORGE_DIR="${SCRIPT_DIR}/miniforge3"
 
 echo "=========================================="
 echo "MPAS Multi-Agent Example Setup"
 echo "=========================================="
 echo ""
 
-# Function to check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Check for conda
-if command_exists conda; then
-    echo "✓ Conda found: $(which conda)"
-    CONDA_EXE=$(which conda)
-elif [ -d "$HOME/miniforge3" ]; then
-    echo "✓ Miniforge found at $HOME/miniforge3 (not in PATH)"
-    CONDA_EXE="$HOME/miniforge3/bin/conda"
-    
-    # Make sure conda is initialized
-    if [ -f "$HOME/.bashrc" ]; then
-        if ! grep -q "conda initialize" "$HOME/.bashrc"; then
-            echo "  Initializing conda in .bashrc..."
-            "$CONDA_EXE" init bash
-            echo "  Note: You may need to restart your shell or run 'source ~/.bashrc'"
-        fi
-    fi
+if [ -x "${MINIFORGE_DIR}/bin/conda" ]; then
+    echo "✓ Miniforge found at ${MINIFORGE_DIR}"
+    CONDA_EXE="${MINIFORGE_DIR}/bin/conda"
+elif command_exists conda; then
+    CONDA_EXE="$(command -v conda)"
+    echo "✓ Conda found: ${CONDA_EXE}"
 else
-    echo "✗ Conda not found. Installing Miniforge..."
-    
-    # Create temporary directory for download
-    TEMP_DIR=$(mktemp -d)
-    cd "$TEMP_DIR"
-    
-    # Download Miniforge installer
+    echo "✗ Conda not found. Installing Miniforge into ${MINIFORGE_DIR}..."
+
+    TEMP_DIR="$(mktemp -d)"
+    cd "${TEMP_DIR}"
+
     echo "  Downloading Miniforge (conda-forge + mamba)..."
-    wget -q "$MINIFORGE_URL" || curl -s -L -O "$MINIFORGE_URL"
-    
-    if [ ! -f "$MINIFORGE_INSTALLER" ]; then
+    wget -q "${MINIFORGE_URL}" || curl -s -L -O "${MINIFORGE_URL}"
+
+    if [ ! -f "${MINIFORGE_INSTALLER}" ]; then
         echo "ERROR: Failed to download Miniforge installer"
         exit 1
     fi
-    
-    # Install Miniforge
-    echo "  Installing Miniforge to $HOME/miniforge3..."
-    bash "$MINIFORGE_INSTALLER" -b -p "$HOME/miniforge3"
-    
-    # Initialize conda
-    echo "  Initializing conda..."
-    "$HOME/miniforge3/bin/conda" init bash
-    
-    # Clean up
-    cd "$SCRIPT_DIR"
-    rm -rf "$TEMP_DIR"
-    
-    CONDA_EXE="$HOME/miniforge3/bin/conda"
-    echo "✓ Miniforge installed successfully (includes mamba for faster operations)"
-    echo "  Note: You may need to restart your shell or run 'source ~/.bashrc'"
+
+    echo "  Installing Miniforge..."
+    bash "${MINIFORGE_INSTALLER}" -b -p "${MINIFORGE_DIR}"
+
+    cd "${SCRIPT_DIR}"
+    rm -rf "${TEMP_DIR}"
+
+    CONDA_EXE="${MINIFORGE_DIR}/bin/conda"
+    echo "✓ Miniforge installed successfully"
 fi
 
 echo ""
 
-# Check if environment already exists
-if $CONDA_EXE env list | grep -q "^${ENV_NAME} "; then
-    echo "⚠ Conda environment '${ENV_NAME}' already exists"
-    read -p "  Remove and recreate? [y/N] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "  Removing existing environment..."
-        $CONDA_EXE env remove -n "$ENV_NAME" -y
-    else
-        echo "  Keeping existing environment. Update it with:"
-        echo "    conda activate ${ENV_NAME}"
-        echo "    conda env update -f ${SCRIPT_DIR}/environment.yml"
-        exit 0
-    fi
+if "${CONDA_EXE}" env list | grep -q "^${ENV_NAME} "; then
+    echo "Updating conda environment '${ENV_NAME}'..."
+    "${CONDA_EXE}" env update -n "${ENV_NAME}" -f "${SCRIPT_DIR}/environment.yml" --prune
+else
+    echo "Creating conda environment '${ENV_NAME}'..."
+    "${CONDA_EXE}" env create -f "${SCRIPT_DIR}/environment.yml" -n "${ENV_NAME}"
 fi
 
-echo "Creating conda environment '${ENV_NAME}'..."
-$CONDA_EXE env create -f "${SCRIPT_DIR}/environment.yml" -n "$ENV_NAME"
+eval "$(${CONDA_EXE} shell.bash hook)"
+conda activate "${ENV_NAME}"
 
 echo ""
 echo "=========================================="
 echo "Setup Complete!"
 echo "=========================================="
 echo ""
-echo "To activate the environment:"
-echo "  conda activate ${ENV_NAME}"
+echo "The '${ENV_NAME}' environment is now active in this shell."
 echo ""
 echo "To run the MPAS example:"
 echo "  cd ${SCRIPT_DIR}"
-echo "  conda activate ${ENV_NAME}"
 echo "  cp config/user_config.yaml.template config/user_config.yaml"
 echo "  # Edit config/user_config.yaml with your settings"
 echo "  python run_mpas_forecast.py config/user_config.yaml"
 echo ""
 echo "To run tests:"
-echo "  conda activate ${ENV_NAME}"
 echo "  pytest tests/ -v"
 echo ""
-echo "Note: For chiltepin development, you can install from local source:"
-echo "  conda activate ${ENV_NAME}"
+echo "To install chiltepin from local source:"
 echo "  pip install -e ${SCRIPT_DIR}/../..[test]"
 echo ""
+
+if [ "${ERREXIT_ENABLED}" -eq 0 ]; then
+    set +e
+fi

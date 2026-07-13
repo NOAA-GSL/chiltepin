@@ -11,6 +11,7 @@ dist/
 build/
 
 # Conda environment
+miniforge3/
 mpas-example/
 *.tar.bz2
 
