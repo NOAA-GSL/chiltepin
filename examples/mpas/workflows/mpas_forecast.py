@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from chiltepin import AgentRuntime, Workflow
 from chiltepin.manager import Manager
 
-from ..agents import MPASAgent, MPASLimitedAreaAgent, MetisAgent, WPSAgent
+from agents import MPASAgent, MPASLimitedAreaAgent, MetisAgent, WPSAgent
 
 
 class MPASForecastWorkflow:
@@ -93,10 +93,7 @@ class MPASForecastWorkflow:
         self.workflow.start()
 
         # Create agent runtime
-        self.agent_runtime = AgentRuntime(
-            workflow=self.workflow,
-            executor_names=manager_executors,
-        )
+        self.agent_runtime = AgentRuntime(workflow=self.workflow)
 
         # Get manager context
         self.manager = await self.agent_runtime.manager()
