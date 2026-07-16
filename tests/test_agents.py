@@ -479,9 +479,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             # It is ok to use public Academy exchange for tests
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     BasicTestAgent,
@@ -505,9 +503,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     ComputeAgent,
@@ -531,9 +527,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     AsyncAgent, agent_workflow_config=config, executor="test-executor"
@@ -556,9 +550,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     PositionalArgsAgent,
@@ -609,9 +601,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     BashTaskAgent,
@@ -645,9 +635,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     JoinTaskAgent,
@@ -679,9 +667,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     LoopAgent, agent_workflow_config=config, executor="test-executor"
@@ -720,9 +706,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
 
             async with await agent_runtime.manager() as manager:
                 # Launch with runtime override
@@ -748,9 +732,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     MixedAgent,
@@ -780,9 +762,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     PrivateMethodAgent,
@@ -810,9 +790,7 @@ class TestChiltepinAgentDecorator:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 # Should launch successfully even with no actions
                 agent = await manager.launch(
@@ -837,9 +815,7 @@ class TestManager:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 # Verify manager is Manager
                 from chiltepin import Manager
@@ -885,9 +861,7 @@ class TestManager:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 # Launch agent with agent_workflow_include=["executor-1"] only
                 agent = await manager.launch(
@@ -923,9 +897,7 @@ class TestManager:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 # Use a unique directory name to verify it gets created
                 custom_run_dir = str(tmp_path / "custom_agent_runinfo")
@@ -967,7 +939,9 @@ class TestAgentRuntime:
             "executor-1": {"provider": "localhost"},
             "executor-2": {"provider": "localhost"},
         }
-        workflow = Workflow(config, include=["executor-2"], run_dir=str(tmp_path / "runinfo"))
+        workflow = Workflow(
+            config, include=["executor-2"], run_dir=str(tmp_path / "runinfo")
+        )
         workflow.start()
 
         try:
@@ -1158,9 +1132,7 @@ class TestIntegration:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     FullAgent,
@@ -1215,9 +1187,7 @@ class TestIntegration:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 # Launch agents without agent_workflow_run_dir - each gets auto-generated unique path
                 agent1 = await manager.launch(
@@ -1246,9 +1216,7 @@ class TestIntegration:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     StatefulAgent,
@@ -1282,9 +1250,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     PlainSyncAgent,
@@ -1307,9 +1273,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     KwargsAgent,
@@ -1336,9 +1300,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     FutureReturnAgent,
@@ -1363,9 +1325,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     NoMarkersAgent,
@@ -1389,9 +1349,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     AsyncActionAgent,
@@ -1419,9 +1377,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 # This agent has non-callable attributes and overridden object methods
                 agent = await manager.launch(
@@ -1445,9 +1401,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     LifecycleTestAgent,
@@ -1471,9 +1425,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 # Launch agent with agent_loop method
                 agent = await manager.launch(
@@ -1502,9 +1454,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
                     ReverseOrderAgent,
@@ -1547,9 +1497,7 @@ class TestEdgeCases:
         workflow.start()
 
         try:
-            agent_runtime = AgentRuntime(
-                workflow=workflow
-            )
+            agent_runtime = AgentRuntime(workflow=workflow)
             async with await agent_runtime.manager() as manager:
                 # Launch the lowerer and reverser agents first
                 lowerer = await manager.launch(
@@ -1605,9 +1553,7 @@ def test_manager_rejects_native_academy_agent(tmp_path):
     workflow.start()
 
     try:
-        agent_runtime = AgentRuntime(
-            workflow=workflow
-        )
+        agent_runtime = AgentRuntime(workflow=workflow)
 
         async def try_launch():
             async with await agent_runtime.manager() as manager:
