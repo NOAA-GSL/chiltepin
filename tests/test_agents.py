@@ -992,7 +992,7 @@ class TestAgentRuntime:
         finally:
             workflow.cleanup()
 
-    def test_create_executors_raises_when_no_executors_in_dfk(self, tmp_path):
+    def test_create_executors_raises_when_no_executors_in_dfk(self):
         """_create_executors should raise when DFK config has no executors."""
         from unittest.mock import MagicMock
 
@@ -1013,8 +1013,11 @@ class TestAgentRuntime:
 
         from chiltepin import AgentRuntime
 
+        workflow = MagicMock()
+        workflow.dfk = object()  # Explicitly model a started workflow
+
         agent_runtime = AgentRuntime(
-            workflow=MagicMock(),
+            workflow=workflow,
             exchange_address="https://custom.example.com",
         )
         # Pre-populate executors so manager() skips _create_executors(), which
@@ -1040,8 +1043,11 @@ class TestAgentRuntime:
 
         from chiltepin import AgentRuntime
 
+        workflow = MagicMock()
+        workflow.dfk = object()  # Explicitly model a started workflow
+
         agent_runtime = AgentRuntime(
-            workflow=MagicMock(),
+            workflow=workflow,
         )
         agent_runtime._executors = {}
 
