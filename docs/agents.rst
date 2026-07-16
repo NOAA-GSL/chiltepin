@@ -401,10 +401,7 @@ Use ``AgentRuntime`` to create a manager and launch agents:
        workflow.start()
 
        # Create agent runtime
-       agent_runtime = AgentRuntime(
-           workflow=workflow,
-           executor_names=["manager-executor"],
-       )
+       agent_runtime = AgentRuntime(workflow=workflow)
 
        # Launch and interact with agent
        async with await agent_runtime.manager() as manager:
@@ -629,10 +626,7 @@ an Academy Manager with ParslPoolExecutors:
        pass
    
    # With AgentRuntime (simplified)
-   agent_runtime = AgentRuntime(
-       workflow=workflow,
-       executor_names=["my-exec"],
-   )
+   agent_runtime = AgentRuntime(workflow=workflow)
    
    async with await agent_runtime.manager() as manager:
        # Use manager - Manager with config/include/run_dir support
@@ -759,10 +753,7 @@ Launch worker agents first, then pass their handles to the coordinator.
        workflow = Workflow(config)
        workflow.start()
 
-       agent_runtime = AgentRuntime(
-           workflow=workflow,
-           executor_names=["agent-executor"]
-       )
+       agent_runtime = AgentRuntime(workflow=workflow)
 
        async with await agent_runtime.manager() as manager:
            # All three agents deployed to the same executor
@@ -1162,10 +1153,7 @@ Here's a complete example using the recommended behavior/agent wrapper pattern:
        workflow.start()
        
        # Create agent runtime
-       agent_runtime = AgentRuntime(
-           workflow=workflow,
-           executor_names=["manager-executor"],
-       )
+       agent_runtime = AgentRuntime(workflow=workflow)
        
        async with await agent_runtime.manager() as manager:
            # Launch agent wrapper with runtime configuration
