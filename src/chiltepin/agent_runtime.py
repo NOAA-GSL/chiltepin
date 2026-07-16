@@ -8,7 +8,7 @@ of setting up Academy Manager with ParslPoolExecutors and HttpExchangeFactory.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from academy.exchange.cloud.client import HttpExchangeFactory
 from parsl.concurrent import ParslPoolExecutor
@@ -30,8 +30,6 @@ class AgentRuntime:
     ----------
     workflow : Workflow
         The Workflow instance to use for executing tasks and agents
-    executor_names : List[str]
-        List of executor names for running agents on Parsl executors
     exchange_address : Optional[str]
         The exchange server address. If None (default), academy's built-in
         default exchange URL is used, which matches the API version of the
@@ -50,10 +48,7 @@ class AgentRuntime:
         workflow = Workflow(config)
         workflow.start()
 
-        agent_runtime = AgentRuntime(
-            workflow=workflow,
-            executor_names=["my-executor"],
-        )
+        agent_runtime = AgentRuntime(workflow=workflow)
 
         async with await agent_runtime.manager() as manager:
             # Launch and interact with agents
@@ -66,7 +61,6 @@ class AgentRuntime:
     def __init__(
         self,
         workflow: Workflow,
-        executor_names: List[str],
         exchange_address: Optional[str] = None,
         auth_method: str = "globus",
     ) -> None:
@@ -76,8 +70,6 @@ class AgentRuntime:
         ----------
         workflow : Workflow
             The Workflow instance with started dfk
-        executor_names : List[str]
-            List of executor names for running agents on Parsl executors
         exchange_address : Optional[str]
             The exchange server address. If None (default), academy's built-in
             default exchange URL is used, which matches the API version of the
@@ -85,23 +77,28 @@ class AgentRuntime:
         auth_method : str
             Authentication method for accessing the exchange (default: "globus")
         """
+        if workflow.dfk is None:
+            raise RuntimeError(
+                "Workflow must be started before creating AgentRuntime. "
+                "Call workflow.start() first."
+            )
+
         self.workflow = workflow
-        self.executor_names = executor_names
         self.exchange_address = exchange_address
         self.auth_method = auth_method
         self._executors: Optional[Dict[str, ParslPoolExecutor]] = None
 
     def _create_executors(self) -> None:
-        """Create ParslPoolExecutors for all configured executor names."""
-        if self.workflow.dfk is None:
-            raise RuntimeError(
-                "Workflow must be started before creating AgentRuntime executors. "
-                "Call workflow.start() first."
-            )
+        """Create ParslPoolExecutors for all executors in the running workflow."""
+        names = [e.label for e in self.workflow.dfk.config.executors]
+        names = list(dict.fromkeys(names))
+
+        if not names:
+            raise ValueError("No executor names could be inferred from workflow.")
 
         self._executors = {
             name: ParslPoolExecutor(dfk=self.workflow.dfk, executors=[name])
-            for name in self.executor_names
+            for name in names
         }
 
     async def manager(self) -> Manager:
@@ -109,7 +106,7 @@ class AgentRuntime:
 
         This method returns a Manager configured with HttpExchangeFactory
         using Globus authentication. The Manager is created with ParslPoolExecutors
-        for all configured executors.
+        for all executors loaded in the running workflow's Parsl config.
 
         Returns
         -------

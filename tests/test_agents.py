@@ -480,7 +480,7 @@ class TestChiltepinAgentDecorator:
         try:
             # It is ok to use public Academy exchange for tests
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -506,7 +506,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -532,7 +532,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -557,7 +557,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -610,7 +610,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -646,7 +646,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -680,7 +680,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -721,7 +721,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["executor-1", "executor-2"]
+                workflow=workflow
             )
 
             async with await agent_runtime.manager() as manager:
@@ -749,7 +749,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -781,7 +781,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -811,7 +811,7 @@ class TestChiltepinAgentDecorator:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 # Should launch successfully even with no actions
@@ -838,7 +838,7 @@ class TestManager:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 # Verify manager is Manager
@@ -886,7 +886,7 @@ class TestManager:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["executor-1", "executor-2"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 # Launch agent with agent_workflow_include=["executor-1"] only
@@ -924,7 +924,7 @@ class TestManager:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 # Use a unique directory name to verify it gets created
@@ -959,6 +959,80 @@ class TestManager:
 class TestAgentRuntime:
     """Test the AgentRuntime class."""
 
+    def test_agent_runtime_uses_dfk_loaded_include(self, tmp_path):
+        """AgentRuntime creates executors from the started workflow's loaded executors."""
+        from chiltepin import AgentRuntime, Workflow
+
+        config = {
+            "executor-1": {"provider": "localhost"},
+            "executor-2": {"provider": "localhost"},
+        }
+        workflow = Workflow(config, include=["executor-2"], run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_runtime = AgentRuntime(workflow=workflow)
+            agent_runtime._create_executors()
+
+            assert set(agent_runtime.executors.keys()) == {"executor-2", "local"}
+        finally:
+            workflow.cleanup()
+
+    def test_agent_runtime_defaults_to_local_executor(self, tmp_path):
+        """AgentRuntime uses the local executor for default started workflows."""
+        from chiltepin import AgentRuntime, Workflow
+
+        workflow = Workflow(run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_runtime = AgentRuntime(workflow=workflow)
+            agent_runtime._create_executors()
+
+            assert set(agent_runtime.executors.keys()) == {"local"}
+        finally:
+            workflow.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_manager_creates_executors_lazily(self, tmp_path):
+        """manager() should call _create_executors() when executors are unset."""
+        from unittest.mock import AsyncMock, patch
+
+        from chiltepin import AgentRuntime, Workflow
+
+        config = get_test_config()
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_runtime = AgentRuntime(workflow=workflow)
+            assert agent_runtime.executors is None
+
+            with patch(
+                "chiltepin.agent_runtime.Manager.from_exchange_factory",
+                new_callable=AsyncMock,
+            ):
+                await agent_runtime.manager()
+
+            assert agent_runtime.executors is not None
+        finally:
+            workflow.cleanup()
+
+    def test_create_executors_raises_when_no_executors_in_dfk(self, tmp_path):
+        """_create_executors should raise when DFK config has no executors."""
+        from unittest.mock import MagicMock
+
+        from chiltepin import AgentRuntime
+
+        workflow = MagicMock()
+        workflow.dfk = MagicMock()
+        workflow.dfk.config.executors = []
+
+        agent_runtime = AgentRuntime(workflow=workflow)
+
+        with pytest.raises(ValueError, match="No executor names could be inferred"):
+            agent_runtime._create_executors()
+
     async def test_manager_passes_custom_exchange_address(self):
         """manager() forwards a custom exchange_address to HttpExchangeFactory."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -967,7 +1041,6 @@ class TestAgentRuntime:
 
         agent_runtime = AgentRuntime(
             workflow=MagicMock(),
-            executor_names=["test-executor"],
             exchange_address="https://custom.example.com",
         )
         # Pre-populate executors so manager() skips _create_executors(), which
@@ -995,7 +1068,6 @@ class TestAgentRuntime:
 
         agent_runtime = AgentRuntime(
             workflow=MagicMock(),
-            executor_names=["test-executor"],
         )
         agent_runtime._executors = {}
 
@@ -1010,22 +1082,17 @@ class TestAgentRuntime:
         mock_factory.assert_called_once_with(auth_method="globus")
 
     def test_agent_runtime_requires_started_workflow(self):
-        """Test that AgentRuntime raises error if workflow not started."""
+        """Test that AgentRuntime raises error at initialization if workflow not started."""
         from chiltepin import AgentRuntime, Workflow
 
         config = get_test_config()
         workflow = Workflow(config)
 
-        # Create AgentRuntime (should work)
-        agent_runtime = AgentRuntime(
-            workflow=workflow,
-            executor_names=["test-executor"],
-            exchange_address="https://test.example.com",
-        )
-
-        # But trying to create executors should fail
         with pytest.raises(RuntimeError, match="Workflow must be started"):
-            agent_runtime._create_executors()
+            AgentRuntime(
+                workflow=workflow,
+                exchange_address="https://test.example.com",
+            )
 
     def test_agent_runtime_creates_executors(self, tmp_path):
         """Test that AgentRuntime creates ParslPoolExecutors correctly."""
@@ -1052,7 +1119,6 @@ class TestAgentRuntime:
         try:
             agent_runtime = AgentRuntime(
                 workflow=workflow,
-                executor_names=["test-executor-1", "test-executor-2"],
                 exchange_address="https://test.example.com",
             )
 
@@ -1064,7 +1130,8 @@ class TestAgentRuntime:
 
             # Now executors should exist
             assert agent_runtime.executors is not None
-            assert len(agent_runtime.executors) == 2
+            assert len(agent_runtime.executors) == 3
+            assert "local" in agent_runtime.executors
             assert "test-executor-1" in agent_runtime.executors
             assert "test-executor-2" in agent_runtime.executors
 
@@ -1092,7 +1159,7 @@ class TestIntegration:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1149,7 +1216,7 @@ class TestIntegration:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 # Launch agents without agent_workflow_run_dir - each gets auto-generated unique path
@@ -1180,7 +1247,7 @@ class TestIntegration:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1216,7 +1283,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1241,7 +1308,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1270,7 +1337,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1297,7 +1364,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1323,7 +1390,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1353,7 +1420,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 # This agent has non-callable attributes and overridden object methods
@@ -1379,7 +1446,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1405,7 +1472,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 # Launch agent with agent_loop method
@@ -1436,7 +1503,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 agent = await manager.launch(
@@ -1481,7 +1548,7 @@ class TestEdgeCases:
 
         try:
             agent_runtime = AgentRuntime(
-                workflow=workflow, executor_names=["test-executor"]
+                workflow=workflow
             )
             async with await agent_runtime.manager() as manager:
                 # Launch the lowerer and reverser agents first
@@ -1539,7 +1606,7 @@ def test_manager_rejects_native_academy_agent(tmp_path):
 
     try:
         agent_runtime = AgentRuntime(
-            workflow=workflow, executor_names=["test-executor"]
+            workflow=workflow
         )
 
         async def try_launch():
@@ -2125,7 +2192,7 @@ def test_launching_undecorated_subclass_of_decorated_agent_raises_error(tmp_path
     workflow.start()
 
     try:
-        agent_runtime = AgentRuntime(workflow=workflow, executor_names=["local"])
+        agent_runtime = AgentRuntime(workflow=workflow)
 
         # Attempting to launch the undecorated subclass should fail
         async def try_launch():

@@ -246,10 +246,7 @@ def chiltepin_agent(
         workflow = Workflow(manager_config, include=["manager-executor"])
         workflow.start()
 
-        agent_runtime = AgentRuntime(
-            workflow=workflow,
-            executor_names=["manager-executor"]
-        )
+        agent_runtime = AgentRuntime(workflow=workflow)
 
         # Launch with runtime configuration
         async with await agent_runtime.manager() as manager:
@@ -313,10 +310,7 @@ def chiltepin_agent(
         workflow = Workflow(manager_config, include=["manager-executor"])
         workflow.start()
 
-        agent_runtime = AgentRuntime(
-            workflow=workflow,
-            executor_names=["manager-executor"]
-        )
+        agent_runtime = AgentRuntime(workflow=workflow)
 
         # Launch agent using decorator defaults (agent_workflow_include=["ursa-compute"])
         async with await agent_runtime.manager() as manager:
