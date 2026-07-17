@@ -26,7 +26,7 @@ dependencies:
   # This environment.yml approach uses channel priority instead (ufs-community is first)
   - uwtools
 
-  # Pip packages (chiltepin is only available on PyPI)
+  # Pip packages (chiltepin is only available on PyPI/GitHub)
   - pip
   - pip:
-    - chiltepin[test]
+    - chiltepin[test] @ git+https://github.com/NOAA-GSL/chiltepin.git@main

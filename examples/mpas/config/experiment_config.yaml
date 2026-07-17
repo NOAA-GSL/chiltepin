@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# User configuration template for MPAS multi-agent forecast workflow
+#
+# Copy this file to user_config.yaml and customize for your experiment:
+#   cp config/user_config.yaml.template config/user_config.yaml
+#
+# This file overrides default_config.yaml and platform-specific configs.
+# Only specify settings you want to change from the defaults.
+
+# =============================================================================
+# REQUIRED: Paths
+# =============================================================================
+
+# Experiment directory (customize for your system)
+paths:
+  experiment_dir: /home/admin/experiments/mpas_forecast
+
+workflow_config:
+  agent-executor:
+    provider: localhost
+    max_blocks: 1
+    max_workers_per_node: 4
+    environment:
+      - conda init
+      - conda activate mpas-example
+      - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+
+agents:
+  metis:
+    experiment_dir: /home/admin/experiments/mpas_forecast
+    executor: agent-executor
+    workflow_config:
+      service:
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:10:00"
+        environment:
+          - conda init
+          - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+      compute:
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:10:00"
+        environment:
+          - conda init
+          - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+  
+
+# =============================================================================
+# OPTIONAL: Model Configuration
+# =============================================================================
+
+# Uncomment and customize as needed
+model:
+  # Mesh resolution (120km, 60km, 30km, 15km)
+  resolution: 120km
+#
+#   # Forecast settings
+#   forecast_length_hours: 24
+#   output_interval_hours: 1
+#
+#   # MPI configuration
+#   init_ranks: 24
+#   forecast_ranks: 48
+
+# =============================================================================
+# OPTIONAL: Executor Configuration Overrides
+# =============================================================================
+
+# Uncomment to override platform defaults
+# workflow:
+#   compute-executor:
+#     nodes_per_block: 4
+#     walltime: "03:00:00"
+
+# =============================================================================
+# OPTIONAL: Data Sources
+# =============================================================================
+
+# Uncomment to use different data sources
+# data_sources:
+#   ics_source: GFS
+#   lbcs_source: GFS
+
+# =============================================================================
+# OPTIONAL: Software Versions
+# =============================================================================
+
+# Uncomment to use specific versions
+# versions:
+#   metis: 5.1.0
+#   wps: 4.5
+#   mpas: v8.2.0

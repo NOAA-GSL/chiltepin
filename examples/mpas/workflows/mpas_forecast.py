@@ -66,82 +66,74 @@ class MPASForecastWorkflow:
         self.manager: Optional[Manager] = None
         self.agents: Dict[str, Any] = {}
 
-    async def setup_agents(self) -> None:
-        """Launch all component agents.
-
-        Creates Workflow and AgentRuntime, then launches:
-        - MetisAgent
-        - WPSAgent
-        - MPASLimitedAreaAgent
-        - MPASAgent
+    async def setup_workflow(self) -> None:
+        """Create Workflow and AgentRuntime.
 
         Raises
         ------
         RuntimeError
             If workflow setup fails
         """
-        # Extract workflow configuration
-        workflow_config = self.config.get("workflow", {})
-        manager_executors = self.config.get("manager_executors", ["manager-executor"])
+        workflow_config = self.config.get("workflow_config", {})
 
-        # Create workflow with executor configurations
         self.workflow = Workflow(
             workflow_config,
-            include=manager_executors,
             run_dir=self.config.get("run_dir"),
         )
         self.workflow.start()
 
-        # Create agent runtime
         self.agent_runtime = AgentRuntime(workflow=self.workflow)
 
-        # Get manager context
-        self.manager = await self.agent_runtime.manager()
+    async def setup_agents(self) -> None:
+        """Launch all component agents.
 
+        Must be called inside an active manager context.
+        Launches:
+        - MetisAgent
+        - WPSAgent
+        - MPASLimitedAreaAgent
+        - MPASAgent
+        """
         # Extract agent configurations
-        agent_config = self.config.get("agent_workflow", {})
-        build_executors = self.config.get("build_executors", ["build-executor"])
-        compute_executors = self.config.get("compute_executors", ["compute-executor"])
-
-        # Extract paths
-        paths = self.config.get("paths", {})
-        install_dir = Path(paths.get("install_dir", "./installs"))
+        agent_configs = self.config.get("agents", {})
 
         # Launch MetisAgent
+        metis_agent_config = agent_configs.get("metis", {})
+        metis_agent_path = Path(metis_agent_config.get("experiment_dir", "./experiments"))
         metis = await self.manager.launch(
             MetisAgent,
-            args=(str(install_dir / "metis"),),
-            agent_workflow_config=agent_config,
-            agent_workflow_include=build_executors,
+            args=(str(metis_agent_path),),
+            agent_workflow_config=metis_agent_config["workflow_config"],
+            executor=metis_agent_config.get("executor"),
         )
         self.agents["metis"] = metis
 
-        # Launch WPSAgent
-        wps = await self.manager.launch(
-            WPSAgent,
-            args=(str(install_dir / "wps"),),
-            agent_workflow_config=agent_config,
-            agent_workflow_include=build_executors,
-        )
-        self.agents["wps"] = wps
+        # # Launch WPSAgent
+        # wps = await self.manager.launch(
+        #     WPSAgent,
+        #     args=(str(install_dir / "wps"),),
+        #     agent_workflow_config=agent_config,
+        #     agent_workflow_include=build_executors,
+        # )
+        # self.agents["wps"] = wps
 
-        # Launch MPASLimitedAreaAgent
-        mpas_la = await self.manager.launch(
-            MPASLimitedAreaAgent,
-            args=(str(install_dir / "mpas_limited_area"),),
-            agent_workflow_config=agent_config,
-            agent_workflow_include=build_executors,
-        )
-        self.agents["mpas_limited_area"] = mpas_la
+        # # Launch MPASLimitedAreaAgent
+        # mpas_la = await self.manager.launch(
+        #     MPASLimitedAreaAgent,
+        #     args=(str(install_dir / "mpas_limited_area"),),
+        #     agent_workflow_config=agent_config,
+        #     agent_workflow_include=build_executors,
+        # )
+        # self.agents["mpas_limited_area"] = mpas_la
 
-        # Launch MPASAgent
-        mpas = await self.manager.launch(
-            MPASAgent,
-            args=(str(install_dir / "mpas"),),
-            agent_workflow_config=agent_config,
-            agent_workflow_include=compute_executors,
-        )
-        self.agents["mpas"] = mpas
+        # # Launch MPASAgent
+        # mpas = await self.manager.launch(
+        #     MPASAgent,
+        #     args=(str(install_dir / "mpas"),),
+        #     agent_workflow_config=agent_config,
+        #     agent_workflow_include=compute_executors,
+        # )
+        # self.agents["mpas"] = mpas
 
     async def build_phase(self) -> None:
         """Build all software components in parallel.
@@ -333,25 +325,38 @@ class MPASForecastWorkflow:
             If any workflow phase fails
         """
         try:
-            # Setup phase
-            await self.setup_agents()
+            # Setup workflow and agent runtime
+            await self.setup_workflow()
 
-            # Build phase - parallel compilation
-            await self.build_phase()
+            async with await self.agent_runtime.manager() as manager:
+                self.manager = manager
 
-            # Mesh phase - sequential mesh generation and partitioning
-            mesh = await self.mesh_phase()
+                # Launch agents
+                await self.setup_agents()
 
-            # Preprocess phase - parallel data preparation
-            preprocessed_data = await self.preprocess_phase()
+                # Drive at least one agent interaction so the manager stays
+                # alive long enough for the agent to fully initialize before
+                # the async with block exits.
+                download = await self.agents["metis"].download(executor=["service"])
+                await self.agents["metis"].build(executor=["compute"], inputs=[download])
 
-            # Initialization phase - parallel MPAS initialization
-            initialized = await self.initialization_phase(mesh, preprocessed_data)
+                # Build phase - parallel compilation
+                # await self.build_phase()
 
-            # Forecast phase - run model
-            forecast_output = await self.forecast_phase(mesh, initialized)
+                # # Mesh phase - sequential mesh generation and partitioning
+                # mesh = await self.mesh_phase()
 
-            return forecast_output
+                # # Preprocess phase - parallel data preparation
+                # preprocessed_data = await self.preprocess_phase()
+
+                # # Initialization phase - parallel MPAS initialization
+                # initialized = await self.initialization_phase(mesh, preprocessed_data)
+
+                # # Forecast phase - run model
+                # forecast_output = await self.forecast_phase(mesh, initialized)
+
+                # return forecast_output
+                return ""
 
         finally:
             # Always cleanup, even if errors occurred
@@ -372,12 +377,7 @@ class MPASForecastWorkflow:
                     await agent_handle.shutdown()
                 except Exception as e:
                     print(f"Warning: Error shutting down {agent_name}: {e}")
-
-            # Exit manager context
-            try:
-                await self.manager.__aexit__(None, None, None)
-            except Exception as e:
-                print(f"Warning: Error exiting manager context: {e}")
+            # Manager context is handled by the async with block in run()
 
         if self.workflow is not None:
             try:

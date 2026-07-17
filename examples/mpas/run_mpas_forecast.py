@@ -98,22 +98,22 @@ async def main():
     print("Initializing workflow...")
     workflow = MPASForecastWorkflow(config)
 
-    # # Run workflow
-    # print("Starting MPAS forecast workflow...\n")
-    # try:
-    #     forecast_output = await workflow.run()
-    #     print("\n" + "=" * 60)
-    #     print("Workflow completed successfully!")
-    #     print(f"Forecast output: {forecast_output}")
-    #     print("=" * 60)
-    # except Exception as e:
-    #     print("\n" + "=" * 60)
-    #     print("Workflow failed!")
-    #     print(f"Error: {e}")
-    #     print("=" * 60)
-    #     import traceback
-    #     traceback.print_exc()
-    #     sys.exit(1)
+    # Run workflow
+    print("Starting MPAS forecast workflow...\n")
+    try:
+        forecast_output = await workflow.run()
+        print("\n" + "=" * 60)
+        print("Workflow completed successfully!")
+        print(f"Forecast output: {forecast_output}")
+        print("=" * 60)
+    except Exception as e:
+        print("\n" + "=" * 60)
+        print("Workflow failed!")
+        print(f"Error: {e}")
+        print("=" * 60)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
