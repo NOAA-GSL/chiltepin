@@ -70,14 +70,29 @@ executors:
 # compute_executors:
 #   - compute-executor
 
+# # Agent configuration (list of agent entries, each with name + type)
+# agents:
+#   - name: mesh-local       # unique identifier for this agent instance
+#     type: mesh              # agent class: mesh, wps, mpas
+#     experiment_dir: /path/to/experiment
+#     executor: agent-executor
+#     workflow_config:
+#       service: { ... }
+#       compute: { ... }
+
 # # Model configuration
 # model:
-#   # Mesh resolution (120km, 60km, 30km, 15km, etc.)
-#   resolution: "120km"
-
-#   # Region specification
-#   region: "conus"
-
+#   # Mesh configuration
+#   mesh:
+#     type: "global"         # "global" or "regional"
+#     resolution: "120km"    # cell spacing
+#     # Regional-only parameters:
+#     # extent_x_km: 5403.0
+#     # extent_y_km: 3183.0
+#     # center_lat: 38.5
+#     # center_lon: -97.5
+#     # rotation_degrees: 0.0
+#
 #   # MPI ranks for different steps
 #   init_ranks: 24
 #   forecast_ranks: 48
@@ -132,9 +147,9 @@ executors:
 
 # # Software versions
 # versions:
-#   metis: "5.1.0"
+#   metis: "5.2.1"
+#   limited_area: "master"
 #   wps: "4.5"
-#   mpas_limited_area: "master"
 #   mpas: "v8.2.0"
 
 # # Logging configuration

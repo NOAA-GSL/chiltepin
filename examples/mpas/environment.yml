@@ -24,7 +24,16 @@ dependencies:
   # uwtools from ufs-community channel
   # Note: Official docs recommend: conda install -c ufs-community -c conda-forge --override-channels uwtools
   # This environment.yml approach uses channel priority instead (ufs-community is first)
+  - gcc
+  - gfortran
+  - mpas_tools
   - uwtools
+  - uxarray
+  - holoviews
+  - geoviews
+  - bokeh
+  - matplotlib
+  - cartopy
 
   # Pip packages (chiltepin is only available on PyPI/GitHub)
   - pip

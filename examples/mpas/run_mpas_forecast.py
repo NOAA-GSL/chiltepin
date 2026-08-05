@@ -16,7 +16,15 @@ Example:
 import asyncio
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress benign Parsl warning during DFK shutdown
+warnings.filterwarnings(
+    "ignore",
+    message="Canceling on-going tasks is not supported in Parsl",
+    category=UserWarning,
+)
 
 # import yaml
 import uwtools.api.config as uw_config
@@ -90,8 +98,10 @@ async def main():
     print("\n" + "=" * 60)
     print("MPAS Multi-Agent Forecast Workflow")
     print("=" * 60)
-    print(f"Resolution: {config.get('model', {}).get('resolution', 'not specified')}")
-    print(f"Experiment directory: {config.get('paths', {}).get('experiment_dir', 'not specified')}")
+    print(f"Resolution: {config.get('model', {}).get('mesh', {}).get('resolution', 'not specified')}")
+    print(f"Mesh name: {config.get('model', {}).get('mesh', {}).get('name', 'not specified')}")
+
+    print(f"Experiment directory: {config.get('experiment_dir', 'not specified')}")
     print("=" * 60 + "\n")
 
     # Create workflow

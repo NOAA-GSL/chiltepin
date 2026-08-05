@@ -13,8 +13,7 @@
 # =============================================================================
 
 # Experiment directory (customize for your system)
-paths:
-  experiment_dir: /home/admin/experiments/mpas_forecast
+experiment_dir: /home/admin/experiments/mpas_forecast/local
 
 workflow_config:
   agent-executor:
@@ -22,13 +21,12 @@ workflow_config:
     max_blocks: 1
     max_workers_per_node: 4
     environment:
-      - conda init
-      - conda activate mpas-example
       - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
 
 agents:
-  metis:
-    experiment_dir: /home/admin/experiments/mpas_forecast
+  - name: mesh-foo
+    type: mesh
+    work_dir: /home/admin/experiments/mpas_forecast/site_foo
     executor: agent-executor
     workflow_config:
       service:
@@ -37,8 +35,8 @@ agents:
         nodes_per_block: 1
         walltime: "00:10:00"
         environment:
-          - conda init
-          - conda activate mpas-example
+          # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+          # - conda activate mpas-example
           - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
       compute:
         provider: slurm
@@ -46,9 +44,72 @@ agents:
         nodes_per_block: 1
         walltime: "00:10:00"
         environment:
-          - conda init
-          - conda activate mpas-example
+          - source /usr/lmod/lmod/init/bash
+          - module use /opt/spack-stack/envs/unified-env/modules/Core
+          - module load stack-gcc
+          - module load cmake
+          # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+          # - conda activate mpas-example
           - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+
+  - name: mpas-foo
+    type: mpas
+    work_dir: /home/admin/experiments/mpas_forecast/site_foo
+    executor: agent-executor
+    workflow_config:
+      service:
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:10:00"
+        environment:
+          # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+          # - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+      compute:
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:10:00"
+        environment:
+          - source /usr/lmod/lmod/init/bash
+          - module use /opt/spack-stack/envs/unified-env/modules/Core
+          - module load stack-gcc
+          - module load stack-openmpi
+          - module load cmake
+          - module load parallel-netcdf
+          - module load parallelio
+          # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+          # - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+
+  # - name: mesh-bar
+  #   type: mesh
+  #   work_dir: /home/admin/experiments/mpas_forecast/site_bar
+  #   executor: agent-executor
+  #   workflow_config:
+  #     service:
+  #       provider: slurm
+  #       partition: slurmpar
+  #       nodes_per_block: 1
+  #       walltime: "00:10:00"
+  #       environment:
+  #         # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+  #         # - conda activate mpas-example
+  #         - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+  #     compute:
+  #       provider: slurm
+  #       partition: slurmpar
+  #       nodes_per_block: 1
+  #       walltime: "00:10:00"
+  #       environment:
+  #         - source /usr/lmod/lmod/init/bash
+  #         - module use /opt/spack-stack/envs/unified-env/modules/Core
+  #         - module load stack-gcc
+  #         - module load cmake
+  #         # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+  #         # - conda activate mpas-example
+  #         - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
   
 
 # =============================================================================
@@ -57,16 +118,45 @@ agents:
 
 # Uncomment and customize as needed
 model:
-  # Mesh resolution (120km, 60km, 30km, 15km)
-  resolution: 120km
-#
+  mesh:
+    name: hexes
+    resolution: 60km
+    # Add regional specs for regional meshes
+    regional:
+      # Choose either "project_hexes" or "create_region" method
+      project_hexes:
+        extent_x_km: 5403.0
+        extent_y_km: 3183.0
+        center_lat: 38.5
+        center_lon: -97.5
+        rotation_degrees: 0.0 # Birds-eye counter-clockwise
+      # create_region:  # Choose one of the types: "polygon", "circle", "ellipse", "channel"
+        # polygon:
+        #   point: 38.5, -97.5  # A point inside the polygon
+        #   vertices:  # In counter clock-wise order (can be any convex shape)
+        #   - 21.03, -122.82
+        #   - 47.94, -134.20
+        #   - 47.94, -60.80
+        #   - 21.03, -72.18
+        # circle:
+        #   point: 39.0, -105.5 # Center
+        #   radius: 400000  # Meters
+        # ellipse:
+        #   point: 40.0, -98.5 # Center
+        #   semi-major-axis: 3500000  # Meters (oriented N/S before rotation)
+        #   semi-minor-axis: 2000000  # Meters (oriented E/W before rotation)
+        #   orientation-angle: 90 # Clockwise rotation from north
+        # channel:
+        #   upper-lat: 23.43676
+        #   lower-lat: -23.43676
+
 #   # Forecast settings
 #   forecast_length_hours: 24
 #   output_interval_hours: 1
 #
 #   # MPI configuration
-#   init_ranks: 24
-#   forecast_ranks: 48
+  init_ranks: 24
+  forecast_ranks: 48
 
 # =============================================================================
 # OPTIONAL: Executor Configuration Overrides
@@ -93,6 +183,7 @@ model:
 
 # Uncomment to use specific versions
 # versions:
-#   metis: 5.1.0
+#   metis: 5.2.1
+#   limited_area: master
 #   wps: 4.5
 #   mpas: v8.2.0

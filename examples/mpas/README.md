@@ -6,9 +6,8 @@ This example demonstrates chiltepin's agent-based workflow capabilities by imple
 
 This example uses **multiple specialized agents** rather than a monolithic agent. Each independent component has its own agent that manages its complete lifecycle (download → build → execute):
 
-- **MetisAgent** - Downloads and builds the Metis graph partitioning library, partitions MPAS mesh files for MPI parallel execution
+- **MeshAgent** - Downloads and builds Metis and MPAS-Limited-Area tools, generates regional mesh from global mesh data, partitions mesh for MPI parallel execution
 - **WPSAgent** - Downloads and builds WPS (WRF Preprocessing System), runs ungrib to prepare initial and boundary conditions
-- **MPASLimitedAreaAgent** - Downloads and builds MPAS-Limited-Area tools, generates regional CONUS mesh from global mesh data
 - **MPASAgent** - Downloads and builds MPAS model, initializes conditions, runs forecast
 
 ### Why Multi-Agent Architecture?
@@ -23,7 +22,7 @@ This example uses **multiple specialized agents** rather than a monolithic agent
 
 The `MPASForecastWorkflow` orchestrates all agents, managing dependencies and executing phases:
 
-1. **Build Phase**: Parallel builds of all components (Metis, WPS, MPAS-Limited-Area, MPAS)
+1. **Build Phase**: Parallel builds of all components (Metis, MPAS-Limited-Area, WPS, MPAS)
 2. **Mesh Phase**: Generate regional mesh, partition for different MPI configurations
 3. **Preprocess Phase**: Fetch and process input data (ICS and LBCS)
 4. **Initialization Phase**: Initialize MPAS with processed data
@@ -104,9 +103,8 @@ examples/mpas/
 ├── run_mpas_forecast.py              # Main entry point
 ├── agents/                            # Agent implementations
 │   ├── __init__.py
-│   ├── metis_agent.py                # MetisAgent
+│   ├── mesh_agent.py                 # MeshAgent (Metis + MPAS-Limited-Area)
 │   ├── wps_agent.py                  # WPSAgent
-│   ├── mpas_limited_area_agent.py   # MPASLimitedAreaAgent
 │   └── mpas_agent.py                 # MPASAgent
 ├── workflows/                         # Workflow orchestration
 │   ├── __init__.py
@@ -120,9 +118,8 @@ examples/mpas/
 │       └── jet.yaml
 ├── tests/                             # Test suite
 │   ├── conftest.py
-│   ├── test_metis_agent.py
+│   ├── test_mesh_agent.py
 │   ├── test_wps_agent.py
-│   ├── test_mpas_limited_area_agent.py
 │   ├── test_mpas_agent.py
 │   └── test_mpas_workflow.py
 └── docs/                              # Additional documentation
@@ -166,27 +163,33 @@ from chiltepin.agents import chiltepin_agent, agent_action
 from chiltepin.tasks import bash_task
 
 @chiltepin_agent(agent_workflow_include=["build-executor"])
-class MetisAgent:
-    def __init__(self, install_dir: str, version: str = "5.1.0"):
+class MeshAgent:
+    def __init__(self, install_dir: str, metis_tag: str = "5.2.1",
+                 limited_area_version: str = "master"):
         self.install_dir = install_dir
-        self.version = version
+        self.metis_tag = metis_tag
+        self.limited_area_version = limited_area_version
         self.gpmetis_path = None
     
-    @bash_task
     @agent_action
-    async def download_metis(self):
-        """Download Metis source code."""
+    async def install(self):
+        """Download and build Metis and MPAS-Limited-Area."""
         # Implementation here
         pass
     
-    @bash_task
     @agent_action
-    async def build(self):
-        """Build gpmetis utility."""
+    async def download_global_mesh(self, resolution: str):
+        """Download global mesh files."""
         # Implementation here
         pass
     
-    @bash_task
+    @agent_action
+    async def create_regional_mesh(self, global_static, global_graph,
+                                   region_spec, output_dir):
+        """Create regional mesh from global mesh."""
+        # Implementation here
+        pass
+    
     @agent_action
     async def partition_mesh(self, mesh_path: str, num_ranks: int):
         """Partition mesh for MPI execution."""
