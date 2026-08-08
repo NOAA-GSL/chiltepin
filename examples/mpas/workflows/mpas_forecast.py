@@ -108,6 +108,12 @@ class MPASForecastWorkflow:
             mesh_config["init_ranks"] = model.get("init_ranks")
             mesh_config["forecast_ranks"] = model.get("forecast_ranks")
             return (work_dir, mesh_config)
+        if agent_type == "mpas":
+            # MPASAgent(install_dir, mpas_config)
+            model = self.config.get("model", {})
+            mpas_init_config = dict(model.get("mpas_init", {}))
+            mpas_fcst_config = dict(model.get("mpas_forecast", {}))
+            return (work_dir, mpas_init_config, mpas_fcst_config)
 
         # Default: single work_dir positional arg (wps, mpas, etc.)
         return (work_dir,)
@@ -165,19 +171,105 @@ class MPASForecastWorkflow:
     #     if build_tasks:
     #         await asyncio.gather(*build_tasks)
 
-    # async def mesh_phase(self) -> Dict[str, Any]:
-    #     """Generate and partition mesh on all mesh agents concurrently.
-    #
-    #     Returns
-    #     -------
-    #     dict
-    #         Per-agent results keyed by agent name
-    #     """
-    #     mesh_agents = self.agents_by_type("mesh")
-    #     results = await asyncio.gather(*[
-    #         a.generate_mesh() for a in mesh_agents
-    #     ])
-    #     return dict(zip(self._agents_by_type["mesh"], results))
+    async def mesh_phase(self) -> Dict[str, Any]:
+        """Generate and partition mesh on all mesh agents concurrently.
+    
+        Returns
+        -------
+        dict
+            Per-agent results keyed by agent name
+        """
+        mesh_agents = self.agents_by_type("mesh")
+        results = await asyncio.gather(*[
+            a.generate_mesh() for a in mesh_agents
+        ])
+        return dict(zip(self._agents_by_type["mesh"], results))
+
+    async def mpas_phase(self) -> Dict[str, Any]:
+        """Run MPAS forecast on all MPAS agents concurrently.
+    
+        Returns
+        -------
+        dict
+            Per-agent results keyed by agent name
+        """
+        mpas_agents = self.agents_by_type("mpas")
+        results = await asyncio.gather(*[
+            a.install_mpas() for a in mpas_agents
+        ])
+        return dict(zip(self._agents_by_type["mpas"], results))
+
+    async def download_geog_phase(self) -> Dict[str, Any]:
+        """Download GEOG data on all MPAS agents concurrently.
+    
+        Returns
+        -------
+        dict
+            Per-agent results keyed by agent name
+        """
+        mpas_agents = self.agents_by_type("mpas")
+        results = await asyncio.gather(*[
+            a.download_geog_data() for a in mpas_agents
+        ])
+        return dict(zip(self._agents_by_type["mpas"], results))
+
+    async def interpolate_geog_phase(
+        self, mesh_results: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Run GEOG interpolation for meshes produced by project_hexes.
+
+        Skips interpolation if the mesh config does not use project_hexes.
+
+        Parameters
+        ----------
+        mesh_results : dict
+            Per-agent mesh results from mesh_phase()
+
+        Returns
+        -------
+        dict
+            Per-mesh-agent results keyed by agent name, or empty if skipped
+        """
+        model_cfg = self.config.get("model", {})
+        mesh_cfg = model_cfg.get("mesh", {})
+        regional_cfg = mesh_cfg.get("regional")
+
+        if not isinstance(regional_cfg, dict) or "project_hexes" not in regional_cfg:
+            return {}
+
+        mpas_agents = self.agents_by_type("mpas")
+        if not mpas_agents:
+            raise RuntimeError(
+                "project_hexes mesh requires GEOG interpolation, "
+                "but no MPAS agent is configured."
+            )
+        mpas_agent = mpas_agents[0]
+
+        init_ranks = model_cfg.get("init_ranks", 1)
+
+        tasks = []
+        labels = []
+        for mesh_label, mesh_result in mesh_results.items():
+            mesh_file = mesh_result.get("mesh")
+            if not mesh_file:
+                continue
+            tasks.append(mpas_agent.interpolate_geog_only(
+                mesh_file=mesh_file,
+                num_ranks=init_ranks,
+            ))
+            labels.append(mesh_label)
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        output = {}
+        for label, result in zip(labels, results):
+            if isinstance(result, Exception):
+                raise RuntimeError(
+                    f"GEOG interpolation failed for mesh '{label}': {result}"
+                ) from result
+            output[label] = result
+
+        return output
 
     # async def preprocess_phase(self) -> Dict[str, str]:
     #     """Fetch and process input data.
@@ -276,41 +368,110 @@ class MPASForecastWorkflow:
     #     # Placeholder for implementation
     #     return str(forecast_dir)
 
-    async def mpas_build_test_phase(self) -> None:
-        """Run MPAS download/build actions on all MPAS agents.
+    async def _prepare_mpas_agent(self, agent: Any, label: str) -> Dict[str, Any]:
+        """Download and build MPAS for one agent with clear stage errors."""
+        try:
+            source_dir = await agent.download_mpas()
+        except Exception as e:
+            raise RuntimeError(
+                f"MPAS download failed for agent '{label}': {e}"
+            ) from e
 
-        This is a lightweight test phase intended for validating MPAS
-        toolchain and build environment using the current experiment config.
+        try:
+            build_result = await agent.build()
+        except Exception as e:
+            raise RuntimeError(
+                f"MPAS build failed for agent '{label}': {e}"
+            ) from e
+
+        return {
+            "source": source_dir,
+            "build": build_result,
+        }
+
+    async def prepare_core_assets_phase(self) -> Dict[str, Dict[str, Any]]:
+        """Prepare MPAS, mesh, and optional GEOG data concurrently.
+
+        Returns
+        -------
+        dict
+            {
+              "mpas": {agent_name: {"source": str, "build": dict}},
+              "mesh": {agent_name: dict},
+              "geog": {agent_name: dict},
+            }
         """
         mpas_agents = self.agents_by_type("mpas")
+        mesh_agents = self.agents_by_type("mesh")
+
         if not mpas_agents:
-            raise RuntimeError(
-                "MPAS build test requires at least one MPAS agent."
+            raise RuntimeError("Workflow requires at least one MPAS agent.")
+        if not mesh_agents:
+            raise RuntimeError("Workflow requires at least one mesh agent.")
+
+        model_cfg = self.config.get("model", {})
+        geog_cfg = model_cfg.get("geog")
+
+        phase_tasks: List[asyncio.Task] = []
+        phase_labels: List[str] = []
+
+        for idx, agent in enumerate(mpas_agents):
+            label = self._agents_by_type.get("mpas", [])[idx]
+            phase_tasks.append(
+                asyncio.create_task(self._prepare_mpas_agent(agent, label))
             )
+            phase_labels.append(f"mpas:{label}")
 
-        download_results = await asyncio.gather(
-            *[agent.download_mpas() for agent in mpas_agents],
-            return_exceptions=True,
-        )
-        for idx, result in enumerate(download_results):
-            label = self._agents_by_type.get("mpas", [])[idx]
+        for idx, agent in enumerate(mesh_agents):
+            label = self._agents_by_type.get("mesh", [])[idx]
+            phase_tasks.append(asyncio.create_task(agent.generate_mesh()))
+            phase_labels.append(f"mesh:{label}")
+
+        if geog_cfg:
+            geog_path = geog_cfg.get("path")
+            for idx, agent in enumerate(mpas_agents):
+                label = self._agents_by_type.get("mpas", [])[idx]
+                phase_tasks.append(asyncio.create_task(agent.download_geog_data(path=geog_path)))
+                phase_labels.append(f"geog:{label}")
+
+        phase_results = await asyncio.gather(*phase_tasks, return_exceptions=True)
+
+        prepared: Dict[str, Dict[str, Any]] = {
+            "mpas": {},
+            "mesh": {},
+            "geog": {},
+        }
+        for phase_label, result in zip(phase_labels, phase_results):
             if isinstance(result, Exception):
                 raise RuntimeError(
-                    f"MPAS download failed for agent '{label}': {result}"
+                    f"Core asset preparation failed in '{phase_label}': {result}"
                 ) from result
-            print(f"MPAS source downloaded for '{label}': {result}")
 
-        build_results = await asyncio.gather(
-            *[agent.build() for agent in mpas_agents],
-            return_exceptions=True,
-        )
-        for idx, result in enumerate(build_results):
-            label = self._agents_by_type.get("mpas", [])[idx]
-            if isinstance(result, Exception):
-                raise RuntimeError(
-                    f"MPAS build failed for agent '{label}': {result}"
-                ) from result
-            print(f"MPAS build output for '{label}': {result}")
+            phase_type, agent_label = phase_label.split(":", 1)
+            prepared[phase_type][agent_label] = result
+
+            if phase_type == "mpas":
+                print(
+                    f"MPAS build completed for '{agent_label}': "
+                    f"{result['build']}"
+                )
+            elif phase_type == "mesh":
+                plot_path = result.get("plot")
+                plot_error = result.get("plot_error")
+                if plot_error:
+                    raise RuntimeError(
+                        f"Mesh plot generation failed for agent "
+                        f"'{agent_label}': {plot_error}"
+                    )
+                if plot_path:
+                    print(f"Mesh plot generated for '{agent_label}': {plot_path}")
+            elif phase_type == "geog":
+                print(
+                    f"GEOG data ready for '{agent_label}': "
+                    f"{result['geog_dir']}"
+                )
+
+        return prepared
 
     async def run(self) -> str:
         """Execute complete MPAS forecast workflow.
@@ -335,37 +496,32 @@ class MPASForecastWorkflow:
                 # Launch agents
                 await self.setup_agents()
 
-                print("Running MPAS build-only test phase...")
-                await self.mpas_build_test_phase()
-                await self.shutdown_agents()
-                return ""
+                mesh_results = await self.mesh_phase()
+                print(f"Mesh generation completed for agents: {list(mesh_results)}")
+                print(f"Mesh results: {mesh_results}")
 
-                # Generate mesh on all mesh agents concurrently
-                mesh_agents = self.agents_by_type("mesh")
-                mesh_results = await asyncio.gather(
-                    *[a.generate_mesh() for a in mesh_agents],
-                    return_exceptions=True,
-                )
-                for idx, mesh_result in enumerate(mesh_results):
-                    mesh_label = self._agents_by_type.get("mesh", [])[idx]
-                    if isinstance(mesh_result, Exception):
-                        raise RuntimeError(
-                            f"Mesh generation failed for agent '{mesh_label}': "
-                            f"{mesh_result}"
-                        ) from mesh_result
+                mpas_results = await self.mpas_phase()
+                print(f"MPAS build completed for agents: {list(mpas_results)}")
+                print(f"MPAS results: {mpas_results}")
 
-                    plot_path = mesh_result.get("plot")
-                    plot_error = mesh_result.get("plot_error")
-                    if plot_error:
-                        raise RuntimeError(
-                            f"Mesh plot generation failed for agent '{mesh_label}': "
-                            f"{plot_error}"
-                        )
-                    if plot_path:
-                        print(f"Mesh plot generated for '{mesh_label}': {plot_path}")
+                geog_results = await self.download_geog_phase()
+                print(f"GEOG download completed for agents: {list(geog_results)}")
+                print(f"GEOG results: {geog_results}")
 
-                # GEOG interpolation is temporarily disabled while focusing on
-                # MPAS download/build testing.
+                interp_results = await self.interpolate_geog_phase(mesh_results)
+                if interp_results:
+                    print(f"GEOG interpolation completed: {interp_results}")
+                else:
+                    print("GEOG interpolation skipped (not a project_hexes mesh)")
+
+                # print(
+                #     "Preparing core assets (MPAS build, mesh generation, "
+                #     "and optional GEOG download) concurrently..."
+                # )
+                # prepared_assets = await self.prepare_core_assets_phase()
+
+                # GEOG interpolation is temporarily disabled until the
+                # geog_interpolation configuration path is finalized.
                 # model_cfg = self.config.get("model", {})
                 # mesh_cfg = model_cfg.get("mesh", {})
                 # regional_cfg = mesh_cfg.get("regional", {})
@@ -399,19 +555,14 @@ class MPASForecastWorkflow:
                 #
                 #     geog_tasks = []
                 #     geog_labels = []
-                #     output_subdir = geog_interp_cfg.get("output_subdir", "mpas_init_geog")
                 #     for idx, mesh_result in enumerate(mesh_results):
                 #         mesh_label = self._agents_by_type.get("mesh", [])[idx]
                 #         mesh_file = mesh_result.get("mesh")
                 #         if not mesh_file:
                 #             continue
-                #         geog_output_dir = str(Path(mesh_file).parent / output_subdir)
                 #         geog_tasks.append(
                 #             mpas_agent.interpolate_geog_only(
                 #                 mesh_file=mesh_file,
-                #                 namelist_file=namelist_file,
-                #                 streams_file=streams_file,
-                #                 output_dir=geog_output_dir,
                 #                 geog_dir=geog_dir,
                 #             )
                 #         )

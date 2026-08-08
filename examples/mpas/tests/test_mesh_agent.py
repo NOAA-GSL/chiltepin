@@ -45,8 +45,6 @@ class TestMeshAgent:
     # operations or setting up test fixtures with sample data
     #
     # Example tests to add:
-    # - test_download_metis()
-    # - test_build_metis()
     # - test_install_metis()
     # - test_install_limited_area()
     # - test_install()
@@ -54,4 +52,4 @@ class TestMeshAgent:
     # - test_create_regional_mesh()
     # - test_create_regional_mesh_raises_without_install()
     # - test_partition_mesh()
-    # - test_partition_mesh_raises_without_build()
+    # - test_partition_mesh_raises_without_install()

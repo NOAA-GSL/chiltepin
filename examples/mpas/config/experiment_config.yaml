@@ -61,8 +61,15 @@ agents:
         provider: slurm
         partition: slurmpar
         nodes_per_block: 1
-        walltime: "00:10:00"
+        walltime: "01:00:00"
         environment:
+          - source /usr/lmod/lmod/init/bash
+          - module use /opt/spack-stack/envs/unified-env/modules/Core
+          - module load stack-gcc
+          - module load stack-openmpi
+          - module load cmake
+          - module load parallel-netcdf
+          - module load parallelio
           # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
           # - conda activate mpas-example
           - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
@@ -81,6 +88,21 @@ agents:
           - module load parallelio
           # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
           # - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+      mpi:
+        mpi: true
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:30:00"
+        environment:
+          - source /usr/lmod/lmod/init/bash
+          - module use /opt/spack-stack/envs/unified-env/modules/Core
+          - module load stack-gcc
+          - module load stack-openmpi
+          - module load cmake
+          - module load parallel-netcdf
+          - module load parallelio
           - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
 
   # - name: mesh-bar
@@ -129,15 +151,15 @@ model:
         extent_y_km: 3183.0
         center_lat: 38.5
         center_lon: -97.5
-        rotation_degrees: 0.0 # Birds-eye counter-clockwise
+        rotation_degrees: 20.0 # Birds-eye counter-clockwise
       # create_region:  # Choose one of the types: "polygon", "circle", "ellipse", "channel"
-        # polygon:
-        #   point: 38.5, -97.5  # A point inside the polygon
-        #   vertices:  # In counter clock-wise order (can be any convex shape)
-        #   - 21.03, -122.82
-        #   - 47.94, -134.20
-        #   - 47.94, -60.80
-        #   - 21.03, -72.18
+      #   polygon:
+      #     point: 38.5, -97.5  # A point inside the polygon
+      #     vertices:  # In counter clock-wise order (can be any convex shape)
+      #     - 21.03, -122.82
+      #     - 47.94, -134.20
+      #     - 47.94, -60.80
+      #     - 21.03, -72.18
         # circle:
         #   point: 39.0, -105.5 # Center
         #   radius: 400000  # Meters
@@ -155,7 +177,7 @@ model:
 #   output_interval_hours: 1
 #
 #   # MPI configuration
-  init_ranks: 24
+  init_ranks: 1
   forecast_ranks: 48
 
 # =============================================================================

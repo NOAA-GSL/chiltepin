@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from parsl.app.errors import BashExitFailure
 
 from chiltepin.agents import agent_action, chiltepin_agent
-from chiltepin.tasks import bash_task
+from chiltepin.tasks import bash_task, python_task
 
 
 @chiltepin_agent()
@@ -36,99 +36,111 @@ class MPASAgent:
     mpas_source_dir : Path
         Path to MPAS source directory (set after download)
     init_atmosphere_path : Path
-        Path to init_atmosphere_model executable (set after build)
-    atmosphere_model_path : Path
-        Path to atmosphere_model executable (set after build)
+        Path to mpas_init_atmosphere executable (set after build)
+    atmosphere_path : Path
+        Path to mpas_atmosphere executable (set after build)
     """
 
-    def __init__(self, work_dir: str, mpas_version: str = "v8.4.1"):
+    def __init__(
+        self,
+        work_dir: str,
+        init_config: Dict[str, Any],
+        fcst_config: Dict[str, Any],
+        mpas_version: str = "v8.4.1"
+    ):
         """Initialize MPASAgent.
 
         Parameters
         ----------
         work_dir : str
             Directory where MPAS will be installed
+        init_config : dict[str, Any]
+            Initialization configuration for MPAS
+        fcst_config : dict[str, Any]
+            Forecast configuration for MPAS
         mpas_version : str, optional
-            MPAS version to install, by default "v8.2.0"
+            MPAS version to install, by default "v8.4.1"
         """
-        self.install_dir = Path(work_dir)
+        self.work_dir = Path(work_dir)
+        self.init_config = dict(init_config)
+        self.fcst_config = dict(fcst_config)
         self.mpas_version = mpas_version
-        self.log_dir = self.install_dir / "logs"
+        self.log_dir = self.work_dir / "logs"
 
+        # MPAS state
         self.mpas_downloaded = False
         self.mpas_built = False
         self.mpas_source_dir: Optional[Path] = None
         self.init_atmosphere_path: Optional[Path] = None
-        self.atmosphere_model_path: Optional[Path] = None
+        self.atmosphere_path: Optional[Path] = None
 
+        # GEOG static data state
         self.geog_downloaded = False
-        self.geog_data_dir: Optional[Path] = None
+        self.geog_data_url = "https://www2.mmm.ucar.edu/projects/mpas"
+        self.geog_main_archive = "mpas_static.tar.bz2"
+        self.geog_optional_files = [
+            f"topo_ugwp.tar.gz",
+            f"ugwp_limb_tau.nc",
+            f"modis_landuse_20class_15s.tar.bz2",
+            f"bnu_soiltype_top.tar.bz2",
+        ]
+        self.geog_data_dir = self.work_dir / "geog_data" / "mpas_static"
 
     # ---------------------------------------------------------------------
-    # Private bash tasks
+    # Helpers
     # ---------------------------------------------------------------------
 
-    @bash_task
-    def _download_geog_data(
-        self, url: str, geog_root: str, target_dir: str, archive_name: str,
-    ) -> str:
-        """Download and extract MPAS geog data, skipping if already present."""
-        import textwrap
-
-        return textwrap.dedent(
-            f"""\
-            set -eu -o pipefail
-            echo "Started GEOG download at $(date)"
-            echo "Executing on $(hostname)"
-            mkdir -p {geog_root}
-
-            if [ -d {target_dir} ] && [ "$(ls -A {target_dir} 2>/dev/null || true)" ]; then
-              echo "GEOG data already present at {target_dir}; skipping download"
-              exit 0
-            fi
-
-            archive_path={geog_root}/{archive_name}
-            rm -f "$archive_path"
-            wget -T 60 -t 3 -O "$archive_path" {url}
-
-            rm -rf {target_dir}
-            mkdir -p {target_dir}
-            tar -xzf "$archive_path" -C {target_dir} --strip-components=1 || tar -xzf "$archive_path" -C {target_dir}
-            rm -f "$archive_path"
-            echo "Completed GEOG download at $(date)"
-            """
+    @staticmethod
+    def _write_geog_namelist(work_dir: Path, mesh_filename: str) -> Path:
+        """Write namelist.init_atmosphere for geog-only interpolation."""
+        mesh_name = Path(mesh_filename).stem
+        namelist = work_dir / "namelist.init_atmosphere"
+        namelist.write_text(
+            f"&nhyd_model\n"
+            f'    config_init_case = 7\n'
+            f"/\n"
+            f"&decomposition\n"
+            f"    config_block_decomp_file_prefix = '{mesh_name}.graph.info.part.'\n"
+            f"/\n"
+            f"&dimensions\n"
+            f"/\n"
+            f"&data_sources\n"
+            f'    config_geog_data_path = "./geog"\n'
+            f"/\n"
+            f"&preproc_stages\n"
+            f"    config_static_interp = true\n"
+            f"    config_native_gwd_static = true\n"
+            f"    config_vertical_grid = false\n"
+            f"    config_met_interp = false\n"
+            f"    config_input_sst = false\n"
+            f"    config_frac_seaice = false\n"
+            f"/\n"
         )
+        return namelist
 
-    @bash_task
-    def _interpolate_geog_only(
-        self,
-        mesh_file: str,
-        geog_dir: str,
-        namelist_file: str,
-        streams_file: str,
-        output_dir: str,
-    ) -> str:
-        """Run init_atmosphere_model in geog-only interpolation mode."""
-        import textwrap
-
-        return textwrap.dedent(
-            f"""\
-            set -eu -o pipefail
-            echo "Started GEOG interpolation at $(date)"
-            echo "Executing on $(hostname)"
-            mkdir -p {output_dir}
-            cd {output_dir}
-
-            cp {namelist_file} ./namelist.init_atmosphere
-            cp {streams_file} ./streams.init_atmosphere
-
-            ln -sfn {geog_dir} ./geog
-            ln -sf {mesh_file} ./$(basename {mesh_file})
-
-            {self.init_atmosphere_path}
-            echo "Completed GEOG interpolation at $(date)"
-            """
+    @staticmethod
+    def _write_geog_streams(work_dir: Path, mesh_filename: str) -> Path:
+        """Write streams.init_atmosphere for geog-only interpolation."""
+        static_filename = Path(mesh_filename).stem + ".static.nc"
+        streams = work_dir / "streams.init_atmosphere"
+        streams.write_text(
+            f'<streams>\n'
+            f'<immutable_stream name="input"\n'
+            f'                  type="input"\n'
+            f'                  filename_template="{mesh_filename}"\n'
+            f'                  input_interval="initial_only" />\n'
+            f'<immutable_stream name="output"\n'
+            f'                  type="output"\n'
+            f'                  filename_template="{static_filename}"\n'
+            f'                  output_interval="initial_only"\n'
+            f'                  packages="initial_conds" />\n'
+            f'</streams>\n'
         )
+        return streams
+
+    # ---------------------------------------------------------------------
+    # Private bash tasks - MPAS
+    # ---------------------------------------------------------------------
 
     @bash_task
     def _download_mpas(self) -> str:
@@ -140,9 +152,9 @@ class MPASAgent:
             set -eu -o pipefail
             echo "Started MPAS download at $(date)"
             echo "Executing on $(hostname)"
-            rm -rf {self.install_dir}/MPAS-Model/{self.mpas_version}
-            mkdir -p {self.install_dir}/MPAS-Model
-            cd {self.install_dir}/MPAS-Model
+            rm -rf {self.work_dir}/MPAS-Model/{self.mpas_version}
+            mkdir -p {self.work_dir}/MPAS-Model
+            cd {self.work_dir}/MPAS-Model
             git clone --branch {self.mpas_version} \
                 https://github.com/MPAS-Dev/MPAS-Model.git {self.mpas_version}
             echo "Completed MPAS download at $(date)"
@@ -159,63 +171,77 @@ class MPASAgent:
             set -eu -o pipefail
             echo "Started MPAS build at $(date)"
             echo "Executing on $(hostname)"
-            cd {self.mpas_source_dir}
-            rm -rf build
-            mkdir -p build
-            cd build
-            cmake -DCMAKE_BUILD_TYPE=Release -DMPAS_DOUBLE_PRECISION=OFF  -DMPAS_CORES="init_atmosphere;atmosphere" ..
-            make -j 8 VERBOSE=1
-
-            # # Some MPAS tags include ccpp_kind_types.F while CMake expects
-            # # ccpp_kinds.F. Add a compatibility link if needed.
-            # if [ ! -f src/core_atmosphere/physics/ccpp_kinds.F ] && [ -f src/core_atmosphere/physics/ccpp_kind_types.F ]; then
-            #     ln -sfn ccpp_kind_types.F src/core_atmosphere/physics/ccpp_kinds.F
-            # fi
-
-            # # Some tags omit mpas_init_atm_thompson_aerosols.F from
-            # # src/core_init_atmosphere/CMakeLists.txt even though it is used.
-            # core_init_cmake=src/core_init_atmosphere/CMakeLists.txt
-            # if [ -f "$core_init_cmake" ] && ! grep -q 'mpas_init_atm_thompson_aerosols.F' "$core_init_cmake"; then
-            #     perl -0pi -e 's/(\s+mpas_init_atm_surface\.F\n)/$1        mpas_init_atm_thompson_aerosols.F\n/s' "$core_init_cmake"
-            # fi
-
-            # rm -rf build
-            # mkdir -p build
-
-            # # Prefer full CMake build for both init and atmosphere cores.
-            # # If the atmosphere core fails for this MPAS tag/environment,
-            # # fall back to init_atmosphere-only so GEOG interpolation can proceed.
-            # if cmake -S . -B build \
-            #     -DCMAKE_BUILD_TYPE=Release \
-            #     -DMPAS_DOUBLE_PRECISION=OFF \
-            #     -DMPAS_CORES="init_atmosphere;atmosphere" \
-            #     -DDO_PHYSICS=OFF \
-            #     && cmake --build build -j 8; then
-            #     echo "Completed full MPAS CMake build at $(date)"
-            # else
-            #     echo "Full CMake build failed; retrying init_atmosphere-only build" >&2
-            #     rm -rf build
-            #     mkdir -p build
-            #     cmake -S . -B build \
-            #         -DCMAKE_BUILD_TYPE=Release \
-            #         -DMPAS_DOUBLE_PRECISION=OFF \
-            #         -DMPAS_CORES="init_atmosphere" \
-            #         -DDO_PHYSICS=OFF
-            #     cmake --build build -j 8
-            #     echo "Completed init_atmosphere-only CMake build at $(date)"
-            # fi
-
-            # # Provide legacy executable names expected by workflow code.
-            # if [ -x build/bin/mpas_init_atmosphere ] && [ ! -e build/bin/init_atmosphere_model ]; then
-            #     ln -s mpas_init_atmosphere build/bin/init_atmosphere_model
-            # fi
-            # if [ -x build/bin/mpas_atmosphere ] && [ ! -e build/bin/atmosphere_model ]; then
-            #     ln -s mpas_atmosphere build/bin/atmosphere_model
-            # fi
-
+            cd {self.work_dir}/MPAS-Model/{self.mpas_version}
+            cmake -B build \
+                -DCMAKE_INSTALL_PREFIX={self.work_dir}/MPAS-Model/{self.mpas_version} \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DMPAS_DOUBLE_PRECISION=OFF \
+                -DMPAS_CORES="init_atmosphere;atmosphere"
+            cmake --build build --verbose --parallel 8
+            cmake --install build
             echo "Completed MPAS build at $(date)"
             """
         )
+
+    # ---------------------------------------------------------------------
+    # Private python tasks - GEOG
+    # ---------------------------------------------------------------------
+    @python_task
+    def _download_geog_data(self, target_dir: str) -> None:
+        """Download and extract all MPAS GEOG static datasets."""
+        import tarfile
+        import urllib.request
+
+        dest = Path(target_dir)
+        if dest.exists() and any(dest.iterdir()):
+            return
+
+        dest.mkdir(parents=True, exist_ok=True)
+
+        # Extract the main dataset first — creates the mpas_static subdirectory
+        main_archive = self.geog_main_archive
+        main_url = f"{self.geog_data_url}/{main_archive}"
+        main_path = dest / main_archive
+        urllib.request.urlretrieve(main_url, main_path)
+        with tarfile.open(main_path) as tf:
+            tf.extractall(path=dest)
+        main_path.unlink()
+
+        # Additional files go into the mpas_static subdirectory
+        static_dir = dest / "mpas_static"
+        for filename in self.geog_optional_files:
+            url = f"{self.geog_data_url}/{filename}"
+            local_path = static_dir / filename
+            urllib.request.urlretrieve(url, local_path)
+            if filename.endswith((".tar.bz2", ".tar.gz")):
+                with tarfile.open(local_path) as tf:
+                    tf.extractall(path=static_dir)
+                local_path.unlink()
+
+ 
+    @bash_task
+    def _interpolate_geog_only(
+        self,
+        work_dir: str,
+        geog_dir: str,
+    ) -> str:
+        """Run init_atmosphere_model in geog-only interpolation mode."""
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started GEOG interpolation at $(date)"
+            echo "Executing on $(hostname)"
+            cd {work_dir}
+
+            ln -sfn {geog_dir} ./geog
+
+            $PARSL_MPI_PREFIX {self.init_atmosphere_path}
+            echo "Completed GEOG interpolation at $(date)"
+            """
+        )
+
 
     @bash_task
     def _initialize_ics(
@@ -306,40 +332,108 @@ class MPASAgent:
             ln -sfn {ics_file} ./init.nc
             ln -sfn {lbcs_dir} ./lbcs
 
-            {self.atmosphere_model_path} || true
+            {self.atmosphere_path} || true
             touch forecast_complete.flag
             echo "Completed MPAS forecast at $(date)"
             """
         )
 
     # ---------------------------------------------------------------------
+    # Public agent actions - MPAS
+    # ---------------------------------------------------------------------
+
+    @agent_action
+    async def install_mpas(self) -> None:
+        """Download and build MPAS-Model in one step with Parsl pipelining."""
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        download_future = self._download_mpas(
+            executor=["service"],
+            stdout=str(self.log_dir / "mpas_download.stdout"),
+            stderr=str(self.log_dir / "mpas_download.stderr"),
+        )
+        build_future = self._build_mpas(
+            executor=["service"],  # MPAS downloads artifacts during build, so use service executor
+            stdout=str(self.log_dir / "mpas_build.stdout"),
+            stderr=str(self.log_dir / "mpas_build.stderr"),
+            inputs=[download_future]
+        )
+
+        try:
+            await asyncio.wrap_future(download_future)
+        except BashExitFailure as e:
+            raise RuntimeError(
+                f"MPAS download failed (exit {e.exitcode}), "
+                f"see {self.log_dir}/mpas_download.stderr"
+            )
+        self.mpas_source_dir = self.work_dir / "MPAS-Model" / self.mpas_version
+        self.mpas_downloaded = True
+
+        try:
+            await asyncio.wrap_future(build_future)
+        except BashExitFailure as e:
+            raise RuntimeError(
+                f"MPAS build failed (exit {e.exitcode}), "
+                f"see {self.log_dir}/mpas_build.stderr"
+            )
+
+        init_candidates = [
+            self.mpas_source_dir / "bin" / "mpas_init_atmosphere",
+            self.mpas_source_dir / "mpas_init_atmosphere",
+            self.mpas_source_dir / "build" / "bin" / "mpas_init_atmosphere",
+
+        ]
+        model_candidates = [
+            self.mpas_source_dir / "bin" / "mpas_atmosphere",
+            self.mpas_source_dir / "mpas_atmosphere",
+            self.mpas_source_dir / "build" / "bin" / "mpas_atmosphere",
+        ]
+
+        self.init_atmosphere_path = next(
+            (path for path in init_candidates if path.exists()),
+            None,
+        )
+        self.atmosphere_path = next(
+            (path for path in model_candidates if path.exists()),
+            None,
+        )
+
+        if self.init_atmosphere_path is None:
+            raise RuntimeError(
+                "MPAS build completed but mpas_init_atmosphere was not found"
+            )
+        if self.atmosphere_path is None:
+            raise RuntimeError(
+                "MPAS build completed but mpas_atmosphere was not found"
+            )
+        self.mpas_built = True
+
+
+    # ---------------------------------------------------------------------
     # Public agent actions - GEOG setup and interpolation
     # ---------------------------------------------------------------------
 
     @agent_action
-    async def download_geog_data(self, geog_config: Dict[str, Any]) -> Dict[str, str]:
+    async def download_geog_data(
+        self, path: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Ensure GEOG data exists for MPAS init interpolation.
+
+        If path is provided, uses that existing directory directly.
+        Otherwise downloads all GEOG datasets to self.geog_data_dir.
 
         Parameters
         ----------
-        geog_config : dict
-            GEOG data config.
-            Supported keys:
-            - path: existing geog directory to use directly
-            - url: tar archive URL to download if path is not provided
-            - archive_name: optional local archive file name
-            - subdir: optional directory name under install_dir/geog
+        path : str, optional
+            Path to an existing GEOG data directory to use directly
 
         Returns
         -------
         dict
             {"geog_dir": path}
         """
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-
-        explicit_path = geog_config.get("path")
-        if explicit_path:
-            geog_dir = Path(explicit_path)
+        if path:
+            geog_dir = Path(path)
             if not geog_dir.exists():
                 raise RuntimeError(
                     f"Configured GEOG path does not exist: {geog_dir}"
@@ -348,52 +442,52 @@ class MPASAgent:
             self.geog_downloaded = True
             return {"geog_dir": str(geog_dir)}
 
-        url = geog_config.get("url")
-        if not url:
-            raise ValueError(
-                "GEOG configuration requires either 'path' or 'url'."
-            )
-
-        geog_root = self.install_dir / "geog"
-        subdir = geog_config.get("subdir", "WPS_GEOG")
-        target_dir = geog_root / subdir
-        archive_name = geog_config.get("archive_name") or Path(url).name or "geog_data.tar.gz"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         future = self._download_geog_data(
-            url,
-            str(geog_root),
-            str(target_dir),
-            archive_name,
+            str(self.geog_data_dir.parent),
             executor=["service"],
-            stdout=str(self.log_dir / "download_geog_data.stdout"),
-            stderr=str(self.log_dir / "download_geog_data.stderr"),
         )
 
         try:
             await asyncio.wrap_future(future)
-        except BashExitFailure as e:
+        except Exception as e:
             raise RuntimeError(
-                f"GEOG download failed (exit {e.exitcode}), "
-                f"see {self.log_dir}/download_geog_data.stderr"
+                f"GEOG download failed: {e}"
             )
 
-        self.geog_data_dir = target_dir
         self.geog_downloaded = True
-        return {"geog_dir": str(target_dir)}
+        return {"geog_dir": str(self.geog_data_dir)}
 
     @agent_action
     async def interpolate_geog_only(
         self,
         mesh_file: str,
-        namelist_file: str,
-        streams_file: str,
-        output_dir: str,
+        num_ranks: int = 1,
         geog_dir: Optional[str] = None,
     ) -> Dict[str, str]:
-        """Run init_atmosphere_model geog-only interpolation for a mesh."""
+        """Run init_atmosphere_model geog-only interpolation for a mesh.
+
+        Runs in the mesh file's directory, writing the namelist, streams,
+        and static output file alongside the mesh.
+
+        Parameters
+        ----------
+        mesh_file : str
+            Path to the MPAS mesh NetCDF file
+        num_ranks : int, optional
+            Number of MPI ranks to use, by default 1
+        geog_dir : str, optional
+            Path to GEOG data directory. Uses self.geog_data_dir if not given.
+
+        Returns
+        -------
+        dict
+            {"static": path}
+        """
         if self.init_atmosphere_path is None:
             raise RuntimeError(
-                "Must call build() before interpolate_geog_only()"
+                "Must call install_mpas() before interpolate_geog_only()"
             )
 
         geog_path = Path(geog_dir) if geog_dir else self.geog_data_dir
@@ -404,17 +498,23 @@ class MPASAgent:
             )
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        mesh_path = Path(mesh_file)
+        work_dir = mesh_path.parent
+        mesh_name = mesh_path.stem
+        static_filename = mesh_name + ".static.nc"
 
-        mesh_name = Path(mesh_file).stem
+        self._write_geog_namelist(work_dir, mesh_path.name)
+        self._write_geog_streams(work_dir, mesh_path.name)
+
         future = self._interpolate_geog_only(
-            mesh_file,
+            str(work_dir),
             str(geog_path),
-            namelist_file,
-            streams_file,
-            str(output_path),
-            executor=["compute"],
+            executor=["mpi"],
+            chiltepin_task_geometry={
+                "num_nodes": 1,
+                "num_ranks": num_ranks,
+                "ranks_per_node": num_ranks,
+            },
             stdout=str(self.log_dir / f"interpolate_geog_only.{mesh_name}.stdout"),
             stderr=str(self.log_dir / f"interpolate_geog_only.{mesh_name}.stderr"),
         )
@@ -428,111 +528,9 @@ class MPASAgent:
             )
 
         return {
-            "mesh": mesh_file,
-            "geog_dir": str(geog_path),
-            "output_dir": str(output_path),
+            "static": str(work_dir / static_filename),
         }
 
-    @agent_action
-    async def download_mpas(self) -> str:
-        """Download MPAS-Model source code.
-
-        Returns
-        -------
-        str
-            Path to downloaded source directory
-
-        Notes
-        -----
-        Downloads from MPAS-Dev/MPAS-Model GitHub repository.
-        """
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-
-        future = self._download_mpas(
-            executor=["service"],
-            stdout=str(self.log_dir / "mpas_download.stdout"),
-            stderr=str(self.log_dir / "mpas_download.stderr"),
-        )
-
-        try:
-            await asyncio.wrap_future(future)
-        except BashExitFailure as e:
-            raise RuntimeError(
-                f"MPAS download failed (exit {e.exitcode}), "
-                f"see {self.log_dir}/mpas_download.stderr"
-            )
-
-        self.mpas_source_dir = self.install_dir / "MPAS-Model" / self.mpas_version
-        self.mpas_downloaded = True
-        return str(self.mpas_source_dir)
-
-    @agent_action
-    async def build(self) -> dict:
-        """Build MPAS executables.
-
-        Returns
-        -------
-        dict
-            Dictionary with paths to executables
-            {"init": str, "model": str}
-
-        Raises
-        ------
-        RuntimeError
-            If download_mpas has not been called first
-
-        Notes
-        -----
-        Builds MPAS atmosphere core executables:
-        - init_atmosphere_model: For initialization
-        - atmosphere_model: For forecast integration
-        """
-        if self.mpas_source_dir is None:
-            raise RuntimeError("Must call download_mpas() before build()")
-
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        future = self._build_mpas(
-            executor=["compute"],
-            stdout=str(self.log_dir / "mpas_build.stdout"),
-            stderr=str(self.log_dir / "mpas_build.stderr"),
-        )
-
-        try:
-            await asyncio.wrap_future(future)
-        except BashExitFailure as e:
-            raise RuntimeError(
-                f"MPAS build failed (exit {e.exitcode}), "
-                f"see {self.log_dir}/mpas_build.stderr"
-            )
-
-        init_candidates = [
-            self.mpas_source_dir / "build" / "bin" / "init_atmosphere_model",
-            self.mpas_source_dir / "init_atmosphere_model",
-        ]
-        model_candidates = [
-            self.mpas_source_dir / "build" / "bin" / "atmosphere_model",
-            self.mpas_source_dir / "atmosphere_model",
-        ]
-
-        self.init_atmosphere_path = next(
-            (path for path in init_candidates if path.exists()),
-            None,
-        )
-        self.atmosphere_model_path = next(
-            (path for path in model_candidates if path.exists()),
-            None,
-        )
-
-        if self.init_atmosphere_path is None:
-            raise RuntimeError(
-                "MPAS build completed but init_atmosphere_model was not found"
-            )
-        self.mpas_built = True
-
-        return {
-            "init": str(self.init_atmosphere_path),
-            "model": str(self.atmosphere_model_path) if self.atmosphere_model_path else "",
-        }
 
     @agent_action
     async def initialize_ics(

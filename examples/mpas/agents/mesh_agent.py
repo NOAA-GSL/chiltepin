@@ -1248,9 +1248,9 @@ class MeshAgent:
         # Partition for MPI if graph file available and ranks specified
         if result.get("graph"):
             ranks_list = []
-            if init_ranks:
+            if init_ranks and init_ranks > 1:
                 ranks_list.append(init_ranks)
-            if forecast_ranks:
+            if forecast_ranks and forecast_ranks > 1:
                 ranks_list.append(forecast_ranks)
             if ranks_list:
                 partition_paths = await self.partition_mesh(
