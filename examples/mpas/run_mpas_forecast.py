@@ -94,6 +94,16 @@ async def main():
     print("Loading configuration...")
     config = load_config(config_files)
 
+    # Resolve API key from environment now (workers may not have it)
+    llm_cfg = config.get("model", {}).get("llm", {})
+    api_key_env = llm_cfg.get("api_key_env")
+    if api_key_env:
+        key = os.environ.get(api_key_env)
+        if key:
+            llm_cfg["api_key"] = key
+        else:
+            print(f"WARNING: {api_key_env} not set in environment")
+
     # Print configuration summary
     print("\n" + "=" * 60)
     print("MPAS Multi-Agent Forecast Workflow")

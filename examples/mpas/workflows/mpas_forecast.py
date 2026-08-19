@@ -7,6 +7,7 @@ all MPAS component agents to build, configure, and run MPAS forecasts.
 """
 
 import asyncio
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
@@ -97,26 +98,23 @@ class MPASForecastWorkflow:
         return [self.agents[name] for name in self._agents_by_type.get(agent_type, [])]
 
     def _build_agent_args(self, agent_conf: Dict[str, Any]) -> tuple:
-        """Build positional init args for an agent based on its type."""
+        """Build (positional_args, keyword_args) for an agent based on its type."""
         agent_type = agent_conf["type"]
         work_dir = str(Path(agent_conf.get("work_dir", "/tmp")))
+        extra_kwargs = dict(agent_conf.get("kwargs", {}))
 
         if agent_type == "mesh":
-            # MeshAgent(install_dir, mesh_config)
-            model = self.config.get("model", {})
-            mesh_config = dict(model.get("mesh", {"resolution": "120km"}))
-            mesh_config["init_ranks"] = model.get("init_ranks")
-            mesh_config["forecast_ranks"] = model.get("forecast_ranks")
-            return (work_dir, mesh_config)
+            # MeshAgent(work_dir, **kwargs)
+            return (work_dir,), extra_kwargs
         if agent_type == "mpas":
             # MPASAgent(install_dir, mpas_config)
             model = self.config.get("model", {})
             mpas_init_config = dict(model.get("mpas_init", {}))
             mpas_fcst_config = dict(model.get("mpas_forecast", {}))
-            return (work_dir, mpas_init_config, mpas_fcst_config)
+            return (work_dir, mpas_init_config, mpas_fcst_config), extra_kwargs
 
-        # Default: single work_dir positional arg (wps, mpas, etc.)
-        return (work_dir,)
+        # Default: single work_dir positional arg
+        return (work_dir,), extra_kwargs
 
     async def setup_agents(self) -> None:
         """Launch all agents defined in the config list.
@@ -144,10 +142,11 @@ class MPASForecastWorkflow:
                     f"Valid types: {list(AGENT_TYPES)}"
                 )
 
-            args = self._build_agent_args(agent_conf)
+            args, agent_kwargs = self._build_agent_args(agent_conf)
             handle = await self.manager.launch(
                 agent_cls,
                 args=args,
+                kwargs=agent_kwargs,
                 agent_workflow_config=agent_conf["workflow_config"],
                 executor=agent_conf.get("executor"),
             )
@@ -180,9 +179,50 @@ class MPASForecastWorkflow:
             Per-agent results keyed by agent name
         """
         mesh_agents = self.agents_by_type("mesh")
-        results = await asyncio.gather(*[
-            a.generate_mesh() for a in mesh_agents
-        ])
+        model = self.config.get("model", {})
+        mesh_config = dict(model.get("mesh", {"resolution": "120km"}))
+        mesh_config["init_ranks"] = model.get("init_ranks")
+        mesh_config["forecast_ranks"] = model.get("forecast_ranks")
+        mesh_prompt = model.get("mesh_prompt")
+        llm_config = model.get("llm", {})
+        llm_model = llm_config.get("model", "qwen2.5:3b")
+        llm_url = llm_config.get("url", "http://localhost:11434/api/chat")
+        api_key = llm_config.get("api_key") or (
+            os.environ.get(llm_config["api_key_env"]) if llm_config.get("api_key_env") else None
+        )
+
+        tasks = []
+        for label, agent in zip(self._agents_by_type["mesh"], mesh_agents):
+            agent_conf = self.config.get("agents", [])
+            matched = next((c for c in agent_conf if c.get("name") == label), None)
+            if matched is None:
+                raise RuntimeError(f"Missing configuration for mesh agent '{label}'")
+
+            mesh_data_dir = str(Path(matched.get("work_dir", "/tmp")) / "mesh_data")
+            if mesh_prompt:
+                tasks.append(
+                    agent.create_mesh_from_prompt(
+                        mesh_prompt,
+                        mesh_data_dir,
+                        model=llm_model,
+                        llm_url=llm_url,
+                        api_key=api_key,
+                    )
+                )
+            else:
+                tasks.append(agent.generate_mesh(dict(mesh_config), mesh_data_dir))
+
+        raw_results = await asyncio.gather(*tasks)
+
+        if mesh_prompt:
+            results = []
+            for result in raw_results:
+                mesh_result = dict(result["mesh_result"])
+                mesh_result["mesh_config"] = result["mesh_config"]
+                results.append(mesh_result)
+        else:
+            results = raw_results
+
         return dict(zip(self._agents_by_type["mesh"], results))
 
     async def mpas_phase(self) -> Dict[str, Any]:
@@ -411,6 +451,9 @@ class MPASForecastWorkflow:
 
         model_cfg = self.config.get("model", {})
         geog_cfg = model_cfg.get("geog")
+        mesh_config = dict(model_cfg.get("mesh", {"resolution": "120km"}))
+        mesh_config["init_ranks"] = model_cfg.get("init_ranks")
+        mesh_config["forecast_ranks"] = model_cfg.get("forecast_ranks")
 
         phase_tasks: List[asyncio.Task] = []
         phase_labels: List[str] = []
@@ -424,7 +467,19 @@ class MPASForecastWorkflow:
 
         for idx, agent in enumerate(mesh_agents):
             label = self._agents_by_type.get("mesh", [])[idx]
-            phase_tasks.append(asyncio.create_task(agent.generate_mesh()))
+            matched = next(
+                (c for c in self.config.get("agents", []) if c.get("name") == label),
+                None,
+            )
+            if matched is None:
+                raise RuntimeError(f"Missing configuration for mesh agent '{label}'")
+
+            mesh_data_dir = str(Path(matched.get("work_dir", "/tmp")) / "mesh_data")
+            phase_tasks.append(
+                asyncio.create_task(
+                    agent.generate_mesh(dict(mesh_config), mesh_data_dir)
+                )
+            )
             phase_labels.append(f"mesh:{label}")
 
         if geog_cfg:
@@ -500,19 +555,19 @@ class MPASForecastWorkflow:
                 print(f"Mesh generation completed for agents: {list(mesh_results)}")
                 print(f"Mesh results: {mesh_results}")
 
-                mpas_results = await self.mpas_phase()
-                print(f"MPAS build completed for agents: {list(mpas_results)}")
-                print(f"MPAS results: {mpas_results}")
+                # mpas_results = await self.mpas_phase()
+                # print(f"MPAS build completed for agents: {list(mpas_results)}")
+                # print(f"MPAS results: {mpas_results}")
 
-                geog_results = await self.download_geog_phase()
-                print(f"GEOG download completed for agents: {list(geog_results)}")
-                print(f"GEOG results: {geog_results}")
+                # geog_results = await self.download_geog_phase()
+                # print(f"GEOG download completed for agents: {list(geog_results)}")
+                # print(f"GEOG results: {geog_results}")
 
-                interp_results = await self.interpolate_geog_phase(mesh_results)
-                if interp_results:
-                    print(f"GEOG interpolation completed: {interp_results}")
-                else:
-                    print("GEOG interpolation skipped (not a project_hexes mesh)")
+                # interp_results = await self.interpolate_geog_phase(mesh_results)
+                # if interp_results:
+                #     print(f"GEOG interpolation completed: {interp_results}")
+                # else:
+                #     print("GEOG interpolation skipped (not a project_hexes mesh)")
 
                 # print(
                 #     "Preparing core assets (MPAS build, mesh generation, "

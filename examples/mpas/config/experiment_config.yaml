@@ -27,6 +27,8 @@ agents:
   - name: mesh-foo
     type: mesh
     work_dir: /home/admin/experiments/mpas_forecast/site_foo
+    kwargs:
+      geo_backend: osm
     executor: agent-executor
     workflow_config:
       service:
@@ -140,37 +142,71 @@ agents:
 
 # Uncomment and customize as needed
 model:
-  mesh:
-    name: hexes
-    resolution: 60km
+  # Quick LLM test path: uncomment mesh_prompt and llm, then comment out model.mesh below.
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Japan."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Tornado Alley."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Boulder, Colorado."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Colorado."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers the intermountain west."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Europe, excluding Russia and Iceland."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers central Europe."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Portugal, UK, Italy, Germany, Austria, and Finland."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers western Europe."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers western and southern Europe."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Europe excluding eastern Europe."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers mainland Europe and the UK, excluding Russia."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Italy."
+  # mesh_prompt: "Generate a 15km MPAS CONUS mesh."
+  # mesh_prompt: "Generate a 15km MPAS mesh covering Paris, France."
+  # mesh_prompt: "Generate a 15km MPAS mesh covering the full 10 day path of Hurricane Katrina."
+  mesh_prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina from the Bahamas through southern Florida and across the Gulf of Mexico to the Louisiana/Mississippi coast."
+  llm:
+    # model: qwen2.5:14b
+    model: gemma3:12b
+    url: http://localhost:11434/api/chat
+
+  # llm:
+  #   model: claude-sonnet-5
+  #   url: https://api.anthropic.com/v1/messages
+  #   api_key_env: ANTHROPIC_API_KEY
+
+
+
+
+
+
+
+  # mesh:
+    # name: hexes
+    # resolution: 15km
     # Add regional specs for regional meshes
-    regional:
-      # Choose either "project_hexes" or "create_region" method
-      project_hexes:
-        extent_x_km: 5403.0
-        extent_y_km: 3183.0
-        center_lat: 38.5
-        center_lon: -97.5
-        rotation_degrees: 20.0 # Birds-eye counter-clockwise
+    # regional:  # Leave the section out for global meshes
+  #     # Choose either "project_hexes" or "create_region" method
+  #     project_hexes:
+  #       extent_x_km: 5403.0
+  #       extent_y_km: 3183.0
+  #       center_lat: 38.5
+  #       center_lon: -97.5
+  #       rotation_degrees: 20.0 # Birds-eye counter-clockwise
       # create_region:  # Choose one of the types: "polygon", "circle", "ellipse", "channel"
-      #   polygon:
-      #     point: 38.5, -97.5  # A point inside the polygon
-      #     vertices:  # In counter clock-wise order (can be any convex shape)
-      #     - 21.03, -122.82
-      #     - 47.94, -134.20
-      #     - 47.94, -60.80
-      #     - 21.03, -72.18
-        # circle:
-        #   point: 39.0, -105.5 # Center
-        #   radius: 400000  # Meters
+  #       polygon:
+  #         point: 38.5, -97.5  # A point inside the polygon
+  #         vertices:  # In counter clock-wise order (can be any convex shape)
+  #         - 21.03, -122.82
+  #         - 47.94, -134.20
+  #         - 47.94, -60.80
+  #         - 21.03, -72.18
+  #       circle:
+  #         point: 39.0, -105.5 # Center
+  #         radius: 400000  # Meters
         # ellipse:
-        #   point: 40.0, -98.5 # Center
-        #   semi-major-axis: 3500000  # Meters (oriented N/S before rotation)
-        #   semi-minor-axis: 2000000  # Meters (oriented E/W before rotation)
-        #   orientation-angle: 90 # Clockwise rotation from north
-        # channel:
-        #   upper-lat: 23.43676
-        #   lower-lat: -23.43676
+        #   point: 38.0, 138.0 # Center
+        #   semi-major-axis: 1580000  # Meters (oriented N/S before rotation)
+        #   semi-minor-axis: 1000000  # Meters (oriented E/W before rotation)
+        #   orientation-angle: 45 # Clockwise rotation from north
+  #       channel:
+  #         upper-lat: 23.43676
+  #         lower-lat: -23.43676
 
 #   # Forecast settings
 #   forecast_length_hours: 24

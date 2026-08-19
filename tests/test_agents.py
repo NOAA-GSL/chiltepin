@@ -4,6 +4,7 @@
 
 import asyncio
 import pathlib
+import time
 
 import pytest
 from academy.agent import Agent
@@ -218,6 +219,26 @@ class JoinTaskAgent:
         The join_task launches multiple tasks and returns the final future.
         Parsl will automatically resolve dependencies.
         """
+
+
+@chiltepin_agent()
+class SerializationProbeAgent:
+    """Agent used to probe whether actions run sequentially per actor."""
+
+    def __init__(self):
+        self._inflight = 0
+        self._max_inflight = 0
+
+    @agent_action
+    async def busy(self, delay_seconds: float) -> None:
+        self._inflight += 1
+        self._max_inflight = max(self._max_inflight, self._inflight)
+        await asyncio.sleep(delay_seconds)
+        self._inflight -= 1
+
+    @agent_action
+    async def max_inflight(self) -> int:
+        return self._max_inflight
         # Launch multiple tasks
         future_a = self._compute_part(a, executor=["test-executor"])
         future_b = self._compute_part(b, executor=["test-executor"])
@@ -689,6 +710,39 @@ class TestChiltepinAgentDecorator:
                 assert final > initial, (
                     "Background loop should have incremented counter"
                 )
+        finally:
+            workflow.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_single_agent_actions_are_serialized(self, tmp_path):
+        """Concurrent calls to one agent should execute one action at a time."""
+        from chiltepin import AgentRuntime, Workflow
+
+        config = get_test_config()
+        workflow = Workflow(config, run_dir=str(tmp_path / "runinfo"))
+        workflow.start()
+
+        try:
+            agent_runtime = AgentRuntime(workflow=workflow)
+            async with await agent_runtime.manager() as manager:
+                agent = await manager.launch(
+                    SerializationProbeAgent,
+                    agent_workflow_config=config,
+                    executor="test-executor",
+                )
+
+                delay_seconds = 0.6
+                started = time.perf_counter()
+                await asyncio.gather(
+                    agent.busy(delay_seconds=delay_seconds),
+                    agent.busy(delay_seconds=delay_seconds),
+                )
+                elapsed = time.perf_counter() - started
+
+                max_inflight = await agent.max_inflight()
+
+                assert max_inflight == 1
+                assert elapsed >= (delay_seconds * 1.8)
         finally:
             workflow.cleanup()
 

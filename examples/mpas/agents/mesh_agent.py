@@ -13,12 +13,25 @@ This agent handles the complete mesh lifecycle for MPAS forecasts:
 """
 
 import asyncio
+import json
+import math
+import os
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import numpy as np
+
+from agents.geo_lookup import lookup_region, geometry_to_ellipse
+from agents.geo_lookup_osm import (
+    lookup_region as lookup_region_osm,
+    geometry_to_ellipse as geometry_to_ellipse_osm,
+)
 from parsl.app.errors import BashExitFailure
 
-from chiltepin.agents import agent_action, chiltepin_agent
+from chiltepin.agents import agent_action, agent_loop, chiltepin_agent
 from chiltepin.tasks import bash_task, python_task
 
 
@@ -27,39 +40,41 @@ class MeshAgent:
     """Agent for managing mesh generation and partitioning.
 
     Provides a top-level ``generate_mesh()`` action that routes to the
-    correct generation path based on stored configuration.  Individual
+    correct generation path based on request configuration.  Individual
     utility actions remain callable for advanced use.
     """
 
     def __init__(
         self,
         work_dir: str,
-        mesh_config: Dict[str, Any],
         metis_version: str = "5.2.1",
         mpas_tools_version: str = "2.0.0",
         limited_area_version: str = "v2.2",
+        geo_backend: str = "natural_earth",
     ):
         """Initialize MeshAgent.
 
         Parameters
         ----------
         work_dir : str
-            Directory where mesh tools will be installed and where mesh will be created
-        mesh_config: Dict[str, Any]
-            Mesh generation configuration (type, resolution, method, params, ranks)
+            Directory where mesh tools will be installed and agent logs will be written
         metis_version : str, optional
             Metis version to install, by default "5.2.1"
         mpas_tools_version : str, optional
             MPAS-Tools version to clone, by default "2.0.0"
         limited_area_version : str, optional
             MPAS-Limited-Area version to clone, by default "v2.2"
+        geo_backend : str, optional
+            Geographic lookup backend: "natural_earth" or "osm", by default "natural_earth"
         """
+        if geo_backend not in ("natural_earth", "osm"):
+            raise ValueError(f"geo_backend must be 'natural_earth' or 'osm', got '{geo_backend}'")
+        self.geo_backend = geo_backend
         self.work_dir = Path(work_dir)
-        self.mesh_config = dict(mesh_config)
+        self.log_dir = self.work_dir / "logs"
         self.metis_version = metis_version
         self.mpas_tools_version = mpas_tools_version
         self.limited_area_version = limited_area_version
-        self.log_dir = self.work_dir / "logs"
 
         # Metis state
         self.metis_downloaded = False
@@ -68,7 +83,7 @@ class MeshAgent:
         self.gpmetis_path: Optional[Path] = None
 
         # MPAS-Tools state (hex_projection + grid_rotate)
-        self.mesh_tools_installed = False
+        self.mpas_tools_installed = False
         self.mpas_tools_dir: Optional[Path] = None
         self.hex_projection_path: Optional[Path] = None
         self.grid_rotate_path: Optional[Path] = None
@@ -79,9 +94,7 @@ class MeshAgent:
         self.create_region_path: Optional[Path] = None
 
         # Mesh data
-        self.global_mesh_downloaded = False
         self.mesh_data_url = "https://www2.mmm.ucar.edu/projects/mpas/atmosphere_meshes"
-        self.mesh_data_dir = self.work_dir / "mesh_data"
         # Precomputed resolutions available for download from UCAR
         self.resolution_cells = {
             "480km": 2562,
@@ -102,6 +115,12 @@ class MeshAgent:
             "3km": 65536002,
         }
 
+        # Optional list-based prompt handling for background processing.
+        self._pending_prompt_requests: List[Dict[str, Any]] = []
+        self._prompt_results: Dict[str, Dict[str, Any]] = {}
+        self._last_good_prompt_mesh_configs: Dict[str, Dict[str, Any]] = {}
+        self._prompt_cache_file = self.work_dir / "prompt_mesh_config_cache.json"
+
     # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
@@ -110,6 +129,522 @@ class MeshAgent:
     def _parse_resolution_km(resolution: str) -> float:
         """Convert resolution string like '120km' or '7.5km' to float km."""
         return float(resolution.lower().replace("km", ""))
+
+    @staticmethod
+    def _resolve_mesh_data_dir(mesh_data_dir: str) -> Path:
+        """Resolve and create the per-request mesh data directory."""
+        resolved_dir = Path(mesh_data_dir)
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+        return resolved_dir
+
+    def _mesh_geo_system_prompt(self) -> str:
+        """System prompt that asks the LLM to extract geographic entity names."""
+        resolutions = ", ".join(self.resolution_cells.keys())
+        return (
+            "You extract geographic entity names from user mesh requests. "
+            "Return ONLY a JSON object (no markdown, no explanation). "
+            f"Valid resolution values are: {resolutions}. "
+            "Schema: "
+            '{"resolution": "STRING", "name": "STRING", '
+            '"region_names": ["NAME1", "NAME2", ...], '
+            '"exclude_names": ["NAME1", ...]}. '
+            "Field definitions: "
+            "- region_names: a list of standard geographic entity names (countries, "
+            "states, provinces, or continents) whose union covers the described region. "
+            "Use official English names as they appear in Natural Earth datasets "
+            "(e.g. 'Japan', 'United States of America', 'Texas', 'Oklahoma'). "
+            "Continent names are also valid: 'Europe', 'Asia', 'Africa', "
+            "'North America', 'South America', 'Oceania', 'Antarctica'. "
+            "- exclude_names: optional list of countries to exclude from the region. "
+            "Use when the user says to exclude specific countries from a "
+            "continent or larger region (e.g. exclude Russia from Europe). "
+            "Rules: "
+            "- For continents, use the continent name (e.g. 'Europe', 'Asia'). "
+            "- For countries, use the country name (e.g. 'Japan', 'France'). "
+            "- For countries with distant overseas territories, use only the mainland "
+            "name if the user clearly means the mainland (e.g. 'France' means "
+            "Metropolitan France, not French Guiana). "
+            "- For vernacular regions (e.g. 'Tornado Alley', 'CONUS', 'The Rockies'), "
+            "list the constituent states or provinces that make up that region. "
+            "- If the user says to EXCLUDE certain countries or regions, put them in "
+            "exclude_names, not in region_names. "
+            "- For global meshes, set region_names to an empty list. "
+            "- If the user specifies a resolution, use it exactly. "
+            "- name should be a short descriptive slug (e.g. 'japan_15km')."
+        )
+
+    async def _mesh_config_from_prompt_geo(
+        self,
+        prompt: str,
+        model: str,
+        llm_url: str,
+        api_key: Optional[str] = None,
+        buffer_km: float = 300.0,
+    ) -> Dict[str, Any]:
+        """LLM extracts region names, Natural Earth provides authoritative geometry."""
+        try:
+            payload = await asyncio.to_thread(
+                self._ollama_chat, prompt, model, llm_url,
+                self._mesh_geo_system_prompt(), 300, api_key,
+            )
+            region_names = payload.get("region_names", [])
+            if not region_names:
+                return self._normalize_mesh_config(payload)
+
+            resolution = payload.get("resolution", "120km")
+            name = payload.get("name", f"mesh_{resolution}")
+            exclude_names = payload.get("exclude_names", [])
+
+            geom = lookup_region(region_names, exclude_names=exclude_names)
+            if geom is None:
+                raise ValueError(
+                    f"Could not resolve geographic entities: {region_names}"
+                )
+
+            ellipse = geometry_to_ellipse(geom, buffer_km=buffer_km)
+            mesh_config = {
+                "resolution": resolution,
+                "name": name,
+                "regional": {
+                    "create_region": {
+                        "ellipse": {
+                            "point": f"{ellipse['center_lat']}, {ellipse['center_lon']}",
+                            "semi-major-axis": ellipse["semi_major_m"],
+                            "semi-minor-axis": ellipse["semi_minor_m"],
+                            "orientation-angle": ellipse["orientation_deg"],
+                        }
+                    }
+                },
+            }
+            self._store_cached_prompt_config(prompt, mesh_config)
+            return mesh_config
+        except Exception as exc:
+            cached = self._load_cached_prompt_config(prompt)
+            if cached is not None:
+                return cached
+            raise RuntimeError(
+                f"Failed to generate mesh config from prompt: {exc}"
+            ) from exc
+
+    def _load_cached_prompt_config(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Load cached mesh config for a prompt from memory or disk."""
+        cached = self._last_good_prompt_mesh_configs.get(prompt)
+        if isinstance(cached, dict):
+            return dict(cached)
+
+        if not self._prompt_cache_file.exists():
+            return None
+
+        try:
+            payload = json.loads(self._prompt_cache_file.read_text())
+        except Exception:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        cached = payload.get(prompt)
+        if not isinstance(cached, dict):
+            return None
+
+        self._last_good_prompt_mesh_configs[prompt] = dict(cached)
+        return dict(cached)
+
+    def _store_cached_prompt_config(self, prompt: str, mesh_config: Dict[str, Any]) -> None:
+        """Store successful prompt mesh config in memory and on disk."""
+        self._last_good_prompt_mesh_configs[prompt] = dict(mesh_config)
+
+        cache_payload: Dict[str, Any] = {}
+        if self._prompt_cache_file.exists():
+            try:
+                existing = json.loads(self._prompt_cache_file.read_text())
+                if isinstance(existing, dict):
+                    cache_payload = existing
+            except Exception:
+                cache_payload = {}
+
+        cache_payload[prompt] = mesh_config
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self._prompt_cache_file.write_text(json.dumps(cache_payload, indent=2, sort_keys=True))
+
+    @staticmethod
+    def _extract_json_object(text: str) -> Dict[str, Any]:
+        """Extract and parse a JSON object from model output text."""
+        cleaned = text.strip()
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        # Handle ```json ... ``` fenced code blocks
+        fence_start = cleaned.find("```json")
+        if fence_start != -1:
+            json_start = cleaned.find("\n", fence_start) + 1
+            fence_end = cleaned.find("```", json_start)
+            if fence_end != -1:
+                try:
+                    parsed = json.loads(cleaned[json_start:fence_end].strip())
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError("Model response did not contain a JSON object.")
+
+        candidate = cleaned[start:end + 1]
+        parsed = json.loads(candidate)
+        if not isinstance(parsed, dict):
+            raise ValueError("Parsed JSON payload is not an object.")
+        return parsed
+
+    def _normalize_mesh_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize and validate a model-produced mesh configuration payload."""
+        if not isinstance(payload, dict):
+            raise ValueError("Mesh config payload must be a JSON object.")
+
+        config = payload.get("mesh_config") or payload.get("mesh") or payload
+        if not isinstance(config, dict):
+            raise ValueError("Mesh config must be a JSON object.")
+
+        create_region_shape_keys = {"polygon", "circle", "ellipse", "channel"}
+        ellipse_keys = {"point", "semi-major-axis", "semi-minor-axis", "orientation-angle"}
+        circle_keys = {"point", "radius"}
+        channel_keys = {"upper-lat", "lower-lat"}
+        polygon_keys = {"point", "vertices"}
+
+        if "project_hexes" in config or "create_region" in config:
+            config = {
+                key: value for key, value in config.items()
+                if key not in {"project_hexes", "create_region"}
+            } | {
+                "regional": {
+                    key: payload_value
+                    for key, payload_value in config.items()
+                    if key in {"project_hexes", "create_region"}
+                }
+            }
+
+        if "regional" not in config and any(
+            key in payload for key in {"project_hexes", "create_region"}
+        ):
+            config = dict(config)
+            config["regional"] = {
+                key: payload_value
+                for key, payload_value in payload.items()
+                if key in {"project_hexes", "create_region"}
+            }
+
+        resolution = config.get("resolution", "120km")
+        if resolution not in self.resolution_cells:
+            raise ValueError(
+                f"Resolution '{resolution}' is invalid. "
+                f"Valid values: {list(self.resolution_cells.keys())}"
+            )
+
+        regional = config.get("regional")
+        if regional is not None:
+            if not isinstance(regional, dict):
+                raise ValueError("'regional' must be an object when provided.")
+            regional = {
+                key: value for key, value in regional.items()
+                if value is not None and value != {}
+            }
+
+            if "create_region" not in regional and any(
+                key in regional for key in create_region_shape_keys
+            ):
+                regional = {
+                    "create_region": {
+                        key: regional[key]
+                        for key in create_region_shape_keys
+                        if key in regional
+                    }
+                }
+
+            if "create_region" in regional and isinstance(regional["create_region"], dict):
+                create_region_config = {
+                    key: value
+                    for key, value in regional["create_region"].items()
+                    if value is not None and value != {}
+                }
+
+                # Normalize common LLM key variants to MPAS-Limited-Area names.
+                key_aliases = {
+                    "semi_major_axis": "semi-major-axis",
+                    "semi_minor_axis": "semi-minor-axis",
+                    "orientation_angle": "orientation-angle",
+                    "upper_lat": "upper-lat",
+                    "lower_lat": "lower-lat",
+                }
+                create_region_config = {
+                    key_aliases.get(key, key): value
+                    for key, value in create_region_config.items()
+                }
+
+                # Also normalize aliases inside explicit shape payloads, e.g.
+                # {"ellipse": {"semi_minor_axis": ...}}.
+                for shape_name in create_region_shape_keys:
+                    shape_payload = create_region_config.get(shape_name)
+                    if isinstance(shape_payload, dict):
+                        create_region_config[shape_name] = {
+                            key_aliases.get(key, key): value
+                            for key, value in shape_payload.items()
+                        }
+
+                create_region_keys = set(create_region_config.keys())
+                has_shape_key = any(
+                    key in create_region_shape_keys for key in create_region_keys
+                )
+
+                # Allow style: {"type": "ellipse", ...shape fields...}
+                if not has_shape_key:
+                    shape_type = create_region_config.get("type")
+                    if not isinstance(shape_type, str):
+                        shape_type = create_region_config.get("shape")
+                    if isinstance(shape_type, str):
+                        shape_type = shape_type.strip().lower()
+                        if shape_type in create_region_shape_keys:
+                            shape_payload = {
+                                key: value
+                                for key, value in create_region_config.items()
+                                if key not in {"type", "shape"}
+                            }
+                            create_region_config = {shape_type: shape_payload}
+                            create_region_keys = set(create_region_config.keys())
+                            has_shape_key = True
+
+                if not has_shape_key and create_region_keys:
+                    if create_region_keys.issubset(ellipse_keys):
+                        create_region_config = {"ellipse": create_region_config}
+                    elif create_region_keys.issubset(circle_keys):
+                        create_region_config = {"circle": create_region_config}
+                    elif create_region_keys.issubset(channel_keys):
+                        create_region_config = {"channel": create_region_config}
+                    elif create_region_keys.issubset(polygon_keys):
+                        create_region_config = {"polygon": create_region_config}
+                regional["create_region"] = create_region_config
+
+            project_hexes_keys = {
+                "center_lat",
+                "center_lon",
+                "extent_x_km",
+                "extent_y_km",
+                "rotation_degrees",
+            }
+            if "project_hexes" not in regional and "create_region" not in regional:
+                regional_keys = set(regional.keys())
+                if regional_keys and regional_keys.issubset(project_hexes_keys):
+                    regional = {"project_hexes": regional}
+            config["regional"] = regional
+            regional_modes = [k for k in ["project_hexes", "create_region"] if k in regional]
+            if len(regional_modes) != 1:
+                raise ValueError(
+                    "'regional' must contain exactly one of 'project_hexes' or 'create_region'. "
+                    f"Got keys: {sorted(regional.keys())}"
+                )
+
+        return config
+
+    def _ollama_chat(
+        self,
+        prompt: str,
+        model: str,
+        llm_url: str,
+        system_prompt: Optional[str] = None,
+        timeout_seconds: int = 120,
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Call a chat completions endpoint and return parsed JSON object.
+
+        Supports Ollama (/api/chat), OpenAI-compatible (/v1/chat/completions),
+        and Anthropic Messages (/v1/messages) formats.
+        """
+        system = system_prompt or self._mesh_prompt_system_prompt()
+        is_anthropic = "/v1/messages" in llm_url
+        is_openai_format = not is_anthropic and "/v1/" in llm_url
+
+        if is_anthropic:
+            body: Dict[str, Any] = {
+                "model": model,
+                "max_tokens": 4096,
+                "system": system,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            headers: Dict[str, str] = {
+                "Content-Type": "application/json",
+                "x-api-key": api_key or "",
+                "anthropic-version": "2023-06-01",
+            }
+        elif is_openai_format:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ]
+            body = {
+                "model": model,
+                "stream": False,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+            }
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ]
+            body = {
+                "model": model,
+                "stream": False,
+                "format": "json",
+                "messages": messages,
+            }
+            headers = {"Content-Type": "application/json"}
+
+        request = urllib.request.Request(
+            llm_url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"LLM endpoint request failed: {e}") from e
+
+        # Extract content from response format
+        if is_anthropic:
+            content_blocks = response_payload.get("content", [])
+            text_block = next((b for b in content_blocks if b.get("type") == "text"), None)
+            if text_block is None:
+                raise RuntimeError("Anthropic response contained no text block.")
+            content = text_block.get("text")
+        elif "choices" in response_payload:
+            choices = response_payload["choices"]
+            if not choices:
+                raise RuntimeError("LLM response contained no choices.")
+            content = choices[0].get("message", {}).get("content")
+        else:
+            content = response_payload.get("message", {}).get("content")
+
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("LLM response did not contain message content.")
+
+        return self._extract_json_object(content)
+
+    def _mesh_osm_system_prompt(self) -> str:
+        """System prompt for OSM Nominatim geo-lookup (no continent support)."""
+        resolutions = ", ".join(self.resolution_cells.keys())
+        return (
+            "You extract geographic entity names from user mesh requests. "
+            "Return ONLY a JSON object (no markdown, no explanation). "
+            f"Valid resolution values are: {resolutions}. "
+            "Schema: "
+            '{"resolution": "STRING", "name": "STRING", '
+            '"region_names": ["NAME1", "NAME2", ...], '
+            '"exclude_names": ["NAME1", ...]}. '
+            "Field definitions: "
+            "- region_names: a list of standard geographic entity names (countries, "
+            "states, provinces, cities, or sub-national regions) whose union covers "
+            "the described region. "
+            "Use official English names as they appear in OpenStreetMap "
+            "(e.g. 'Japan', 'United States of America', 'Texas', 'Oklahoma', "
+            "'Denver', 'Manhattan'). "
+            "IMPORTANT: Do NOT use continent names like 'Europe' or 'Asia'. "
+            "Instead, expand them into the list of constituent countries. "
+            "For example, 'Europe' should become ['France', 'Germany', 'Italy', "
+            "'Spain', 'Portugal', 'United Kingdom', ...] listing all relevant "
+            "European countries. "
+            "- exclude_names: optional list of countries to exclude from the region. "
+            "Use when the user says to exclude specific countries from a "
+            "larger region (e.g. exclude Russia from Europe). "
+            "Rules: "
+            "- For continents, expand into ALL constituent countries. "
+            "- For countries, use the country name (e.g. 'Japan', 'France'). "
+            "- For countries with distant overseas territories, use only the mainland "
+            "name if the user clearly means the mainland. "
+            "- For vernacular regions (e.g. 'Tornado Alley', 'CONUS', 'The Rockies'), "
+            "list the constituent states or provinces that make up that region. "
+            "- If the user says to EXCLUDE certain countries or regions, put them in "
+            "exclude_names, not in region_names. "
+            "- For global meshes, set region_names to an empty list. "
+            "- If the user specifies a resolution, use it exactly. "
+            "- name should be a short descriptive slug (e.g. 'japan_15km')."
+        )
+
+    async def _mesh_config_from_prompt_osm(
+        self,
+        prompt: str,
+        model: str,
+        llm_url: str,
+        api_key: Optional[str] = None,
+        buffer_km: float = 300.0,
+    ) -> Dict[str, Any]:
+        """LLM extracts region names, OSM Nominatim provides geometry."""
+        try:
+            payload = await asyncio.to_thread(
+                self._ollama_chat, prompt, model, llm_url,
+                self._mesh_osm_system_prompt(), 300, api_key,
+            )
+            region_names = payload.get("region_names", [])
+            if not region_names:
+                return self._normalize_mesh_config(payload)
+
+            resolution = payload.get("resolution", "120km")
+            name = payload.get("name", f"mesh_{resolution}")
+            exclude_names = payload.get("exclude_names", [])
+
+            geom = await asyncio.to_thread(
+                lookup_region_osm, region_names, exclude_names=exclude_names,
+            )
+            if geom is None:
+                raise ValueError(
+                    f"Could not resolve geographic entities: {region_names}"
+                )
+
+            ellipse = geometry_to_ellipse_osm(geom, buffer_km=buffer_km)
+            mesh_config = {
+                "resolution": resolution,
+                "name": name,
+                "regional": {
+                    "create_region": {
+                        "ellipse": {
+                            "point": f"{ellipse['center_lat']}, {ellipse['center_lon']}",
+                            "semi-major-axis": ellipse["semi_major_m"],
+                            "semi-minor-axis": ellipse["semi_minor_m"],
+                            "orientation-angle": ellipse["orientation_deg"],
+                        }
+                    }
+                },
+            }
+            self._store_cached_prompt_config(prompt, mesh_config)
+            return mesh_config
+        except Exception as exc:
+            cached = self._load_cached_prompt_config(prompt)
+            if cached is not None:
+                return cached
+            raise RuntimeError(
+                f"Failed to generate mesh config from prompt: {exc}"
+            ) from exc
+
+    async def _mesh_config_from_prompt(
+        self,
+        prompt: str,
+        model: str,
+        llm_url: str,
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Convert natural language into mesh config via LLM + geo-lookup."""
+        if self.geo_backend == "osm":
+            return await self._mesh_config_from_prompt_osm(prompt, model, llm_url, api_key)
+        return await self._mesh_config_from_prompt_geo(prompt, model, llm_url, api_key)
 
     @staticmethod
     def _write_project_hexes_namelist(
@@ -176,49 +711,108 @@ class MeshAgent:
         """
         work_dir.mkdir(parents=True, exist_ok=True)
 
+        def point_string(region: Dict[str, Any], shape_name: str) -> str:
+            """Return point string in 'lat, lon' format from common field variants."""
+            point = region.get("point")
+            if isinstance(point, str) and point.strip():
+                return point.strip()
+            if isinstance(point, (list, tuple)) and len(point) == 2:
+                return f"{point[0]}, {point[1]}"
+            if isinstance(point, dict):
+                lat = point.get("lat")
+                lon = point.get("lon")
+                if lat is not None and lon is not None:
+                    return f"{lat}, {lon}"
+
+            center = region.get("center")
+            if isinstance(center, str) and center.strip():
+                return center.strip()
+            if isinstance(center, (list, tuple)) and len(center) == 2:
+                return f"{center[0]}, {center[1]}"
+            if isinstance(center, dict):
+                lat = center.get("lat")
+                lon = center.get("lon")
+                if lat is not None and lon is not None:
+                    return f"{lat}, {lon}"
+
+            center_lat = region.get("center_lat")
+            center_lon = region.get("center_lon")
+            if center_lat is not None and center_lon is not None:
+                return f"{center_lat}, {center_lon}"
+
+            raise ValueError(
+                f"Missing 'point' for create_region {shape_name}. "
+                "Expected one of: point, center, or center_lat/center_lon."
+            )
+
         if "polygon" in create_region_config:
             poly = create_region_config["polygon"]
+            vertices = poly.get("vertices")
+            if not isinstance(vertices, list) or len(vertices) < 3:
+                raise ValueError(
+                    "create_region polygon requires at least 3 vertices. "
+                    "Received missing or incomplete 'vertices'."
+                )
             spec_file = work_dir / f"{name}.custom.pts"
             lines = [
                 f"Name: {name}",
                 "Type: custom",
-                f"Point: {poly['point']}",
+                f"Point: {point_string(poly, 'polygon')}",
             ]
-            for vertex in poly.get("vertices", []):
-                lines.append(str(vertex))
+            for vertex in vertices:
+                if isinstance(vertex, (list, tuple)) and len(vertex) == 2:
+                    lines.append(f"{vertex[0]}, {vertex[1]}")
+                else:
+                    lines.append(str(vertex))
         elif "circle" in create_region_config:
             circ = create_region_config["circle"]
             spec_file = work_dir / f"{name}.circle.pts"
             lines = [
                 f"Name: {name}",
                 "Type: circle",
-                f"Point: {circ['point']}",
+                f"Point: {point_string(circ, 'circle')}",
                 f"radius: {circ['radius']}",
             ]
         elif "ellipse" in create_region_config:
             ell = create_region_config["ellipse"]
+            semi_major_axis = ell.get("semi-major-axis", ell.get("semi_major_axis"))
+            semi_minor_axis = ell.get("semi-minor-axis", ell.get("semi_minor_axis"))
+            if semi_major_axis is None or semi_minor_axis is None:
+                raise ValueError(
+                    "Missing ellipse axis values for create_region. "
+                    "Expected semi-major-axis/semi-minor-axis "
+                    "(or semi_major_axis/semi_minor_axis)."
+                )
             spec_file = work_dir / f"{name}.ellipse.pts"
             lines = [
                 f"Name: {name}",
                 "Type: ellipse",
-                f"Point: {ell['point']}",
-                f"Semi-major-axis: {ell['semi-major-axis']}",
-                f"Semi-minor-axis: {ell['semi-minor-axis']}",
-                f"Orientation-angle: {ell.get('orientation-angle', 0)}",
+                f"Point: {point_string(ell, 'ellipse')}",
+                f"Semi-major-axis: {semi_major_axis}",
+                f"Semi-minor-axis: {semi_minor_axis}",
+                f"Orientation-angle: {ell.get('orientation-angle', ell.get('orientation_angle', 0))}",
             ]
         elif "channel" in create_region_config:
             chan = create_region_config["channel"]
+            upper_lat = chan.get("upper-lat", chan.get("upper_lat"))
+            lower_lat = chan.get("lower-lat", chan.get("lower_lat"))
+            if upper_lat is None or lower_lat is None:
+                raise ValueError(
+                    "Missing channel bounds for create_region. "
+                    "Expected upper-lat/lower-lat (or upper_lat/lower_lat)."
+                )
             spec_file = work_dir / f"{name}.channel.pts"
             lines = [
                 f"Name: {name}",
                 "Type: channel",
-                f"Upper-lat: {chan['upper-lat']}",
-                f"Lower-lat: {chan['lower-lat']}",
+                f"Upper-lat: {upper_lat}",
+                f"Lower-lat: {lower_lat}",
             ]
         else:
             raise ValueError(
                 f"No recognized region type in limited_area config. "
-                f"Expected one of: polygon, circle, ellipse, channel"
+                f"Expected one of: polygon, circle, ellipse, channel. "
+                f"Got keys: {sorted(create_region_config.keys())}"
             )
 
         spec_file.write_text("\n".join(lines) + "\n")
@@ -403,7 +997,7 @@ class MeshAgent:
 
     @bash_task
     def _create_region(
-        self, resolution: str, region_spec: str, output_dir: str,
+        self, parent_static_mesh: str, region_spec: str, output_dir: str,
     ) -> str:
         """Run create_region to cut a regional mesh from a global mesh."""
         import textwrap
@@ -416,7 +1010,7 @@ class MeshAgent:
             mkdir -p {output_dir}
             cd {output_dir}
             {self.create_region_path} {region_spec} \
-                {self.mesh_data_dir}/x1.{self.resolution_cells[resolution]}.static.nc
+                {parent_static_mesh}
             echo "Completed create_region at $(date)"
             """
         )
@@ -426,12 +1020,11 @@ class MeshAgent:
     # -------------------------------------------------------------------------
 
     @python_task
-    def _download_global_mesh(self, resolution: str) -> None:
-        """Download precomputed global mesh files for specified resolution."""
+    def _download_global_mesh(self, resolution: str, mesh_data_dir: str) -> None:
+        """Download and extract a precomputed global mesh from UCAR."""
         import tarfile
-        import urllib.request
 
-        mesh_data_dir = Path(self.mesh_data_dir)
+        mesh_data_dir = Path(mesh_data_dir)
         mesh_data_dir.mkdir(parents=True, exist_ok=True)
 
         cells = self.resolution_cells[resolution]
@@ -467,25 +1060,24 @@ class MeshAgent:
         has_boundary_mask = "bdyMaskCell" in ux_ds.data_vars
 
         if has_boundary_mask:
+            from matplotlib.colors import ListedColormap
+            _bdy_colors = [
+                "#ffffff",  # 0 = interior
+                "#d0e8ff",  # 1 = light blue
+                "#80c8ff",  # 2 = medium blue
+                "#40a0e0",  # 3 = deeper blue
+                "#ffcc66",  # 4 = gold
+                "#ff8844",  # 5 = orange
+                "#e05050",  # 6 = red
+                "#aa3090",  # 7 = purple
+            ]
             mesh_plot = ux_ds["bdyMaskCell"].plot.polygons(
-                cmap="Set1",
+                cmap=ListedColormap(_bdy_colors),
                 colorbar=True,
                 clabel="Boundary Mask Layer",
             )
         else:
             mesh_plot = ux_ds.uxgrid.plot.edges()
-
-        # Keep map overlay best-effort so mesh plotting remains robust.
-        try:
-            coastlines = gv.feature.coastline.opts(edgecolor="black", linewidth=1.0)
-            borders = gv.feature.borders.opts(edgecolor="dimgray", linewidth=0.8)
-            states = gv.feature.states.opts(edgecolor="gray", linewidth=0.6)
-            grid_lines = gv.feature.grid.opts(
-                edgecolor="gray", linestyle="--", linewidth=0.5,
-            )
-            final_layout = mesh_plot * coastlines * borders * states * grid_lines
-        except Exception:
-            final_layout = mesh_plot
 
         lon = ux_ds.uxgrid.face_lon.values
         lat = ux_ds.uxgrid.face_lat.values
@@ -493,16 +1085,61 @@ class MeshAgent:
         lon_max = float(np.nanmax(lon))
         lat_min = float(np.nanmin(lat))
         lat_max = float(np.nanmax(lat))
+        extent_deg = max(lon_max - lon_min, lat_max - lat_min)
+
+        # Keep map overlay best-effort so mesh plotting remains robust.
+        try:
+            import cartopy.feature as cfeature
+            import cartopy.crs as ccrs
+            import cartopy.io.shapereader as shpreader
+
+            coast_path = shpreader.natural_earth('10m', 'physical', 'coastline')
+            coastlines = gv.Feature(cfeature.ShapelyFeature(
+                shpreader.Reader(coast_path).geometries(), ccrs.PlateCarree(),
+                facecolor="none", edgecolor="black", linewidth=1.2,
+            ))
+
+            borders_path = shpreader.natural_earth('10m', 'cultural', 'admin_0_boundary_lines_land')
+            borders = gv.Feature(cfeature.ShapelyFeature(
+                shpreader.Reader(borders_path).geometries(), ccrs.PlateCarree(),
+                facecolor="none", edgecolor="#222222", linewidth=1.4,
+            ))
+
+            states_path = shpreader.natural_earth('10m', 'cultural', 'admin_1_states_provinces_lines')
+            states = gv.Feature(cfeature.ShapelyFeature(
+                shpreader.Reader(states_path).geometries(), ccrs.PlateCarree(),
+                facecolor="none", edgecolor="#666666", linewidth=0.5,
+            ))
+
+            final_layout = mesh_plot * coastlines * borders
+
+            center_lon = (lon_min + lon_max) / 2
+            center_lat = (lat_min + lat_max) / 2
+            states_threshold = 60.0 if (-130 <= center_lon <= -60 and 20 <= center_lat <= 55) else 30.0
+            if extent_deg < states_threshold:
+                final_layout = final_layout * states
+
+            if extent_deg < 15.0:
+                counties_path = shpreader.natural_earth('10m', 'cultural', 'admin_2_counties')
+                boundary_lines = [g.boundary for g in shpreader.Reader(counties_path).geometries()]
+                counties = gv.Feature(cfeature.ShapelyFeature(
+                    boundary_lines, ccrs.PlateCarree(),
+                    facecolor="none", edgecolor="#aaaaaa", linewidth=0.3,
+                ))
+                final_layout = final_layout * counties
+        except Exception:
+            final_layout = mesh_plot
+
         pad_frac = 0.05
         lon_pad = max((lon_max - lon_min) * pad_frac, 0.1)
         lat_pad = max((lat_max - lat_min) * pad_frac, 0.1)
         final_layout = final_layout.opts(
             xlim=(lon_min - lon_pad, lon_max + lon_pad),
             ylim=(lat_min - lat_pad, lat_max + lat_pad),
+            bgcolor="white",
         )
 
         plot_name = mesh_path.stem.removesuffix(".static")
-        # Render at presentation-friendly resolution.
         title = f"MPAS Mesh: {plot_name}"
         if resolution:
             title = f"{title} ({resolution})"
@@ -690,7 +1327,7 @@ class MeshAgent:
             self.mpas_tools_dir / "mesh_tools" / "grid_rotate" / "grid_rotate"
         )
 
-        self.mesh_tools_installed = True
+        self.mpas_tools_installed = True
 
     @agent_action
     async def project_hexes(
@@ -698,6 +1335,7 @@ class MeshAgent:
         resolution: str,
         project_hexes_config: Dict[str, Any],
         mesh_name: str,
+        mesh_data_dir: str,
     ) -> Dict[str, str]:
         """Generate a regional mesh using project_hexes (+ optional rotate).
 
@@ -709,19 +1347,22 @@ class MeshAgent:
             project_hexes configuration block
         mesh_name : str
             Name used for working directory under mesh_data
+        mesh_data_dir : str
+            Directory where global/regional mesh files are written
 
         Returns
         -------
         dict
             {"mesh": path, "graph": path}
         """
-        if not self.mesh_tools_installed:
+        if not self.mpas_tools_installed:
             raise RuntimeError(
                 "Must call install_mpas_tools() or install() before "
                 "project_hexes()"
             )
 
-        work_dir = self.mesh_data_dir / mesh_name
+        request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
+        work_dir = request_mesh_data_dir / mesh_name
         work_dir.mkdir(parents=True, exist_ok=True)
 
         self._write_project_hexes_namelist(
@@ -729,8 +1370,8 @@ class MeshAgent:
             self._parse_resolution_km(resolution),
             float(project_hexes_config["extent_x_km"]),
             float(project_hexes_config["extent_y_km"]),
-            float(project_hexes_config["center_lat"]),
-            float(project_hexes_config["center_lon"]),
+            self._parse_coordinate(project_hexes_config["center_lat"]),
+            self._parse_coordinate(project_hexes_config["center_lon"]),
         )
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -754,8 +1395,8 @@ class MeshAgent:
             hex_mesh_path = mesh_path
             mesh_path = await self.grid_rotate(
                 mesh_path,
-                float(project_hexes_config["center_lat"]),
-                float(project_hexes_config["center_lon"]),
+                self._parse_coordinate(project_hexes_config["center_lat"]),
+                self._parse_coordinate(project_hexes_config["center_lon"]),
                 rotation,
             )
             Path(hex_mesh_path).unlink(missing_ok=True)
@@ -803,7 +1444,7 @@ class MeshAgent:
         str
             Path to rotated mesh file
         """
-        if not self.mesh_tools_installed:
+        if not self.mpas_tools_installed:
             raise RuntimeError(
                 "Must call install_mpas_tools() or install() before "
                 "grid_rotate()"
@@ -872,6 +1513,7 @@ class MeshAgent:
         resolution: str,
         create_region_config: Dict[str, Any],
         mesh_name: str,
+        mesh_data_dir: str,
     ) -> Dict[str, str]:
         """Run create_region to cut a regional mesh from a global mesh.
 
@@ -886,6 +1528,8 @@ class MeshAgent:
             Region config containing one of: polygon, circle, ellipse, channel
         mesh_name : str
             Name used for the spec file and output directory
+        mesh_data_dir : str
+            Directory where global/regional mesh files are written
 
         Returns
         -------
@@ -897,21 +1541,26 @@ class MeshAgent:
                 "Must call install_limited_area() or install() before "
                 "create_region()"
             )
-        if not self.global_mesh_downloaded:
-            raise RuntimeError(
-                "Must call download_global_mesh() before "
-                "create_region()"
+        if resolution not in self.resolution_cells:
+            raise ValueError(
+                f"Resolution '{resolution}' not available for download. "
+                f"Available: {list(self.resolution_cells.keys())}"
             )
-
-        output_dir = self.mesh_data_dir / mesh_name
+        request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
+        output_dir = request_mesh_data_dir / mesh_name
         spec_file = self._write_create_region_spec(
             output_dir, create_region_config, mesh_name,
         )
 
+        cells = self.resolution_cells[resolution]
+        parent_static_mesh = request_mesh_data_dir / f"x1.{cells}.static.nc"
+        if not parent_static_mesh.exists():
+            await self.download_global_mesh(resolution, mesh_data_dir)
+
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
         future = self._create_region(
-            resolution,
+            str(parent_static_mesh),
             str(spec_file),
             str(output_dir),
             executor=["compute"],
@@ -1035,7 +1684,7 @@ class MeshAgent:
         self.grid_rotate_path = (
             self.mpas_tools_dir / "mesh_tools" / "grid_rotate" / "grid_rotate"
         )
-        self.mesh_tools_installed = True
+        self.mpas_tools_installed = True
 
         # Await MPAS-Limited-Area
         try:
@@ -1054,13 +1703,19 @@ class MeshAgent:
     # -------------------------------------------------------------------------
 
     @agent_action
-    async def download_global_mesh(self, resolution: str) -> Dict[str, str]:
+    async def download_global_mesh(
+        self,
+        resolution: str,
+        mesh_data_dir: str,
+    ) -> Dict[str, str]:
         """Download precomputed global mesh files for specified resolution.
 
         Parameters
         ----------
         resolution : str
             Mesh resolution (e.g., "120km", "60km")
+        mesh_data_dir : str
+            Directory where downloaded global mesh files are written
 
         Returns
         -------
@@ -1074,10 +1729,11 @@ class MeshAgent:
             )
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.mesh_data_dir.mkdir(parents=True, exist_ok=True)
+        request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
 
         future = self._download_global_mesh(
             resolution,
+            str(request_mesh_data_dir),
             executor=["service"],
         )
         try:
@@ -1087,11 +1743,10 @@ class MeshAgent:
                 f"Global mesh download failed: {e}"
             )
 
-        self.global_mesh_downloaded = True
         cells = self.resolution_cells[resolution]
         return {
-            "static": str(self.mesh_data_dir / f"x1.{cells}.static.nc"),
-            "graph": str(self.mesh_data_dir / f"x1.{cells}.graph.info"),
+            "static": str(request_mesh_data_dir / f"x1.{cells}.static.nc"),
+            "graph": str(request_mesh_data_dir / f"x1.{cells}.graph.info"),
         }
 
 
@@ -1137,18 +1792,103 @@ class MeshAgent:
     # -------------------------------------------------------------------------
 
     @agent_action
-    async def update_config(self, mesh_config: Dict[str, Any]) -> None:
-        """Replace the current mesh configuration."""
-        self.mesh_config = dict(mesh_config)
+    async def mesh_config_from_prompt(
+        self,
+        prompt: str,
+        model: str = "qwen2.5:3b",
+        llm_url: str = "http://localhost:11434/api/chat",
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return validated mesh_config JSON inferred from natural language."""
+        return await self._mesh_config_from_prompt(prompt, model, llm_url, api_key)
 
     @agent_action
-    async def ensure_tools_installed(self) -> None:
-        """Install only the tools required by the current mesh configuration.
+    async def create_mesh_from_prompt(
+        self,
+        prompt: str,
+        mesh_data_dir: str,
+        model: str = "qwen2.5:3b",
+        llm_url: str = "http://localhost:11434/api/chat",
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate a mesh from a natural language request using an LLM."""
+        mesh_config = await self._mesh_config_from_prompt(prompt, model, llm_url, api_key)
+        mesh_result = await self.generate_mesh(mesh_config, mesh_data_dir)
+        return {
+            "mesh_config": mesh_config,
+            "mesh_result": mesh_result,
+        }
+
+    @agent_action
+    async def submit_mesh_prompt(
+        self,
+        prompt: str,
+        mesh_data_dir: str,
+        model: str = "qwen2.5:3b",
+        llm_url: str = "http://localhost:11434/api/chat",
+        api_key: Optional[str] = None,
+    ) -> str:
+        """Submit a prompt for background processing by the prompt queue loop."""
+        request_id = uuid.uuid4().hex
+        self._prompt_results[request_id] = {"status": "queued"}
+        self._pending_prompt_requests.append({
+            "request_id": request_id,
+            "prompt": prompt,
+            "mesh_data_dir": mesh_data_dir,
+            "model": model,
+            "llm_url": llm_url,
+            "api_key": api_key,
+        })
+        return request_id
+
+    @agent_action
+    async def get_mesh_prompt_result(self, request_id: str) -> Dict[str, Any]:
+        """Get the latest status or result for a queued prompt request."""
+        if request_id not in self._prompt_results:
+            raise KeyError(f"Unknown request_id: {request_id}")
+        return self._prompt_results[request_id]
+
+    @agent_loop
+    async def process_mesh_prompt_queue(self, shutdown) -> None:
+        """Process queued prompt-driven mesh requests sequentially in the background."""
+        while not shutdown.is_set():
+            if not self._pending_prompt_requests:
+                await asyncio.sleep(0.5)
+                continue
+
+            request = self._pending_prompt_requests.pop(0)
+
+            request_id = request["request_id"]
+            self._prompt_results[request_id] = {"status": "running"}
+            try:
+                mesh_config = await self._mesh_config_from_prompt(
+                    request["prompt"],
+                    request["model"],
+                    request["llm_url"],
+                    request.get("api_key"),
+                )
+                mesh_result = await self.generate_mesh(
+                    mesh_config,
+                    request["mesh_data_dir"],
+                )
+                self._prompt_results[request_id] = {
+                    "status": "succeeded",
+                    "mesh_config": mesh_config,
+                    "mesh_result": mesh_result,
+                }
+            except Exception as e:
+                self._prompt_results[request_id] = {
+                    "status": "failed",
+                    "error": str(e),
+                }
+
+    @agent_action
+    async def ensure_tools_installed(self, mesh_config: Dict[str, Any]) -> None:
+        """Install only the tools required by a mesh request.
 
         Can be called early to overlap tool installation with other agents.
         Also called automatically by ``generate_mesh()`` as a safety net.
         """
-        mesh_config = self.mesh_config
         regional = mesh_config.get("regional")
         install_tasks = []
 
@@ -1160,7 +1900,7 @@ class MeshAgent:
 
         if regional is not None:
             if "project_hexes" in regional:
-                if not self.mesh_tools_installed:
+                if not self.mpas_tools_installed:
                     install_tasks.append(self.install_mpas_tools())
             elif "create_region" in regional:
                 if not self.limited_area_installed:
@@ -1171,11 +1911,22 @@ class MeshAgent:
 
 
     @agent_action
-    async def generate_mesh(self) -> Dict[str, Any]:
-        """Generate a mesh using the stored configuration.
+    async def generate_mesh(
+        self,
+        mesh_config: Dict[str, Any],
+        mesh_data_dir: str,
+    ) -> Dict[str, Any]:
+        """Generate a mesh for a request configuration.
 
         Routes to the correct generation path and partitions the result.
         Required tools are installed automatically on demand.
+
+        Parameters
+        ----------
+        mesh_config : dict
+            Request-scoped mesh configuration
+        mesh_data_dir : str
+            Directory where this request's mesh files are written
 
         Returns
         -------
@@ -1186,14 +1937,14 @@ class MeshAgent:
             - plot_error: error message if plotting failed
             - partitions: dict of {num_ranks: partition_file_path}
         """
-        mesh_config = self.mesh_config
         resolution = mesh_config.get("resolution", "120km")
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
         init_ranks = mesh_config.get("init_ranks")
         forecast_ranks = mesh_config.get("forecast_ranks")
         regional = mesh_config.get("regional")
+        request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
 
-        await self.ensure_tools_installed()
+        await self.ensure_tools_installed(mesh_config)
 
         result: Dict[str, Any] = {"partitions": {}}
 
@@ -1204,10 +1955,10 @@ class MeshAgent:
                     f"Resolution '{resolution}' not supported. "
                     f"Available: {list(self.resolution_cells.keys())}"
                 )
-            paths = await self.download_global_mesh(resolution)
+            paths = await self.download_global_mesh(resolution, mesh_data_dir)
 
             # Symlink into mesh_name subdir for consistent naming
-            mesh_dir = self.mesh_data_dir / mesh_name
+            mesh_dir = request_mesh_data_dir / mesh_name
             mesh_dir.mkdir(parents=True, exist_ok=True)
             static_link = mesh_dir / f"{mesh_name}.static.nc"
             graph_link = mesh_dir / f"{mesh_name}.graph.info"
@@ -1224,16 +1975,18 @@ class MeshAgent:
                 resolution,
                 project_hexes_config,
                 mesh_name,
+                mesh_data_dir,
             )
             result["mesh"] = hex_result["mesh"]
             result["graph"] = hex_result["graph"]
 
         elif "create_region" in regional:
             create_region_config = regional["create_region"]
-            if not self.global_mesh_downloaded:
-                await self.download_global_mesh(resolution)
             create_region_result = await self.create_region(
-                resolution, create_region_config, mesh_name,
+                resolution,
+                create_region_config,
+                mesh_name,
+                mesh_data_dir,
             )
             result["mesh"] = create_region_result["static"]
             result["graph"] = create_region_result["graph"]
