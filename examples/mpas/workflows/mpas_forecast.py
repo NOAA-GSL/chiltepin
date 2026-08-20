@@ -183,7 +183,8 @@ class MPASForecastWorkflow:
         mesh_config = dict(model.get("mesh", {"resolution": "120km"}))
         mesh_config["init_ranks"] = model.get("init_ranks")
         mesh_config["forecast_ranks"] = model.get("forecast_ranks")
-        mesh_prompt = model.get("mesh_prompt")
+        mesh_prompt = mesh_config.pop("prompt", None)
+        mesh_name = mesh_config.get("name")
         llm_config = model.get("llm", {})
         llm_model = llm_config.get("model", "qwen2.5:3b")
         llm_url = llm_config.get("url", "http://localhost:11434/api/chat")
@@ -207,6 +208,7 @@ class MPASForecastWorkflow:
                         model=llm_model,
                         llm_url=llm_url,
                         api_key=api_key,
+                        mesh_name=mesh_name,
                     )
                 )
             else:

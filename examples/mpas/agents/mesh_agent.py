@@ -1898,9 +1898,12 @@ class MeshAgent:
         model: str = "qwen2.5:3b",
         llm_url: str = "http://localhost:11434/api/chat",
         api_key: Optional[str] = None,
+        mesh_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a mesh from a natural language request using an LLM."""
         mesh_config = await self._mesh_config_from_prompt(prompt, model, llm_url, api_key)
+        if mesh_name:
+            mesh_config["name"] = mesh_name
         mesh_result = await self.generate_mesh(mesh_config, mesh_data_dir)
         return {
             "mesh_config": mesh_config,
