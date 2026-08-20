@@ -24,10 +24,11 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
-from agents.geo_lookup import lookup_region, geometry_to_ellipse
 from agents.geo_lookup_osm import (
-    lookup_region as lookup_region_osm,
-    geometry_to_ellipse as geometry_to_ellipse_osm,
+    lookup_region,
+    geometry_to_ellipse,
+    geometry_to_circle,
+    geometry_to_polygon,
 )
 from parsl.app.errors import BashExitFailure
 
@@ -50,7 +51,6 @@ class MeshAgent:
         metis_version: str = "5.2.1",
         mpas_tools_version: str = "2.0.0",
         limited_area_version: str = "v2.2",
-        geo_backend: str = "natural_earth",
     ):
         """Initialize MeshAgent.
 
@@ -64,12 +64,7 @@ class MeshAgent:
             MPAS-Tools version to clone, by default "2.0.0"
         limited_area_version : str, optional
             MPAS-Limited-Area version to clone, by default "v2.2"
-        geo_backend : str, optional
-            Geographic lookup backend: "natural_earth" or "osm", by default "natural_earth"
         """
-        if geo_backend not in ("natural_earth", "osm"):
-            raise ValueError(f"geo_backend must be 'natural_earth' or 'osm', got '{geo_backend}'")
-        self.geo_backend = geo_backend
         self.work_dir = Path(work_dir)
         self.log_dir = self.work_dir / "logs"
         self.metis_version = metis_version
@@ -131,100 +126,18 @@ class MeshAgent:
         return float(resolution.lower().replace("km", ""))
 
     @staticmethod
+    def _parse_coordinate(value) -> float:
+        """Parse a coordinate value (string or number) to float."""
+        if isinstance(value, str):
+            return float(value.strip().rstrip(","))
+        return float(value)
+
+    @staticmethod
     def _resolve_mesh_data_dir(mesh_data_dir: str) -> Path:
         """Resolve and create the per-request mesh data directory."""
         resolved_dir = Path(mesh_data_dir)
         resolved_dir.mkdir(parents=True, exist_ok=True)
         return resolved_dir
-
-    def _mesh_geo_system_prompt(self) -> str:
-        """System prompt that asks the LLM to extract geographic entity names."""
-        resolutions = ", ".join(self.resolution_cells.keys())
-        return (
-            "You extract geographic entity names from user mesh requests. "
-            "Return ONLY a JSON object (no markdown, no explanation). "
-            f"Valid resolution values are: {resolutions}. "
-            "Schema: "
-            '{"resolution": "STRING", "name": "STRING", '
-            '"region_names": ["NAME1", "NAME2", ...], '
-            '"exclude_names": ["NAME1", ...]}. '
-            "Field definitions: "
-            "- region_names: a list of standard geographic entity names (countries, "
-            "states, provinces, or continents) whose union covers the described region. "
-            "Use official English names as they appear in Natural Earth datasets "
-            "(e.g. 'Japan', 'United States of America', 'Texas', 'Oklahoma'). "
-            "Continent names are also valid: 'Europe', 'Asia', 'Africa', "
-            "'North America', 'South America', 'Oceania', 'Antarctica'. "
-            "- exclude_names: optional list of countries to exclude from the region. "
-            "Use when the user says to exclude specific countries from a "
-            "continent or larger region (e.g. exclude Russia from Europe). "
-            "Rules: "
-            "- For continents, use the continent name (e.g. 'Europe', 'Asia'). "
-            "- For countries, use the country name (e.g. 'Japan', 'France'). "
-            "- For countries with distant overseas territories, use only the mainland "
-            "name if the user clearly means the mainland (e.g. 'France' means "
-            "Metropolitan France, not French Guiana). "
-            "- For vernacular regions (e.g. 'Tornado Alley', 'CONUS', 'The Rockies'), "
-            "list the constituent states or provinces that make up that region. "
-            "- If the user says to EXCLUDE certain countries or regions, put them in "
-            "exclude_names, not in region_names. "
-            "- For global meshes, set region_names to an empty list. "
-            "- If the user specifies a resolution, use it exactly. "
-            "- name should be a short descriptive slug (e.g. 'japan_15km')."
-        )
-
-    async def _mesh_config_from_prompt_geo(
-        self,
-        prompt: str,
-        model: str,
-        llm_url: str,
-        api_key: Optional[str] = None,
-        buffer_km: float = 300.0,
-    ) -> Dict[str, Any]:
-        """LLM extracts region names, Natural Earth provides authoritative geometry."""
-        try:
-            payload = await asyncio.to_thread(
-                self._ollama_chat, prompt, model, llm_url,
-                self._mesh_geo_system_prompt(), 300, api_key,
-            )
-            region_names = payload.get("region_names", [])
-            if not region_names:
-                return self._normalize_mesh_config(payload)
-
-            resolution = payload.get("resolution", "120km")
-            name = payload.get("name", f"mesh_{resolution}")
-            exclude_names = payload.get("exclude_names", [])
-
-            geom = lookup_region(region_names, exclude_names=exclude_names)
-            if geom is None:
-                raise ValueError(
-                    f"Could not resolve geographic entities: {region_names}"
-                )
-
-            ellipse = geometry_to_ellipse(geom, buffer_km=buffer_km)
-            mesh_config = {
-                "resolution": resolution,
-                "name": name,
-                "regional": {
-                    "create_region": {
-                        "ellipse": {
-                            "point": f"{ellipse['center_lat']}, {ellipse['center_lon']}",
-                            "semi-major-axis": ellipse["semi_major_m"],
-                            "semi-minor-axis": ellipse["semi_minor_m"],
-                            "orientation-angle": ellipse["orientation_deg"],
-                        }
-                    }
-                },
-            }
-            self._store_cached_prompt_config(prompt, mesh_config)
-            return mesh_config
-        except Exception as exc:
-            cached = self._load_cached_prompt_config(prompt)
-            if cached is not None:
-                return cached
-            raise RuntimeError(
-                f"Failed to generate mesh config from prompt: {exc}"
-            ) from exc
 
     def _load_cached_prompt_config(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Load cached mesh config for a prompt from memory or disk."""
@@ -539,17 +452,22 @@ class MeshAgent:
 
         return self._extract_json_object(content)
 
+
     def _mesh_osm_system_prompt(self) -> str:
-        """System prompt for OSM Nominatim geo-lookup (no continent support)."""
+        """System prompt for OSM Nominatim geo-lookup."""
         resolutions = ", ".join(self.resolution_cells.keys())
         return (
-            "You extract geographic entity names from user mesh requests. "
+            "You extract geographic entity names, mesh shape, and mesh creation "
+            "method from user mesh requests. "
             "Return ONLY a JSON object (no markdown, no explanation). "
-            f"Valid resolution values are: {resolutions}. "
+            f"Downloadable resolution values are: {resolutions}. "
+            "Any resolution is valid if the user requests it explicitly. "
             "Schema: "
             '{"resolution": "STRING", "name": "STRING", '
             '"region_names": ["NAME1", "NAME2", ...], '
-            '"exclude_names": ["NAME1", ...]}. '
+            '"exclude_names": ["NAME1", ...], '
+            '"shape": "STRING or null", '
+            '"method": "STRING or null"}. '
             "Field definitions: "
             "- region_names: a list of standard geographic entity names (countries, "
             "states, provinces, cities, or sub-national regions) whose union covers "
@@ -565,6 +483,12 @@ class MeshAgent:
             "- exclude_names: optional list of countries to exclude from the region. "
             "Use when the user says to exclude specific countries from a "
             "larger region (e.g. exclude Russia from Europe). "
+            "- shape: the mesh shape requested by the user, or null if not "
+            "specified. Valid values: 'rectangle', 'ellipse', 'circle', 'polygon'. "
+            "Only set this if the user explicitly mentions a shape. "
+            "- method: the mesh creation method requested by the user, or null "
+            "if not specified. Valid values: 'project_hexes', 'create_region'. "
+            "Only set this if the user explicitly mentions a method. "
             "Rules: "
             "- For continents, expand into ALL constituent countries. "
             "- For countries, use the country name (e.g. 'Japan', 'France'). "
@@ -579,6 +503,178 @@ class MeshAgent:
             "- name should be a short descriptive slug (e.g. 'japan_15km')."
         )
 
+    def _resolve_mesh_method(
+        self,
+        resolution: str,
+        shape: Optional[str],
+        method: Optional[str],
+        is_regional: bool,
+    ) -> str:
+        """Apply decision tree to determine mesh creation method.
+
+        Raises ValueError for unsupported configurations.
+        Returns 'global', 'project_hexes', or 'create_region'.
+        """
+        if not is_regional:
+            if resolution not in self.resolution_cells:
+                raise ValueError(
+                    f"Global mesh resolution '{resolution}' is not available for "
+                    f"download. Available: {list(self.resolution_cells.keys())}"
+                )
+            return "global"
+
+        has_downloadable_resolution = resolution in self.resolution_cells
+        needs_create_region = shape in ("ellipse", "circle", "polygon")
+
+        if method == "project_hexes":
+            if needs_create_region:
+                raise ValueError(
+                    f"project_hexes only supports rectangular meshes, "
+                    f"but shape '{shape}' was requested."
+                )
+            return "project_hexes"
+
+        if method == "create_region":
+            if not has_downloadable_resolution:
+                raise ValueError(
+                    f"create_region requires a downloadable global mesh, but "
+                    f"resolution '{resolution}' is not available. "
+                    f"Available: {list(self.resolution_cells.keys())}. "
+                    f"Use project_hexes with a rectangular shape for custom "
+                    f"resolutions."
+                )
+            return "create_region"
+
+        # No method specified — infer from shape and resolution
+        if needs_create_region:
+            if not has_downloadable_resolution:
+                raise ValueError(
+                    f"Shape '{shape}' requires the create_region method, which "
+                    f"needs a downloadable global mesh, but resolution "
+                    f"'{resolution}' is not available. "
+                    f"Available: {list(self.resolution_cells.keys())}. "
+                    f"Use a rectangular shape for custom resolutions."
+                )
+            return "create_region"
+
+        return "project_hexes"
+
+    @staticmethod
+    def _rectangle_to_vertices(rect: Dict[str, Any]) -> list:
+        """Convert rectangle params to 4 (lat, lon) vertices."""
+        import math
+        clat = rect["center_lat"]
+        clon = rect["center_lon"]
+        half_x = rect["extent_x_km"] * 1000.0 / 2.0
+        half_y = rect["extent_y_km"] * 1000.0 / 2.0
+        rot = math.radians(rect.get("rotation_degrees", 0.0))
+        meters_per_deg = 111_320.0
+        cos_clat = math.cos(math.radians(clat))
+
+        corners_local = [
+            (-half_x, -half_y),
+            ( half_x, -half_y),
+            ( half_x,  half_y),
+            (-half_x,  half_y),
+        ]
+        vertices = []
+        cos_r, sin_r = math.cos(rot), math.sin(rot)
+        for lx, ly in corners_local:
+            # Rotate from grid-aligned to geographic
+            rx = lx * cos_r - ly * sin_r
+            ry = lx * sin_r + ly * cos_r
+            lat = clat + ry / meters_per_deg
+            lon = clon + rx / (meters_per_deg * cos_clat)
+            vertices.append((round(lat, 6), round(lon, 6)))
+        return vertices
+
+    def _build_mesh_config_from_geometry(
+        self,
+        resolved_method: str,
+        resolution: str,
+        name: str,
+        shape: Optional[str],
+        geom,
+        buffer_km: float,
+    ) -> Dict[str, Any]:
+        """Build mesh_config dict from resolved method, shape, and geometry."""
+        if resolved_method == "global":
+            return {"resolution": resolution, "name": name}
+
+        if resolved_method == "project_hexes":
+            from agents.geo_lookup_osm import geometry_to_rectangle
+            rect = geometry_to_rectangle(geom, buffer_km=buffer_km)
+            phex_config = {
+                "center_lat": rect["center_lat"],
+                "center_lon": rect["center_lon"],
+                "extent_x_km": rect["extent_x_km"],
+                "extent_y_km": rect["extent_y_km"],
+            }
+            if rect.get("rotation_degrees", 0.0) != 0.0:
+                phex_config["rotation_degrees"] = rect["rotation_degrees"]
+            return {
+                "resolution": resolution,
+                "name": name,
+                "regional": {"project_hexes": phex_config},
+            }
+
+        # create_region with the requested shape (default to polygon)
+        # Rectangle/square use geometry_to_rectangle → 4 polygon vertices
+        if shape in ("rectangle", "square", None):
+            from agents.geo_lookup_osm import geometry_to_rectangle
+            rect = geometry_to_rectangle(geom, buffer_km=buffer_km)
+            vertices = self._rectangle_to_vertices(rect)
+            create_region = {
+                "polygon": {
+                    "point": f"{rect['center_lat']}, {rect['center_lon']}",
+                    "vertices": vertices,
+                }
+            }
+            return {
+                "resolution": resolution,
+                "name": name,
+                "regional": {"create_region": create_region},
+            }
+
+        shape_funcs = {
+            "ellipse": geometry_to_ellipse,
+            "circle": geometry_to_circle,
+            "polygon": geometry_to_polygon,
+        }
+        effective_shape = shape if shape in shape_funcs else "polygon"
+        shape_func = shape_funcs[effective_shape]
+
+        shape_data = shape_func(geom, buffer_km=buffer_km)
+        if effective_shape == "ellipse":
+            create_region = {
+                "ellipse": {
+                    "point": f"{shape_data['center_lat']}, {shape_data['center_lon']}",
+                    "semi-major-axis": shape_data["semi_major_m"],
+                    "semi-minor-axis": shape_data["semi_minor_m"],
+                    "orientation-angle": shape_data["orientation_deg"],
+                }
+            }
+        elif effective_shape == "circle":
+            create_region = {
+                "circle": {
+                    "point": f"{shape_data['center_lat']}, {shape_data['center_lon']}",
+                    "radius": shape_data["radius_m"],
+                }
+            }
+        elif effective_shape == "polygon":
+            create_region = {
+                "polygon": {
+                    "point": f"{shape_data['point_lat']}, {shape_data['point_lon']}",
+                    "vertices": shape_data["vertices"],
+                }
+            }
+
+        return {
+            "resolution": resolution,
+            "name": name,
+            "regional": {"create_region": create_region},
+        }
+
     async def _mesh_config_from_prompt_osm(
         self,
         prompt: str,
@@ -587,7 +683,7 @@ class MeshAgent:
         api_key: Optional[str] = None,
         buffer_km: float = 300.0,
     ) -> Dict[str, Any]:
-        """LLM extracts region names, OSM Nominatim provides geometry."""
+        """LLM extracts region names, shape, and method; OSM provides geometry."""
         try:
             payload = await asyncio.to_thread(
                 self._ollama_chat, prompt, model, llm_url,
@@ -600,30 +696,24 @@ class MeshAgent:
             resolution = payload.get("resolution", "120km")
             name = payload.get("name", f"mesh_{resolution}")
             exclude_names = payload.get("exclude_names", [])
+            shape = payload.get("shape")
+            method = payload.get("method")
+
+            resolved_method = self._resolve_mesh_method(
+                resolution, shape, method, is_regional=True,
+            )
 
             geom = await asyncio.to_thread(
-                lookup_region_osm, region_names, exclude_names=exclude_names,
+                lookup_region, region_names, exclude_names=exclude_names,
             )
             if geom is None:
                 raise ValueError(
                     f"Could not resolve geographic entities: {region_names}"
                 )
 
-            ellipse = geometry_to_ellipse_osm(geom, buffer_km=buffer_km)
-            mesh_config = {
-                "resolution": resolution,
-                "name": name,
-                "regional": {
-                    "create_region": {
-                        "ellipse": {
-                            "point": f"{ellipse['center_lat']}, {ellipse['center_lon']}",
-                            "semi-major-axis": ellipse["semi_major_m"],
-                            "semi-minor-axis": ellipse["semi_minor_m"],
-                            "orientation-angle": ellipse["orientation_deg"],
-                        }
-                    }
-                },
-            }
+            mesh_config = self._build_mesh_config_from_geometry(
+                resolved_method, resolution, name, shape, geom, buffer_km,
+            )
             self._store_cached_prompt_config(prompt, mesh_config)
             return mesh_config
         except Exception as exc:
@@ -642,9 +732,7 @@ class MeshAgent:
         api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Convert natural language into mesh config via LLM + geo-lookup."""
-        if self.geo_backend == "osm":
-            return await self._mesh_config_from_prompt_osm(prompt, model, llm_url, api_key)
-        return await self._mesh_config_from_prompt_geo(prompt, model, llm_url, api_key)
+        return await self._mesh_config_from_prompt_osm(prompt, model, llm_url, api_key)
 
     @staticmethod
     def _write_project_hexes_namelist(

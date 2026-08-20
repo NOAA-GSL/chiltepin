@@ -181,10 +181,9 @@ def geometry_to_ellipse(
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
     meters_per_deg = 111_320.0
-    cos_lat = math.cos(math.radians(center_lat))
 
     coords = np.array(hull.exterior.coords)
-    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_lat
+    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
     y = (coords[:, 1] - center_lat) * meters_per_deg
 
     buffer_m = buffer_km * 1000.0
@@ -207,8 +206,8 @@ def geometry_to_ellipse(
         orientation -= 180.0
 
     centroid = rect.centroid
-    final_lon = center_lon + float(centroid.x) / (meters_per_deg * cos_lat)
     final_lat = center_lat + float(centroid.y) / meters_per_deg
+    final_lon = center_lon + float(centroid.x) / (meters_per_deg * math.cos(math.radians(final_lat)))
 
     semi_major = major_len / 2.0
     semi_minor = minor_len / 2.0
@@ -234,4 +233,169 @@ def geometry_to_ellipse(
         "semi_major_m": int(semi_major),
         "semi_minor_m": int(semi_minor),
         "orientation_deg": int(round(orientation)),
+    }
+
+
+def geometry_to_circle(
+    geom, buffer_km: float = 50.0
+) -> Dict[str, Any]:
+    """Convert a geometry to minimum enclosing circle parameters.
+
+    Returns dict with center_lat, center_lon, and radius_m.
+    """
+    hull = geom.convex_hull
+
+    # Project to local tangent plane centered on the hull centroid
+    center_lat = hull.centroid.y
+    center_lon = hull.centroid.x
+    meters_per_deg = 111_320.0
+
+    coords = np.array(hull.exterior.coords)
+    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
+    y = (coords[:, 1] - center_lat) * meters_per_deg
+
+    # Apply buffer in projected space
+    buffer_m = buffer_km * 1000.0
+    projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
+    buffered_hull = projected.convex_hull
+
+    # Find minimum enclosing circle via centroid + max distance
+    cx, cy = float(buffered_hull.centroid.x), float(buffered_hull.centroid.y)
+    hull_coords = np.array(buffered_hull.exterior.coords)
+    dx = hull_coords[:, 0] - cx
+    dy = hull_coords[:, 1] - cy
+    dists = np.sqrt(dx ** 2 + dy ** 2)
+    radius = float(dists.max())
+
+    # Convert center back to lat/lon
+    final_lat = center_lat + cy / meters_per_deg
+    final_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(final_lat)))
+
+    return {
+        "center_lat": round(final_lat, 4),
+        "center_lon": round(final_lon, 4),
+        "radius_m": int(radius),
+    }
+
+
+def geometry_to_polygon(
+    geom, buffer_km: float = 50.0
+) -> Dict[str, Any]:
+    """Convert a geometry to a convex polygon specification.
+
+    Returns dict with point_lat, point_lon (interior point) and
+    vertices (list of (lat, lon) tuples forming the convex hull).
+    """
+    hull = geom.convex_hull
+
+    # Project to local tangent plane centered on the hull centroid
+    center_lat = hull.centroid.y
+    center_lon = hull.centroid.x
+    meters_per_deg = 111_320.0
+
+    coords = np.array(hull.exterior.coords)
+    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
+    y = (coords[:, 1] - center_lat) * meters_per_deg
+
+    # Apply buffer in projected space
+    buffer_m = buffer_km * 1000.0
+    projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
+    buffered_hull = projected.convex_hull
+
+    # Simplify to reduce vertex count (tolerance in meters)
+    simplified = buffered_hull.simplify(buffer_m * 0.1)
+    if not isinstance(simplified, Polygon) or simplified.is_empty:
+        simplified = buffered_hull
+
+    # # Cap at 4 vertices; fall back to minimum bounding rectangle
+    # if len(simplified.exterior.coords) - 1 > 4:
+    #     simplified = buffered_hull.minimum_rotated_rectangle
+
+    # Convert vertices back to lat/lon
+    proj_coords = np.array(simplified.exterior.coords[:-1])  # drop closing vertex
+    lats = center_lat + proj_coords[:, 1] / meters_per_deg
+    lons = center_lon + proj_coords[:, 0] / (meters_per_deg * np.cos(np.radians(lats)))
+
+    vertices = list(zip(np.round(lats, 6).tolist(), np.round(lons, 6).tolist()))
+
+    # Interior point (centroid of buffered hull)
+    cx, cy = float(buffered_hull.centroid.x), float(buffered_hull.centroid.y)
+    point_lat = center_lat + cy / meters_per_deg
+    point_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(point_lat)))
+
+    return {
+        "point_lat": round(point_lat, 4),
+        "point_lon": round(point_lon, 4),
+        "vertices": vertices,
+    }
+
+
+def geometry_to_rectangle(
+    geom, buffer_km: float = 50.0
+) -> Dict[str, Any]:
+    """Convert a geometry to a bounding rectangle for project_hexes.
+
+    Determines rotation from the unbuffered hull so elongation is
+    preserved, then adds the buffer to the rotated extents.
+
+    Returns dict with center_lat, center_lon, extent_x_km, extent_y_km,
+    and rotation_degrees (0.0 when no rotation helps).
+    """
+    hull = geom.convex_hull
+
+    center_lat = hull.centroid.y
+    center_lon = hull.centroid.x
+    meters_per_deg = 111_320.0
+
+    coords = np.array(hull.exterior.coords)
+    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
+    y = (coords[:, 1] - center_lat) * meters_per_deg
+
+    unbuffered = MultiPoint(list(zip(x, y))).convex_hull
+    buffer_m = buffer_km * 1000.0
+
+    # Compare axis-aligned vs rotated on the unbuffered hull
+    ub_bounds = unbuffered.bounds
+    aa_width = ub_bounds[2] - ub_bounds[0]
+    aa_height = ub_bounds[3] - ub_bounds[1]
+    aa_area = aa_width * aa_height
+
+    rect = unbuffered.minimum_rotated_rectangle
+    rect_coords = np.array(rect.exterior.coords[:-1])
+    edges = np.diff(np.vstack([rect_coords, rect_coords[0:1]]), axis=0)
+    edge_lengths = np.sqrt((edges ** 2).sum(axis=1))
+
+    idx = int(np.argmax(edge_lengths[:2]))
+    long_len = float(edge_lengths[idx])
+    short_len = float(edge_lengths[1 - idx])
+    rotated_area = long_len * short_len
+
+    if aa_area > 0 and rotated_area < aa_area:
+        long_edge = edges[idx]
+        angle_from_east = math.degrees(math.atan2(long_edge[1], long_edge[0]))
+        rotation = 90.0 - angle_from_east
+        rotation = rotation % 360.0
+        if rotation > 180.0:
+            rotation -= 360.0
+
+        centroid = rect.centroid
+        cx, cy = float(centroid.x), float(centroid.y)
+        extent_x_m = long_len + 2.0 * buffer_m
+        extent_y_m = short_len + 2.0 * buffer_m
+    else:
+        rotation = 0.0
+        cx = (ub_bounds[0] + ub_bounds[2]) / 2.0
+        cy = (ub_bounds[1] + ub_bounds[3]) / 2.0
+        extent_x_m = aa_width + 2.0 * buffer_m
+        extent_y_m = aa_height + 2.0 * buffer_m
+
+    final_lat = center_lat + cy / meters_per_deg
+    final_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(final_lat)))
+
+    return {
+        "center_lat": round(final_lat, 4),
+        "center_lon": round(final_lon, 4),
+        "extent_x_km": round(extent_x_m / 1000.0, 1),
+        "extent_y_km": round(extent_y_m / 1000.0, 1),
+        "rotation_degrees": round(rotation, 1),
     }

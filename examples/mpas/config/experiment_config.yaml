@@ -27,8 +27,6 @@ agents:
   - name: mesh-foo
     type: mesh
     work_dir: /home/admin/experiments/mpas_forecast/site_foo
-    kwargs:
-      geo_backend: osm
     executor: agent-executor
     workflow_config:
       service:
@@ -144,6 +142,7 @@ agents:
 model:
   # Quick LLM test path: uncomment mesh_prompt and llm, then comment out model.mesh below.
   # mesh_prompt: "Generate a 15km MPAS mesh that covers Japan."
+  # mesh_prompt: "Generate a 15km MPAS mesh that covers Chile."
   # mesh_prompt: "Generate a 15km MPAS mesh that covers Tornado Alley."
   # mesh_prompt: "Generate a 15km MPAS mesh that covers Boulder, Colorado."
   # mesh_prompt: "Generate a 15km MPAS mesh that covers Colorado."
@@ -155,20 +154,20 @@ model:
   # mesh_prompt: "Generate a 15km MPAS mesh that covers western and southern Europe."
   # mesh_prompt: "Generate a 15km MPAS mesh that covers Europe excluding eastern Europe."
   # mesh_prompt: "Generate a 15km MPAS mesh that covers mainland Europe and the UK, excluding Russia."
-  # mesh_prompt: "Generate a 15km MPAS mesh that covers Italy."
-  # mesh_prompt: "Generate a 15km MPAS CONUS mesh."
+  mesh_prompt: "Generate a 20km MPAS mesh that covers Tuscany."
+  # mesh_prompt: "Generate a 15km MPAS HRRR mesh."
   # mesh_prompt: "Generate a 15km MPAS mesh covering Paris, France."
   # mesh_prompt: "Generate a 15km MPAS mesh covering the full 10 day path of Hurricane Katrina."
-  mesh_prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina from the Bahamas through southern Florida and across the Gulf of Mexico to the Louisiana/Mississippi coast."
-  llm:
-    # model: qwen2.5:14b
-    model: gemma3:12b
-    url: http://localhost:11434/api/chat
-
+  # mesh_prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina from the Bahamas through southern Florida and across the Gulf of Mexico to the Louisiana/Mississippi coast."
   # llm:
-  #   model: claude-sonnet-5
-  #   url: https://api.anthropic.com/v1/messages
-  #   api_key_env: ANTHROPIC_API_KEY
+  #   # model: qwen2.5:14b
+  #   model: gemma3:12b
+  #   url: http://localhost:11434/api/chat
+
+  llm:
+    model: claude-sonnet-5
+    url: https://api.anthropic.com/v1/messages
+    api_key_env: ANTHROPIC_API_KEY
 
 
 
