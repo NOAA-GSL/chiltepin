@@ -186,11 +186,11 @@ class MPASForecastWorkflow:
         mesh_prompt = mesh_config.pop("prompt", None)
         mesh_name = mesh_config.get("name")
         llm_config = model.get("llm", {})
-        llm_model = llm_config.get("model", "qwen2.5:3b")
-        llm_url = llm_config.get("url", "http://localhost:11434/api/chat")
+        llm_model = llm_config.get("model", "ollama_chat/qwen2.5:3b")
         api_key = llm_config.get("api_key") or (
             os.environ.get(llm_config["api_key_env"]) if llm_config.get("api_key_env") else None
         )
+        api_base = llm_config.get("api_base")
 
         tasks = []
         for label, agent in zip(self._agents_by_type["mesh"], mesh_agents):
@@ -206,8 +206,8 @@ class MPASForecastWorkflow:
                         mesh_prompt,
                         mesh_data_dir,
                         model=llm_model,
-                        llm_url=llm_url,
                         api_key=api_key,
+                        api_base=api_base,
                         mesh_name=mesh_name,
                     )
                 )

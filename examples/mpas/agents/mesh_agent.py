@@ -362,35 +362,24 @@ class MeshAgent:
 
         return config
 
-    def _ollama_chat(
+    def _llm_chat(
         self,
         prompt: str,
         model: str,
-        llm_url: str,
         system_prompt: Optional[str] = None,
         timeout_seconds: int = 120,
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Call an LLM and return parsed JSON object.
+        """Call an LLM via litellm and return parsed JSON object.
 
-        Uses litellm for provider-agnostic routing with automatic retries.
-        Provider is detected from llm_url.
+        The model string uses litellm provider prefixes, e.g.
+        ``anthropic/claude-sonnet-5``, ``ollama_chat/qwen2.5:3b``,
+        ``openai/gpt-4o``.
         """
         import litellm
 
         system = system_prompt or self._mesh_prompt_system_prompt()
-
-        # Map url to litellm model string and api_base
-        if "anthropic.com" in llm_url:
-            litellm_model = f"anthropic/{model}"
-            api_base = None
-        elif "/v1/" in llm_url:
-            litellm_model = f"openai/{model}"
-            api_base = llm_url.rsplit("/v1/", 1)[0] + "/v1"
-        else:
-            litellm_model = f"ollama_chat/{model}"
-            api_base = llm_url.rsplit("/api/", 1)[0] if "/api/" in llm_url else llm_url
-
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -398,7 +387,7 @@ class MeshAgent:
 
         try:
             response = litellm.completion(
-                model=litellm_model,
+                model=model,
                 messages=messages,
                 api_key=api_key,
                 api_base=api_base,
@@ -672,15 +661,15 @@ class MeshAgent:
         self,
         prompt: str,
         model: str,
-        llm_url: str,
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
         buffer_km: float = 300.0,
     ) -> Dict[str, Any]:
         """LLM extracts region names, shape, and method; OSM provides geometry."""
         try:
             payload = await asyncio.to_thread(
-                self._ollama_chat, prompt, model, llm_url,
-                self._mesh_osm_system_prompt(), 300, api_key,
+                self._llm_chat, prompt, model,
+                self._mesh_osm_system_prompt(), 300, api_key, api_base,
             )
             region_names = payload.get("region_names", [])
             if not region_names:
@@ -721,11 +710,11 @@ class MeshAgent:
         self,
         prompt: str,
         model: str,
-        llm_url: str,
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Convert natural language into mesh config via LLM + geo-lookup."""
-        return await self._mesh_config_from_prompt_osm(prompt, model, llm_url, api_key)
+        return await self._mesh_config_from_prompt_osm(prompt, model, api_key, api_base)
 
     @staticmethod
     def _write_project_hexes_namelist(
@@ -1877,24 +1866,24 @@ class MeshAgent:
         self,
         prompt: str,
         model: str = "qwen2.5:3b",
-        llm_url: str = "http://localhost:11434/api/chat",
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return validated mesh_config JSON inferred from natural language."""
-        return await self._mesh_config_from_prompt(prompt, model, llm_url, api_key)
+        return await self._mesh_config_from_prompt(prompt, model, api_key, api_base)
 
     @agent_action
     async def create_mesh_from_prompt(
         self,
         prompt: str,
         mesh_data_dir: str,
-        model: str = "qwen2.5:3b",
-        llm_url: str = "http://localhost:11434/api/chat",
+        model: str = "ollama_chat/qwen2.5:3b",
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
         mesh_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a mesh from a natural language request using an LLM."""
-        mesh_config = await self._mesh_config_from_prompt(prompt, model, llm_url, api_key)
+        mesh_config = await self._mesh_config_from_prompt(prompt, model, api_key, api_base)
         if mesh_name:
             mesh_config["name"] = mesh_name
         mesh_result = await self.generate_mesh(mesh_config, mesh_data_dir)
@@ -1908,9 +1897,9 @@ class MeshAgent:
         self,
         prompt: str,
         mesh_data_dir: str,
-        model: str = "qwen2.5:3b",
-        llm_url: str = "http://localhost:11434/api/chat",
+        model: str = "ollama_chat/qwen2.5:3b",
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
     ) -> str:
         """Submit a prompt for background processing by the prompt queue loop."""
         request_id = uuid.uuid4().hex
@@ -1920,8 +1909,8 @@ class MeshAgent:
             "prompt": prompt,
             "mesh_data_dir": mesh_data_dir,
             "model": model,
-            "llm_url": llm_url,
             "api_key": api_key,
+            "api_base": api_base,
         })
         return request_id
 
@@ -1948,8 +1937,8 @@ class MeshAgent:
                 mesh_config = await self._mesh_config_from_prompt(
                     request["prompt"],
                     request["model"],
-                    request["llm_url"],
                     request.get("api_key"),
+                    request.get("api_base"),
                 )
                 mesh_result = await self.generate_mesh(
                     mesh_config,

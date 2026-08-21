@@ -142,14 +142,13 @@ agents:
 model:
 
   llm:
-    model: claude-sonnet-5
-    url: https://api.anthropic.com/v1/messages
+    model: anthropic/claude-sonnet-5
     api_key_env: ANTHROPIC_API_KEY
 
   # mesh: either specify a prompt or the full mesh creation config
   mesh:
-    name: Italy_15km
-    prompt: "Generate a polygonal 15km MPAS mesh that covers Italy."
+    name: Japan_15km
+    prompt: "Generate a 15km MPAS mesh that covers Japan."
     # prompt: "Generate a 15km MPAS mesh that covers Japan."
     # prompt: "Generate a 15km MPAS mesh that covers Chile."
     # prompt: "Generate a 15km MPAS mesh that covers Tornado Alley."
