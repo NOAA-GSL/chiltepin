@@ -15,19 +15,18 @@ This agent handles the complete mesh lifecycle for MPAS forecasts:
 import asyncio
 import json
 import math
-import os
 import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-import numpy as np
 
-from agents.geo_lookup_osm import (
+from agents.geo_lookup import (
     lookup_region,
     geometry_to_ellipse,
     geometry_to_circle,
     geometry_to_polygon,
+    geometry_to_rectangle,
 )
 from parsl.app.errors import BashExitFailure
 
@@ -379,7 +378,7 @@ class MeshAgent:
         """
         import litellm
 
-        system = system_prompt or self._mesh_prompt_system_prompt()
+        system = system_prompt or self._mesh_osm_system_prompt()
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -584,7 +583,6 @@ class MeshAgent:
             return {"resolution": resolution, "name": name}
 
         # Buffer must cover 7 boundary-layer cells and be >= 10% of diagonal
-        import math
         resolution_km = self._parse_resolution_km(resolution)
         boundary_thickness_km = resolution_km * 7
         hull = geom.convex_hull
@@ -596,7 +594,6 @@ class MeshAgent:
         buffer_km = max(buffer_km, diagonal_km * 0.10, boundary_thickness_km)
 
         if resolved_method == "project_hexes":
-            from agents.geo_lookup_osm import geometry_to_rectangle
             rect = geometry_to_rectangle(geom, buffer_km=buffer_km)
             phex_config = {
                 "center_lat": rect["center_lat"],
@@ -615,7 +612,6 @@ class MeshAgent:
         # create_region with the requested shape (default to polygon)
         # Rectangle/square use geometry_to_rectangle → 4 polygon vertices
         if shape in ("rectangle", "square", None):
-            from agents.geo_lookup_osm import geometry_to_rectangle
             rect = geometry_to_rectangle(geom, buffer_km=buffer_km)
             vertices = self._rectangle_to_vertices(rect)
             create_region = {

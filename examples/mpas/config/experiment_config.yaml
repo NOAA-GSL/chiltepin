@@ -147,8 +147,8 @@ model:
 
   # mesh: either specify a prompt or the full mesh creation config
   mesh:
-    name: Boulder_15km
-    # prompt: "Generate a 15km MPAS mesh that covers Japan."
+    name: Italy_15km
+    # prompt: "Generate a 15km MPAS mesh using create_region that covers Japan."
     # prompt: "Generate a 15km MPAS mesh that covers Japan."
     # prompt: "Generate a 15km MPAS mesh that covers Chile."
     # prompt: "Generate a 15km MPAS mesh that covers Tornado Alley."
@@ -156,9 +156,10 @@ model:
     # prompt: "Generate a 15km MPAS mesh that covers Europe, excluding Russia and Iceland."
     # prompt: "Generate a 15km MPAS HRRR mesh."
     # prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina."
-    # prompt: "Generate a 3km MPAS mesh that covers CONUS."
+    # prompt: "Generate a 15km MPAS mesh that covers CONUS."
     prompt: "Generate a 120km MPAS mesh that covers Boulder, Colorado."
     # prompt: "Generate a 15km MPAS mesh that covers Tuscany."
+    # prompt: "Generate a 15km MPAS mesh using project_hexes that covers Italy."
     # OR specify full config instead of prompt
     # resolution: 15km
     # Add regional specs for regional meshes

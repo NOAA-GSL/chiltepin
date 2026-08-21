@@ -1,39 +1,156 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Geographic region lookup using Natural Earth shapefiles.
+"""Geographic region lookup with tiered data sources.
 
-Resolves region names (countries, states/provinces) to geometries and computes
-minimum enclosing ellipse parameters for MPAS mesh generation.
+Resolves region names to Shapely geometries for MPAS mesh generation.
+Tries local Natural Earth shapefiles first (countries, states/provinces),
+then falls back to OpenStreetMap Nominatim for finer-grained entities
+(cities, counties, neighborhoods).
 """
 
+import hashlib
+import json
 import math
+import time
+import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+from urllib.request import urlretrieve
 
-import geopandas as gpd
 import numpy as np
-from shapely.geometry import MultiPoint, MultiPolygon, Polygon
+import requests
+from shapely.geometry import MultiPoint, MultiPolygon, Polygon, shape
 from shapely.ops import unary_union
 
-# Default data directory relative to this file
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "natural_earth"
+# ---------------------------------------------------------------------------
+# Natural Earth configuration
+# ---------------------------------------------------------------------------
 
-# Proximity threshold for filtering disconnected territories (in km)
+_NE_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "natural_earth"
+_NE_BASE_URL = "https://naciscdn.org/naturalearth"
+
+# ---------------------------------------------------------------------------
+# OSM Nominatim configuration
+# ---------------------------------------------------------------------------
+
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_USER_AGENT = "chiltepin-mpas-mesh-agent"
+_CONTACT_EMAIL = "harrop@colorado.edu"
+_POLYGON_THRESHOLD = 0.01  # ~1.1 km at equator
+_REQUEST_INTERVAL = 1.1  # seconds between Nominatim requests
+_NOMINATIM_CACHE_DIR = Path(__file__).parent / ".nominatim_cache"
+
+# ---------------------------------------------------------------------------
+# Shared configuration
+# ---------------------------------------------------------------------------
+
 _PROXIMITY_THRESHOLD_KM = 1000.0
 
+# ---------------------------------------------------------------------------
+# Natural Earth helpers
+# ---------------------------------------------------------------------------
 
-def _load_countries(data_dir: Path = _DATA_DIR) -> gpd.GeoDataFrame:
-    shp = data_dir / "ne_110m_admin_0_countries" / "ne_110m_admin_0_countries.shp"
-    if not shp.exists():
-        raise FileNotFoundError(f"Natural Earth countries shapefile not found: {shp}")
+
+def _ensure_shapefile(data_dir: Path, dataset: str, scale: str) -> Path:
+    """Download and extract a Natural Earth shapefile if not already present."""
+    shp = data_dir / dataset / f"{dataset}.shp"
+    if shp.exists():
+        return shp
+    data_dir.mkdir(parents=True, exist_ok=True)
+    url = f"{_NE_BASE_URL}/{scale}/{dataset}.zip"
+    zip_path = data_dir / f"{dataset}.zip"
+    if not zip_path.exists():
+        urlretrieve(url, zip_path)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(data_dir / dataset)
+    return shp
+
+
+def _load_countries(data_dir: Path = _NE_DATA_DIR):
+    import geopandas as gpd
+    shp = _ensure_shapefile(data_dir, "ne_110m_admin_0_countries", "110m/cultural")
     return gpd.read_file(shp)
 
 
-def _load_states(data_dir: Path = _DATA_DIR) -> gpd.GeoDataFrame:
-    shp = data_dir / "ne_10m_admin_1_states_provinces" / "ne_10m_admin_1_states_provinces.shp"
-    if not shp.exists():
-        raise FileNotFoundError(f"Natural Earth states shapefile not found: {shp}")
+def _load_states(data_dir: Path = _NE_DATA_DIR):
+    import geopandas as gpd
+    shp = _ensure_shapefile(data_dir, "ne_10m_admin_1_states_provinces", "10m/cultural")
     return gpd.read_file(shp)
+
+
+# ---------------------------------------------------------------------------
+# OSM Nominatim helpers
+# ---------------------------------------------------------------------------
+
+_last_request_time = 0.0
+
+
+def _rate_limit():
+    """Sleep if necessary to respect Nominatim's 1 req/sec policy."""
+    global _last_request_time
+    elapsed = time.time() - _last_request_time
+    if elapsed < _REQUEST_INTERVAL:
+        time.sleep(_REQUEST_INTERVAL - elapsed)
+    _last_request_time = time.time()
+
+
+def _cache_key(name: str, feature_type: Optional[str], polygon_threshold: float) -> str:
+    raw = f"{name}|{feature_type}|{polygon_threshold}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _query_nominatim(
+    name: str,
+    feature_type: Optional[str] = None,
+    polygon_threshold: float = _POLYGON_THRESHOLD,
+) -> Optional[dict]:
+    """Query Nominatim for a place name; results are cached on disk."""
+    _NOMINATIM_CACHE_DIR.mkdir(exist_ok=True)
+    key = _cache_key(name, feature_type, polygon_threshold)
+    cache_file = _NOMINATIM_CACHE_DIR / f"{key}.json"
+    if cache_file.exists():
+        data = json.loads(cache_file.read_text())
+        return data.get("feature")
+
+    _rate_limit()
+    params = {
+        "q": name,
+        "format": "geojson",
+        "polygon_geojson": 1,
+        "polygon_threshold": polygon_threshold,
+        "limit": 1,
+        "email": _CONTACT_EMAIL,
+    }
+    if feature_type:
+        params["featureType"] = feature_type
+
+    for attempt in range(4):
+        resp = requests.get(
+            _NOMINATIM_URL,
+            params=params,
+            headers={"User-Agent": _USER_AGENT},
+            timeout=30,
+        )
+        if resp.status_code != 429 or attempt == 3:
+            resp.raise_for_status()
+            break
+        time.sleep(2 ** attempt)
+    data = resp.json()
+    feature = data["features"][0] if data.get("features") else None
+    cache_file.write_text(json.dumps({"feature": feature}))
+    return feature
+
+
+def _feature_to_geometry(feature: dict) -> Optional[Polygon]:
+    geom = shape(feature["geometry"])
+    if isinstance(geom, (Polygon, MultiPolygon)):
+        return geom
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Shared geometry utilities
+# ---------------------------------------------------------------------------
 
 
 def _filter_proximate_polygons(
@@ -64,25 +181,24 @@ def _filter_proximate_polygons(
     return unary_union(kept)
 
 
-def lookup_region(
+# ---------------------------------------------------------------------------
+# Tier 1: Natural Earth lookup (local, no network)
+# ---------------------------------------------------------------------------
+
+
+def _lookup_region_ne(
     names: List[str],
-    data_dir: Path = _DATA_DIR,
     proximity_threshold_km: float = _PROXIMITY_THRESHOLD_KM,
     exclude_names: Optional[List[str]] = None,
 ) -> Optional[Polygon]:
-    """Look up geographic entities by name and return their unified geometry.
-
-    Searches continents, countries, then states/provinces. Filters out distant
-    territories using proximity clustering. Excludes any entities in exclude_names.
-    """
+    """Look up regions from Natural Earth shapefiles (countries, states)."""
     found_geoms = []
     exclude_set = {n.lower() for n in (exclude_names or [])}
 
-    countries_gdf = _load_countries(data_dir)
-    states_gdf = None  # lazy load
+    countries_gdf = _load_countries()
+    states_gdf = None
 
     for name in names:
-        # Try continent match first
         if "CONTINENT" in countries_gdf.columns:
             continent_match = countries_gdf[
                 countries_gdf["CONTINENT"].str.lower() == name.lower()
@@ -96,12 +212,18 @@ def lookup_region(
                     )
                 continue
 
-        # Try country match (case-insensitive)
         if name.lower() in exclude_set:
             continue
         match = countries_gdf[countries_gdf["NAME"].str.lower() == name.lower()]
         if match.empty:
             match = countries_gdf[countries_gdf["ADMIN"].str.lower() == name.lower()]
+        if match.empty:
+            mask = countries_gdf["NAME"].str.lower().str.contains(
+                name.lower(), regex=False
+            ) | countries_gdf["ADMIN"].str.lower().str.contains(
+                name.lower(), regex=False
+            )
+            match = countries_gdf[mask]
 
         if not match.empty:
             for geom in match.geometry:
@@ -110,13 +232,11 @@ def lookup_region(
                 )
             continue
 
-        # Try state/province match
         if states_gdf is None:
-            states_gdf = _load_states(data_dir)
+            states_gdf = _load_states()
 
         match = states_gdf[states_gdf["name"].str.lower() == name.lower()]
         if match.empty and "name_alt" in states_gdf.columns:
-            # Try alternate names
             mask = states_gdf["name_alt"].fillna("").str.lower().str.contains(
                 name.lower(), regex=False
             )
@@ -133,6 +253,85 @@ def lookup_region(
     return _filter_proximate_polygons(unified, proximity_threshold_km)
 
 
+# ---------------------------------------------------------------------------
+# Tier 2: OSM Nominatim lookup (network, cached)
+# ---------------------------------------------------------------------------
+
+
+def _lookup_region_osm(
+    names: List[str],
+    proximity_threshold_km: float = _PROXIMITY_THRESHOLD_KM,
+    exclude_names: Optional[List[str]] = None,
+    polygon_threshold: float = _POLYGON_THRESHOLD,
+) -> Optional[Polygon]:
+    """Look up regions via Nominatim (cities, counties, neighborhoods, etc.)."""
+    found_geoms = []
+    exclude_set = {n.lower() for n in (exclude_names or [])}
+
+    for name in names:
+        if name.lower() in exclude_set:
+            continue
+
+        geom = None
+
+        feature = _query_nominatim(name, feature_type="country", polygon_threshold=polygon_threshold)
+        if feature:
+            geom = _feature_to_geometry(feature)
+
+        if geom is None:
+            feature = _query_nominatim(name, feature_type="state", polygon_threshold=polygon_threshold)
+            if feature:
+                geom = _feature_to_geometry(feature)
+
+        if geom is None:
+            feature = _query_nominatim(name, feature_type="city", polygon_threshold=polygon_threshold)
+            if feature:
+                geom = _feature_to_geometry(feature)
+
+        if geom is None:
+            feature = _query_nominatim(name, polygon_threshold=polygon_threshold)
+            if feature:
+                geom = _feature_to_geometry(feature)
+
+        if geom is not None:
+            found_geoms.append(
+                _filter_proximate_polygons(geom, proximity_threshold_km)
+            )
+
+    if not found_geoms:
+        return None
+
+    unified = unary_union(found_geoms)
+    return _filter_proximate_polygons(unified, proximity_threshold_km)
+
+
+# ---------------------------------------------------------------------------
+# Public API: tiered lookup
+# ---------------------------------------------------------------------------
+
+
+def lookup_region(
+    names: List[str],
+    proximity_threshold_km: float = _PROXIMITY_THRESHOLD_KM,
+    exclude_names: Optional[List[str]] = None,
+) -> Optional[Polygon]:
+    """Look up geographic entities by name and return their unified geometry.
+
+    Tries Natural Earth (local shapefiles) first for countries and
+    states/provinces.  Falls back to OSM Nominatim for finer-grained
+    entities (cities, counties, neighborhoods).
+    """
+    geom = _lookup_region_ne(names, proximity_threshold_km, exclude_names)
+    if geom is None:
+        geom = _lookup_region_osm(names, proximity_threshold_km, exclude_names)
+    return geom
+
+
+# ---------------------------------------------------------------------------
+# Geometry-to-mesh-config conversion functions
+# ---------------------------------------------------------------------------
+
+
 def geometry_to_ellipse(
     geom, buffer_km: float = 50.0
 ) -> Dict[str, Any]:
@@ -143,21 +342,19 @@ def geometry_to_ellipse(
     """
     hull = geom.convex_hull
 
-    # Project to local tangent plane centered on the hull centroid
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
     meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
-    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
+    cos_ref = math.cos(math.radians(center_lat))
+    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
     y = (coords[:, 1] - center_lat) * meters_per_deg
 
-    # Apply buffer in projected space
     buffer_m = buffer_km * 1000.0
     projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
     rect = projected.minimum_rotated_rectangle
 
-    # Extract rectangle dimensions and orientation
     rect_coords = np.array(rect.exterior.coords[:-1])
     edges = np.diff(np.vstack([rect_coords, rect_coords[0:1]]), axis=0)
     edge_lengths = np.sqrt((edges ** 2).sum(axis=1))
@@ -167,14 +364,12 @@ def geometry_to_ellipse(
     major_len = float(edge_lengths[idx])
     minor_len = float(edge_lengths[1 - idx])
 
-    # Orientation: angle of long edge from north (y-axis), clockwise
     angle_from_east = math.degrees(math.atan2(long_edge[1], long_edge[0]))
     orientation = 90.0 - angle_from_east
     orientation = orientation % 360.0
     if orientation > 180.0:
         orientation -= 180.0
 
-    # Use rectangle centroid for final center
     centroid = rect.centroid
     final_lat = center_lat + float(centroid.y) / meters_per_deg
     final_lon = center_lon + float(centroid.x) / (meters_per_deg * math.cos(math.radians(final_lat)))
@@ -182,17 +377,14 @@ def geometry_to_ellipse(
     semi_major = major_len / 2.0
     semi_minor = minor_len / 2.0
 
-    # Scale semi-axes so the ellipse actually contains all buffered hull points.
-    # The rectangle's corners are outside an inscribed ellipse, so we must expand.
+    # Scale semi-axes so the ellipse contains all buffered hull points.
     theta = math.radians(angle_from_east)
     cx, cy = float(centroid.x), float(centroid.y)
     hull_coords = np.array(projected.convex_hull.exterior.coords)
     dx = hull_coords[:, 0] - cx
     dy = hull_coords[:, 1] - cy
-    # Rotate points into ellipse-aligned frame
     u = dx * math.cos(theta) + dy * math.sin(theta)
     v = -dx * math.sin(theta) + dy * math.cos(theta)
-    # Find maximum ellipse parameter value across all points
     ellipse_vals = (u / semi_major) ** 2 + (v / semi_minor) ** 2
     max_val = float(ellipse_vals.max())
     if max_val > 1.0:
@@ -209,37 +401,6 @@ def geometry_to_ellipse(
     }
 
 
-def region_to_mesh_config(
-    names: List[str],
-    resolution: str,
-    mesh_name: str,
-    buffer_km: float = 50.0,
-    data_dir: Path = _DATA_DIR,
-    exclude_names: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """Full pipeline: region names → MPAS mesh config."""
-    geom = lookup_region(names, data_dir, exclude_names=exclude_names)
-    if geom is None:
-        raise ValueError(f"Could not resolve any of: {names}")
-
-    ellipse = geometry_to_ellipse(geom, buffer_km=buffer_km)
-
-    return {
-        "resolution": resolution,
-        "name": mesh_name,
-        "regional": {
-            "create_region": {
-                "ellipse": {
-                    "point": f"{ellipse['center_lat']}, {ellipse['center_lon']}",
-                    "semi-major-axis": ellipse["semi_major_m"],
-                    "semi-minor-axis": ellipse["semi_minor_m"],
-                    "orientation-angle": ellipse["orientation_deg"],
-                }
-            }
-        },
-    }
-
-
 def geometry_to_circle(
     geom, buffer_km: float = 50.0
 ) -> Dict[str, Any]:
@@ -249,21 +410,19 @@ def geometry_to_circle(
     """
     hull = geom.convex_hull
 
-    # Project to local tangent plane centered on the hull centroid
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
     meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
-    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
+    cos_ref = math.cos(math.radians(center_lat))
+    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
     y = (coords[:, 1] - center_lat) * meters_per_deg
 
-    # Apply buffer in projected space
     buffer_m = buffer_km * 1000.0
     projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
     buffered_hull = projected.convex_hull
 
-    # Find minimum enclosing circle via centroid + max distance
     cx, cy = float(buffered_hull.centroid.x), float(buffered_hull.centroid.y)
     hull_coords = np.array(buffered_hull.exterior.coords)
     dx = hull_coords[:, 0] - cx
@@ -271,7 +430,6 @@ def geometry_to_circle(
     dists = np.sqrt(dx ** 2 + dy ** 2)
     radius = float(dists.max())
 
-    # Convert center back to lat/lon
     final_lat = center_lat + cy / meters_per_deg
     final_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(final_lat)))
 
@@ -292,7 +450,6 @@ def geometry_to_polygon(
     """
     hull = geom.convex_hull
 
-    # Project to local tangent plane centered on the hull centroid
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
     meters_per_deg = 111_320.0
@@ -301,28 +458,20 @@ def geometry_to_polygon(
     x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
     y = (coords[:, 1] - center_lat) * meters_per_deg
 
-    # Apply buffer in projected space
     buffer_m = buffer_km * 1000.0
     projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
     buffered_hull = projected.convex_hull
 
-    # Simplify to reduce vertex count (tolerance in meters)
     simplified = buffered_hull.simplify(buffer_m * 0.1)
     if not isinstance(simplified, Polygon) or simplified.is_empty:
         simplified = buffered_hull
 
-    # Cap at 4 vertices; fall back to minimum bounding rectangle
-    if len(simplified.exterior.coords) - 1 > 4:
-        simplified = buffered_hull.minimum_rotated_rectangle
-
-    # Convert vertices back to lat/lon
-    proj_coords = np.array(simplified.exterior.coords[:-1])  # drop closing vertex
+    proj_coords = np.array(simplified.exterior.coords[:-1])
     lats = center_lat + proj_coords[:, 1] / meters_per_deg
     lons = center_lon + proj_coords[:, 0] / (meters_per_deg * np.cos(np.radians(lats)))
 
     vertices = list(zip(np.round(lats, 6).tolist(), np.round(lons, 6).tolist()))
 
-    # Interior point (centroid of buffered hull)
     cx, cy = float(buffered_hull.centroid.x), float(buffered_hull.centroid.y)
     point_lat = center_lat + cy / meters_per_deg
     point_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(point_lat)))
@@ -331,4 +480,81 @@ def geometry_to_polygon(
         "point_lat": round(point_lat, 4),
         "point_lon": round(point_lon, 4),
         "vertices": vertices,
+    }
+
+
+def geometry_to_rectangle(
+    geom, buffer_km: float = 50.0
+) -> Dict[str, Any]:
+    """Convert a geometry to a bounding rectangle for project_hexes.
+
+    Determines rotation from the unbuffered hull so elongation is
+    preserved, then adds the buffer to the rotated extents.
+
+    Returns dict with center_lat, center_lon, extent_x_km, extent_y_km,
+    and rotation_degrees (0.0 when no rotation helps).
+    """
+    hull = geom.convex_hull
+
+    center_lat = hull.centroid.y
+    center_lon = hull.centroid.x
+    meters_per_deg = 111_320.0
+
+    coords = np.array(hull.exterior.coords)
+    cos_ref = math.cos(math.radians(center_lat))
+    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
+    y = (coords[:, 1] - center_lat) * meters_per_deg
+
+    unbuffered = MultiPoint(list(zip(x, y))).convex_hull
+    buffer_m = buffer_km * 1000.0
+
+    ub_bounds = unbuffered.bounds
+    aa_width = ub_bounds[2] - ub_bounds[0]
+    aa_height = ub_bounds[3] - ub_bounds[1]
+    aa_area = aa_width * aa_height
+
+    rect = unbuffered.minimum_rotated_rectangle
+    rect_coords = np.array(rect.exterior.coords[:-1])
+    edges = np.diff(np.vstack([rect_coords, rect_coords[0:1]]), axis=0)
+    edge_lengths = np.sqrt((edges ** 2).sum(axis=1))
+
+    idx = int(np.argmax(edge_lengths[:2]))
+    long_len = float(edge_lengths[idx])
+    short_len = float(edge_lengths[1 - idx])
+    rotated_area = long_len * short_len
+
+    if aa_area > 0 and rotated_area < aa_area:
+        long_edge = edges[idx]
+        angle_from_east = math.degrees(math.atan2(long_edge[1], long_edge[0]))
+        rotation = (angle_from_east + 90.0) % 180.0 - 90.0
+
+        centroid = rect.centroid
+        cx, cy = float(centroid.x), float(centroid.y)
+        extent_x_m = long_len + 2.0 * buffer_m
+        extent_y_m = short_len + 2.0 * buffer_m
+    else:
+        rotation = 0.0
+        cx = (ub_bounds[0] + ub_bounds[2]) / 2.0
+        cy = (ub_bounds[1] + ub_bounds[3]) / 2.0
+        extent_x_m = aa_width + 2.0 * buffer_m
+        extent_y_m = aa_height + 2.0 * buffer_m
+
+    final_lat = center_lat + cy / meters_per_deg
+    final_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(final_lat)))
+
+    # LC scale correction: tangent LC at center_lat undercovers at edges
+    half_y_deg = extent_y_m / (2.0 * meters_per_deg)
+    edge_lat = max(abs(final_lat - half_y_deg), abs(final_lat + half_y_deg))
+    dlat_rad = math.radians(abs(edge_lat - abs(final_lat)))
+    tan_ref = math.tan(math.radians(abs(final_lat))) if abs(final_lat) > 1 else 0.0
+    lc_scale = 1.0 + dlat_rad ** 2 * tan_ref ** 2
+    extent_x_m *= lc_scale
+    extent_y_m *= lc_scale
+
+    return {
+        "center_lat": round(final_lat, 4),
+        "center_lon": round(final_lon, 4),
+        "extent_x_km": round(extent_x_m / 1000.0, 1),
+        "extent_y_km": round(extent_y_m / 1000.0, 1),
+        "rotation_degrees": round(rotation, 1),
     }
