@@ -8,8 +8,11 @@ boroughs, neighborhoods) at the cost of requiring internet access and
 respecting rate limits (max 1 request/sec on the public instance).
 """
 
+import hashlib
+import json
 import math
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -30,6 +33,9 @@ _REQUEST_INTERVAL = 1.1
 
 _PROXIMITY_THRESHOLD_KM = 1000.0
 
+_CACHE_DIR = Path(__file__).parent / ".nominatim_cache"
+
+
 _last_request_time = 0.0
 
 
@@ -42,12 +48,28 @@ def _rate_limit():
     _last_request_time = time.time()
 
 
+def _cache_key(name: str, feature_type: Optional[str], polygon_threshold: float) -> str:
+    """Deterministic cache key for a Nominatim query."""
+    raw = f"{name}|{feature_type}|{polygon_threshold}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def _query_nominatim(
     name: str,
     feature_type: Optional[str] = None,
     polygon_threshold: float = _POLYGON_THRESHOLD,
 ) -> Optional[dict]:
-    """Query Nominatim for a single place name and return the first GeoJSON feature."""
+    """Query Nominatim for a single place name and return the first GeoJSON feature.
+
+    Results are cached on disk to avoid repeated API calls.
+    """
+    _CACHE_DIR.mkdir(exist_ok=True)
+    key = _cache_key(name, feature_type, polygon_threshold)
+    cache_file = _CACHE_DIR / f"{key}.json"
+    if cache_file.exists():
+        data = json.loads(cache_file.read_text())
+        return data.get("feature")
+
     _rate_limit()
     params = {
         "q": name,
@@ -60,17 +82,21 @@ def _query_nominatim(
     if feature_type:
         params["featureType"] = feature_type
 
-    resp = requests.get(
-        _NOMINATIM_URL,
-        params=params,
-        headers={"User-Agent": _USER_AGENT},
-        timeout=30,
-    )
-    resp.raise_for_status()
+    for attempt in range(4):
+        resp = requests.get(
+            _NOMINATIM_URL,
+            params=params,
+            headers={"User-Agent": _USER_AGENT},
+            timeout=30,
+        )
+        if resp.status_code != 429 or attempt == 3:
+            resp.raise_for_status()
+            break
+        time.sleep(2 ** attempt)
     data = resp.json()
-    if data.get("features"):
-        return data["features"][0]
-    return None
+    feature = data["features"][0] if data.get("features") else None
+    cache_file.write_text(json.dumps({"feature": feature}))
+    return feature
 
 
 def _feature_to_geometry(feature: dict) -> Optional[Polygon]:
@@ -183,7 +209,8 @@ def geometry_to_ellipse(
     meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
-    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
+    cos_ref = math.cos(math.radians(center_lat))
+    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
     y = (coords[:, 1] - center_lat) * meters_per_deg
 
     buffer_m = buffer_km * 1000.0
@@ -251,7 +278,8 @@ def geometry_to_circle(
     meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
-    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
+    cos_ref = math.cos(math.radians(center_lat))
+    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
     y = (coords[:, 1] - center_lat) * meters_per_deg
 
     # Apply buffer in projected space
@@ -348,7 +376,8 @@ def geometry_to_rectangle(
     meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
-    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
+    cos_ref = math.cos(math.radians(center_lat))
+    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
     y = (coords[:, 1] - center_lat) * meters_per_deg
 
     unbuffered = MultiPoint(list(zip(x, y))).convex_hull
@@ -373,10 +402,8 @@ def geometry_to_rectangle(
     if aa_area > 0 and rotated_area < aa_area:
         long_edge = edges[idx]
         angle_from_east = math.degrees(math.atan2(long_edge[1], long_edge[0]))
-        rotation = 90.0 - angle_from_east
-        rotation = rotation % 360.0
-        if rotation > 180.0:
-            rotation -= 360.0
+        # Normalize to (-90, 90]; rectangle has 180° symmetry
+        rotation = (angle_from_east + 90.0) % 180.0 - 90.0
 
         centroid = rect.centroid
         cx, cy = float(centroid.x), float(centroid.y)
@@ -389,8 +416,22 @@ def geometry_to_rectangle(
         extent_x_m = aa_width + 2.0 * buffer_m
         extent_y_m = aa_height + 2.0 * buffer_m
 
+
     final_lat = center_lat + cy / meters_per_deg
     final_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(final_lat)))
+
+    # Scale extents so the Lambert Conformal grid covers the full region.
+    # Tangent LC at center_lat has scale > 1 at the edges, so the mesh
+    # covers less ground than the extent suggests.  Compute the max
+    # scale factor at the farthest edge and inflate the extents.
+    half_y_deg = extent_y_m / (2.0 * meters_per_deg)
+    edge_lat = max(abs(final_lat - half_y_deg), abs(final_lat + half_y_deg))
+    dlat_rad = math.radians(edge_lat - abs(final_lat)) if edge_lat > abs(final_lat) else math.radians(abs(final_lat) - edge_lat)
+    # First-order LC scale: k ≈ 1 + 0.5 * Δφ² * tan²(φ₀)
+    tan_ref = math.tan(math.radians(abs(final_lat))) if abs(final_lat) > 1 else 0.0
+    lc_scale = 1.0 + dlat_rad ** 2 * tan_ref ** 2
+    extent_x_m *= lc_scale
+    extent_y_m *= lc_scale
 
     return {
         "center_lat": round(final_lat, 4),

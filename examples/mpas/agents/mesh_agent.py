@@ -16,7 +16,6 @@ import asyncio
 import json
 import math
 import os
-import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -372,86 +371,49 @@ class MeshAgent:
         timeout_seconds: int = 120,
         api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Call a chat completions endpoint and return parsed JSON object.
+        """Call an LLM and return parsed JSON object.
 
-        Supports Ollama (/api/chat), OpenAI-compatible (/v1/chat/completions),
-        and Anthropic Messages (/v1/messages) formats.
+        Uses litellm for provider-agnostic routing with automatic retries.
+        Provider is detected from llm_url.
         """
+        import litellm
+
         system = system_prompt or self._mesh_prompt_system_prompt()
-        is_anthropic = "/v1/messages" in llm_url
-        is_openai_format = not is_anthropic and "/v1/" in llm_url
 
-        if is_anthropic:
-            body: Dict[str, Any] = {
-                "model": model,
-                "max_tokens": 4096,
-                "system": system,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-            headers: Dict[str, str] = {
-                "Content-Type": "application/json",
-                "x-api-key": api_key or "",
-                "anthropic-version": "2023-06-01",
-            }
-        elif is_openai_format:
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ]
-            body = {
-                "model": model,
-                "stream": False,
-                "messages": messages,
-                "response_format": {"type": "json_object"},
-            }
-            headers = {"Content-Type": "application/json"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
+        # Map url to litellm model string and api_base
+        if "anthropic.com" in llm_url:
+            litellm_model = f"anthropic/{model}"
+            api_base = None
+        elif "/v1/" in llm_url:
+            litellm_model = f"openai/{model}"
+            api_base = llm_url.rsplit("/v1/", 1)[0] + "/v1"
         else:
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ]
-            body = {
-                "model": model,
-                "stream": False,
-                "format": "json",
-                "messages": messages,
-            }
-            headers = {"Content-Type": "application/json"}
+            litellm_model = f"ollama_chat/{model}"
+            api_base = llm_url.rsplit("/api/", 1)[0] if "/api/" in llm_url else llm_url
 
-        request = urllib.request.Request(
-            llm_url,
-            data=json.dumps(body).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                response_payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.URLError as e:
+            response = litellm.completion(
+                model=litellm_model,
+                messages=messages,
+                api_key=api_key,
+                api_base=api_base,
+                timeout=timeout_seconds,
+                num_retries=3,
+            )
+        except Exception as e:
             raise RuntimeError(f"LLM endpoint request failed: {e}") from e
 
-        # Extract content from response format
-        if is_anthropic:
-            content_blocks = response_payload.get("content", [])
-            text_block = next((b for b in content_blocks if b.get("type") == "text"), None)
-            if text_block is None:
-                raise RuntimeError("Anthropic response contained no text block.")
-            content = text_block.get("text")
-        elif "choices" in response_payload:
-            choices = response_payload["choices"]
-            if not choices:
-                raise RuntimeError("LLM response contained no choices.")
-            content = choices[0].get("message", {}).get("content")
-        else:
-            content = response_payload.get("message", {}).get("content")
+        content = response.choices[0].message.content
 
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError("LLM response did not contain message content.")
 
         return self._extract_json_object(content)
-
 
     def _mesh_osm_system_prompt(self) -> str:
         """System prompt for OSM Nominatim geo-lookup."""
@@ -561,7 +523,12 @@ class MeshAgent:
 
     @staticmethod
     def _rectangle_to_vertices(rect: Dict[str, Any]) -> list:
-        """Convert rectangle params to 4 (lat, lon) vertices."""
+        """Convert rectangle params to 4 (lat, lon) vertices.
+
+        The equator-facing corners are pushed equatorward so the
+        great-circle edge between them still covers the intended
+        boundary at its midpoint.
+        """
         import math
         clat = rect["center_lat"]
         clon = rect["center_lon"]
@@ -570,6 +537,7 @@ class MeshAgent:
         rot = math.radians(rect.get("rotation_degrees", 0.0))
         meters_per_deg = 111_320.0
         cos_clat = math.cos(math.radians(clat))
+        cos_r, sin_r = math.cos(rot), math.sin(rot)
 
         corners_local = [
             (-half_x, -half_y),
@@ -577,16 +545,41 @@ class MeshAgent:
             ( half_x,  half_y),
             (-half_x,  half_y),
         ]
+
         vertices = []
-        cos_r, sin_r = math.cos(rot), math.sin(rot)
         for lx, ly in corners_local:
-            # Rotate from grid-aligned to geographic
             rx = lx * cos_r - ly * sin_r
             ry = lx * sin_r + ly * cos_r
             lat = clat + ry / meters_per_deg
             lon = clon + rx / (meters_per_deg * cos_clat)
-            vertices.append((round(lat, 6), round(lon, 6)))
-        return vertices
+            vertices.append([lat, lon])
+
+        # Correct equator-facing E-W edges for great-circle sag
+        n = len(vertices)
+        for i in range(n):
+            j = (i + 1) % n
+            lat1, lon1 = vertices[i]
+            lat2, lon2 = vertices[j]
+            dlon = abs(lon2 - lon1)
+            dlat = abs(lat2 - lat1)
+            if dlon <= dlat or dlon < 5.0:
+                continue
+            avg_lat = (lat1 + lat2) / 2.0
+            # Skip pole-facing edges (sag increases coverage there)
+            if clat >= 0 and avg_lat >= clat:
+                continue
+            if clat < 0 and avg_lat <= clat:
+                continue
+            # Push corners equatorward: gc midpoint will reach original lat
+            half_dlon = math.radians(dlon / 2.0)
+            cos_half = math.cos(half_dlon)
+            for k in (i, j):
+                lat_k = math.radians(vertices[k][0])
+                vertices[k][0] = math.degrees(
+                    math.atan(math.tan(lat_k) * cos_half)
+                )
+
+        return [(round(v[0], 6), round(v[1], 6)) for v in vertices]
 
     def _build_mesh_config_from_geometry(
         self,
