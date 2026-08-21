@@ -239,12 +239,6 @@ class SerializationProbeAgent:
     @agent_action
     async def max_inflight(self) -> int:
         return self._max_inflight
-        # Launch multiple tasks
-        future_a = self._compute_part(a, executor=["test-executor"])
-        future_b = self._compute_part(b, executor=["test-executor"])
-        # Use another task to sum them - Parsl handles dependency resolution
-        # The @python_task decorator will automatically wait for future_a and future_b
-        return self._sum_results(future_a, future_b, executor=["test-executor"])
 
 
 @chiltepin_agent(agent_workflow_include=["test-executor"])
