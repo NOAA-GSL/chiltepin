@@ -131,9 +131,7 @@ def test_config(mock_experiment_dir):
             "forecast_length_hours": 6,
             "output_interval_hours": 1,
         },
-        "paths": {
-            str(k): str(v) for k, v in mock_experiment_dir.items()
-        },
+        "paths": {str(k): str(v) for k, v in mock_experiment_dir.items()},
         "versions": {
             "metis": "5.1.0",
             "wps": "4.5",

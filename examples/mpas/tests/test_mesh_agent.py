@@ -6,7 +6,6 @@ import asyncio
 from pathlib import Path
 
 import pytest
-
 from agents import MeshAgent
 
 
@@ -51,7 +50,9 @@ class TestMeshAgent:
         assert behavior.limited_area_version == "v1.0"
 
     @pytest.mark.asyncio
-    async def test_mesh_config_from_prompt_uses_llm_parser(self, mock_install_dir, monkeypatch):
+    async def test_mesh_config_from_prompt_uses_llm_parser(
+        self, mock_install_dir, monkeypatch
+    ):
         """Prompt action should return validated config from parser helper."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
         behavior = agent._behavior
@@ -73,110 +74,130 @@ class TestMeshAgent:
             }
 
         monkeypatch.setattr(behavior, "_mesh_config_from_prompt", fake_from_prompt)
-        result = await behavior.mesh_config_from_prompt("Generate a 15km mesh over Japan")
+        result = await behavior.mesh_config_from_prompt(
+            "Generate a 15km mesh over Japan"
+        )
         assert result["resolution"] == "15km"
         assert "regional" in result
 
-    def test_normalize_mesh_config_accepts_top_level_project_hexes(self, mock_install_dir):
+    def test_normalize_mesh_config_accepts_top_level_project_hexes(
+        self, mock_install_dir
+    ):
         """Normalization should accept common model output without a nested regional object."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
         behavior = agent._behavior
 
-        result = behavior._normalize_mesh_config({
-            "resolution": "15km",
-            "name": "japan_15km",
-            "project_hexes": {
-                "center_lat": 36.0,
-                "center_lon": 138.0,
-                "extent_x_km": 3000,
-                "extent_y_km": 2500,
-            },
-        })
+        result = behavior._normalize_mesh_config(
+            {
+                "resolution": "15km",
+                "name": "japan_15km",
+                "project_hexes": {
+                    "center_lat": 36.0,
+                    "center_lon": 138.0,
+                    "extent_x_km": 3000,
+                    "extent_y_km": 2500,
+                },
+            }
+        )
 
         assert result["regional"]["project_hexes"]["center_lat"] == 36.0
         assert "project_hexes" not in result
 
-    def test_normalize_mesh_config_accepts_regional_project_hexes_fields(self, mock_install_dir):
+    def test_normalize_mesh_config_accepts_regional_project_hexes_fields(
+        self, mock_install_dir
+    ):
         """Normalization should wrap raw project_hexes fields placed directly under regional."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
         behavior = agent._behavior
 
-        result = behavior._normalize_mesh_config({
-            "resolution": "15km",
-            "name": "japan_15km",
-            "regional": {
-                "center_lat": 36.0,
-                "center_lon": 138.0,
-                "extent_x_km": 3000,
-                "extent_y_km": 2500,
-            },
-        })
+        result = behavior._normalize_mesh_config(
+            {
+                "resolution": "15km",
+                "name": "japan_15km",
+                "regional": {
+                    "center_lat": 36.0,
+                    "center_lon": 138.0,
+                    "extent_x_km": 3000,
+                    "extent_y_km": 2500,
+                },
+            }
+        )
 
         assert result["regional"]["project_hexes"]["center_lon"] == 138.0
         assert "center_lat" not in result["regional"]
 
-    def test_normalize_mesh_config_wraps_flat_create_region_ellipse(self, mock_install_dir):
+    def test_normalize_mesh_config_wraps_flat_create_region_ellipse(
+        self, mock_install_dir
+    ):
         """Normalization should wrap flat create_region ellipse fields under ellipse."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
         behavior = agent._behavior
 
-        result = behavior._normalize_mesh_config({
-            "resolution": "15km",
-            "regional": {
-                "create_region": {
-                    "point": "36.0, 138.0",
-                    "semi-major-axis": 1800000,
-                    "semi-minor-axis": 600000,
-                    "orientation-angle": 35,
-                }
-            },
-        })
+        result = behavior._normalize_mesh_config(
+            {
+                "resolution": "15km",
+                "regional": {
+                    "create_region": {
+                        "point": "36.0, 138.0",
+                        "semi-major-axis": 1800000,
+                        "semi-minor-axis": 600000,
+                        "orientation-angle": 35,
+                    }
+                },
+            }
+        )
 
         ellipse = result["regional"]["create_region"]["ellipse"]
         assert ellipse["orientation-angle"] == 35
         assert ellipse["point"] == "36.0, 138.0"
 
     def test_normalize_mesh_config_accepts_regional_shape_key_without_create_region(
-        self, mock_install_dir,
+        self,
+        mock_install_dir,
     ):
         """Normalization should wrap direct regional shape keys under create_region."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
         behavior = agent._behavior
 
-        result = behavior._normalize_mesh_config({
-            "resolution": "15km",
-            "regional": {
-                "ellipse": {
-                    "point": "36.0, 138.0",
-                    "semi-major-axis": 1800000,
-                    "semi-minor-axis": 600000,
-                    "orientation-angle": 35,
-                }
-            },
-        })
+        result = behavior._normalize_mesh_config(
+            {
+                "resolution": "15km",
+                "regional": {
+                    "ellipse": {
+                        "point": "36.0, 138.0",
+                        "semi-major-axis": 1800000,
+                        "semi-minor-axis": 600000,
+                        "orientation-angle": 35,
+                    }
+                },
+            }
+        )
 
         assert "create_region" in result["regional"]
         assert "ellipse" in result["regional"]["create_region"]
 
     def test_normalize_mesh_config_accepts_create_region_type_with_alias_keys(
-        self, mock_install_dir,
+        self,
+        mock_install_dir,
     ):
         """Normalization should convert type-based shape payload and underscore aliases."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
         behavior = agent._behavior
 
-        result = behavior._normalize_mesh_config({
-            "resolution": "15km",
-            "regional": {
-                "create_region": {
-                    "type": "ellipse",
-                    "point": "36.0, 138.0",
-                    "semi_major_axis": 1800000,
-                    "semi_minor_axis": 600000,
-                    "orientation_angle": 35,
-                }
-            },
-        })
+        result = behavior._normalize_mesh_config(
+            {
+                "resolution": "15km",
+                "regional": {
+                    "create_region": {
+                        "type": "ellipse",
+                        "point": "36.0, 138.0",
+                        "semi_major_axis": 1800000,
+                        "semi_minor_axis": 600000,
+                        "orientation_angle": 35,
+                    }
+                },
+            }
+        )
 
         ellipse = result["regional"]["create_region"]["ellipse"]
         assert ellipse["semi-major-axis"] == 1800000
@@ -207,7 +228,8 @@ class TestMeshAgent:
         assert "Point: 36.0, 138.0" in contents
 
     def test_write_create_region_spec_accepts_underscore_axis_aliases(
-        self, mock_install_dir,
+        self,
+        mock_install_dir,
     ):
         """create_region ellipse writer should accept underscore axis aliases."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
@@ -233,14 +255,23 @@ class TestMeshAgent:
 
     @pytest.mark.asyncio
     async def test_mesh_config_from_prompt_normalizes_llm_response(
-        self, mock_install_dir, monkeypatch,
+        self,
+        mock_install_dir,
+        monkeypatch,
     ):
         """Prompt path should normalize LLM response to valid schema."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
         behavior = agent._behavior
 
         # Geo-lookup approach: LLM returns region names
-        def fake_ollama_chat(prompt, model, llm_url, system_prompt=None, timeout_seconds=120, api_key=None):
+        def fake_ollama_chat(
+            prompt,
+            model,
+            llm_url,
+            system_prompt=None,
+            timeout_seconds=120,
+            api_key=None,
+        ):
             return {
                 "resolution": "15km",
                 "name": "japan_15km",
@@ -263,7 +294,9 @@ class TestMeshAgent:
 
     @pytest.mark.asyncio
     async def test_mesh_config_from_prompt_falls_back_to_cached_on_failure(
-        self, mock_install_dir, monkeypatch,
+        self,
+        mock_install_dir,
+        monkeypatch,
     ):
         """Prompt parsing should fall back to cached config when LLM fails."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
@@ -300,7 +333,9 @@ class TestMeshAgent:
 
     @pytest.mark.asyncio
     async def test_mesh_config_from_prompt_falls_back_to_disk_cache(
-        self, mock_install_dir, monkeypatch,
+        self,
+        mock_install_dir,
+        monkeypatch,
     ):
         """Prompt parsing should load cached config from disk when LLM fails."""
         agent = MeshAgent(work_dir=str(mock_install_dir))
@@ -308,7 +343,7 @@ class TestMeshAgent:
 
         prompt = "Generate a 15km mesh that covers Japan"
         behavior._prompt_cache_file.write_text(
-            '{\n'
+            "{\n"
             f'  "{prompt}": {{\n'
             '    "resolution": "15km",\n'
             '    "regional": {\n'
@@ -318,11 +353,11 @@ class TestMeshAgent:
             '          "semi-major-axis": 1200000,\n'
             '          "semi-minor-axis": 450000,\n'
             '          "orientation-angle": 35\n'
-            '        }\n'
-            '      }\n'
-            '    }\n'
-            '  }\n'
-            '}'
+            "        }\n"
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "}"
         )
 
         def fake_ollama_chat(*args, **kwargs):
@@ -358,7 +393,9 @@ class TestMeshAgent:
 
     @pytest.mark.asyncio
     async def test_prompt_queue_loop_processes_requests_sequentially(
-        self, mock_install_dir, monkeypatch,
+        self,
+        mock_install_dir,
+        monkeypatch,
     ):
         """Queue loop should process queued prompt requests and store results."""
         agent = MeshAgent(work_dir=str(mock_install_dir))

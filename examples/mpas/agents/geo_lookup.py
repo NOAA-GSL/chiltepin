@@ -68,12 +68,14 @@ def _ensure_shapefile(data_dir: Path, dataset: str, scale: str) -> Path:
 
 def _load_countries(data_dir: Path = _NE_DATA_DIR):
     import geopandas as gpd
+
     shp = _ensure_shapefile(data_dir, "ne_110m_admin_0_countries", "110m/cultural")
     return gpd.read_file(shp)
 
 
 def _load_states(data_dir: Path = _NE_DATA_DIR):
     import geopandas as gpd
+
     shp = _ensure_shapefile(data_dir, "ne_10m_admin_1_states_provinces", "10m/cultural")
     return gpd.read_file(shp)
 
@@ -134,7 +136,7 @@ def _query_nominatim(
         if resp.status_code != 429 or attempt == 3:
             resp.raise_for_status()
             break
-        time.sleep(2 ** attempt)
+        time.sleep(2**attempt)
     data = resp.json()
     feature = data["features"][0] if data.get("features") else None
     cache_file.write_text(json.dumps({"feature": feature}))
@@ -237,8 +239,11 @@ def _lookup_region_ne(
 
         match = states_gdf[states_gdf["name"].str.lower() == name.lower()]
         if match.empty and "name_alt" in states_gdf.columns:
-            mask = states_gdf["name_alt"].fillna("").str.lower().str.contains(
-                name.lower(), regex=False
+            mask = (
+                states_gdf["name_alt"]
+                .fillna("")
+                .str.lower()
+                .str.contains(name.lower(), regex=False)
             )
             match = states_gdf[mask]
 
@@ -274,17 +279,23 @@ def _lookup_region_osm(
 
         geom = None
 
-        feature = _query_nominatim(name, feature_type="country", polygon_threshold=polygon_threshold)
+        feature = _query_nominatim(
+            name, feature_type="country", polygon_threshold=polygon_threshold
+        )
         if feature:
             geom = _feature_to_geometry(feature)
 
         if geom is None:
-            feature = _query_nominatim(name, feature_type="state", polygon_threshold=polygon_threshold)
+            feature = _query_nominatim(
+                name, feature_type="state", polygon_threshold=polygon_threshold
+            )
             if feature:
                 geom = _feature_to_geometry(feature)
 
         if geom is None:
-            feature = _query_nominatim(name, feature_type="city", polygon_threshold=polygon_threshold)
+            feature = _query_nominatim(
+                name, feature_type="city", polygon_threshold=polygon_threshold
+            )
             if feature:
                 geom = _feature_to_geometry(feature)
 
@@ -294,9 +305,7 @@ def _lookup_region_osm(
                 geom = _feature_to_geometry(feature)
 
         if geom is not None:
-            found_geoms.append(
-                _filter_proximate_polygons(geom, proximity_threshold_km)
-            )
+            found_geoms.append(_filter_proximate_polygons(geom, proximity_threshold_km))
 
     if not found_geoms:
         return None
@@ -332,9 +341,7 @@ def lookup_region(
 # ---------------------------------------------------------------------------
 
 
-def geometry_to_ellipse(
-    geom, buffer_km: float = 50.0
-) -> Dict[str, Any]:
+def geometry_to_ellipse(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
     """Convert a geometry to minimum enclosing ellipse parameters.
 
     Returns dict with center_lat, center_lon, semi_major_m, semi_minor_m,
@@ -357,7 +364,7 @@ def geometry_to_ellipse(
 
     rect_coords = np.array(rect.exterior.coords[:-1])
     edges = np.diff(np.vstack([rect_coords, rect_coords[0:1]]), axis=0)
-    edge_lengths = np.sqrt((edges ** 2).sum(axis=1))
+    edge_lengths = np.sqrt((edges**2).sum(axis=1))
 
     idx = int(np.argmax(edge_lengths[:2]))
     long_edge = edges[idx]
@@ -372,7 +379,9 @@ def geometry_to_ellipse(
 
     centroid = rect.centroid
     final_lat = center_lat + float(centroid.y) / meters_per_deg
-    final_lon = center_lon + float(centroid.x) / (meters_per_deg * math.cos(math.radians(final_lat)))
+    final_lon = center_lon + float(centroid.x) / (
+        meters_per_deg * math.cos(math.radians(final_lat))
+    )
 
     semi_major = major_len / 2.0
     semi_minor = minor_len / 2.0
@@ -401,9 +410,7 @@ def geometry_to_ellipse(
     }
 
 
-def geometry_to_circle(
-    geom, buffer_km: float = 50.0
-) -> Dict[str, Any]:
+def geometry_to_circle(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
     """Convert a geometry to minimum enclosing circle parameters.
 
     Returns dict with center_lat, center_lon, and radius_m.
@@ -427,7 +434,7 @@ def geometry_to_circle(
     hull_coords = np.array(buffered_hull.exterior.coords)
     dx = hull_coords[:, 0] - cx
     dy = hull_coords[:, 1] - cy
-    dists = np.sqrt(dx ** 2 + dy ** 2)
+    dists = np.sqrt(dx**2 + dy**2)
     radius = float(dists.max())
 
     final_lat = center_lat + cy / meters_per_deg
@@ -440,9 +447,7 @@ def geometry_to_circle(
     }
 
 
-def geometry_to_polygon(
-    geom, buffer_km: float = 50.0
-) -> Dict[str, Any]:
+def geometry_to_polygon(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
     """Convert a geometry to a convex polygon specification.
 
     Returns dict with point_lat, point_lon (interior point) and
@@ -483,9 +488,7 @@ def geometry_to_polygon(
     }
 
 
-def geometry_to_rectangle(
-    geom, buffer_km: float = 50.0
-) -> Dict[str, Any]:
+def geometry_to_rectangle(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
     """Convert a geometry to a bounding rectangle for project_hexes.
 
     Determines rotation from the unbuffered hull so elongation is
@@ -516,7 +519,7 @@ def geometry_to_rectangle(
     rect = unbuffered.minimum_rotated_rectangle
     rect_coords = np.array(rect.exterior.coords[:-1])
     edges = np.diff(np.vstack([rect_coords, rect_coords[0:1]]), axis=0)
-    edge_lengths = np.sqrt((edges ** 2).sum(axis=1))
+    edge_lengths = np.sqrt((edges**2).sum(axis=1))
 
     idx = int(np.argmax(edge_lengths[:2]))
     long_len = float(edge_lengths[idx])
@@ -547,7 +550,7 @@ def geometry_to_rectangle(
     edge_lat = max(abs(final_lat - half_y_deg), abs(final_lat + half_y_deg))
     dlat_rad = math.radians(abs(edge_lat - abs(final_lat)))
     tan_ref = math.tan(math.radians(abs(final_lat))) if abs(final_lat) > 1 else 0.0
-    lc_scale = 1.0 + dlat_rad ** 2 * tan_ref ** 2
+    lc_scale = 1.0 + dlat_rad**2 * tan_ref**2
     extent_x_m *= lc_scale
     extent_y_m *= lc_scale
 

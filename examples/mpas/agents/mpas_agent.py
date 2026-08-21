@@ -46,7 +46,7 @@ class MPASAgent:
         work_dir: str,
         init_config: Dict[str, Any],
         fcst_config: Dict[str, Any],
-        mpas_version: str = "v8.4.1"
+        mpas_version: str = "v8.4.1",
     ):
         """Initialize MPASAgent.
 
@@ -79,10 +79,10 @@ class MPASAgent:
         self.geog_data_url = "https://www2.mmm.ucar.edu/projects/mpas"
         self.geog_main_archive = "mpas_static.tar.bz2"
         self.geog_optional_files = [
-            f"topo_ugwp.tar.gz",
-            f"ugwp_limb_tau.nc",
-            f"modis_landuse_20class_15s.tar.bz2",
-            f"bnu_soiltype_top.tar.bz2",
+            "topo_ugwp.tar.gz",
+            "ugwp_limb_tau.nc",
+            "modis_landuse_20class_15s.tar.bz2",
+            "bnu_soiltype_top.tar.bz2",
         ]
         self.geog_data_dir = self.work_dir / "geog_data" / "mpas_static"
 
@@ -97,7 +97,7 @@ class MPASAgent:
         namelist = work_dir / "namelist.init_atmosphere"
         namelist.write_text(
             f"&nhyd_model\n"
-            f'    config_init_case = 7\n'
+            f"    config_init_case = 7\n"
             f"/\n"
             f"&decomposition\n"
             f"    config_block_decomp_file_prefix = '{mesh_name}.graph.info.part.'\n"
@@ -124,7 +124,7 @@ class MPASAgent:
         static_filename = Path(mesh_filename).stem + ".static.nc"
         streams = work_dir / "streams.init_atmosphere"
         streams.write_text(
-            f'<streams>\n'
+            f"<streams>\n"
             f'<immutable_stream name="input"\n'
             f'                  type="input"\n'
             f'                  filename_template="{mesh_filename}"\n'
@@ -134,7 +134,7 @@ class MPASAgent:
             f'                  filename_template="{static_filename}"\n'
             f'                  output_interval="initial_only"\n'
             f'                  packages="initial_conds" />\n'
-            f'</streams>\n'
+            f"</streams>\n"
         )
         return streams
 
@@ -218,7 +218,6 @@ class MPASAgent:
                     tf.extractall(path=static_dir)
                 local_path.unlink()
 
- 
     @bash_task
     def _interpolate_geog_only(
         self,
@@ -241,7 +240,6 @@ class MPASAgent:
             echo "Completed GEOG interpolation at $(date)"
             """
         )
-
 
     @bash_task
     def _initialize_ics(
@@ -353,10 +351,12 @@ class MPASAgent:
             stderr=str(self.log_dir / "mpas_download.stderr"),
         )
         build_future = self._build_mpas(
-            executor=["service"],  # MPAS downloads artifacts during build, so use service executor
+            executor=[
+                "service"
+            ],  # MPAS downloads artifacts during build, so use service executor
             stdout=str(self.log_dir / "mpas_build.stdout"),
             stderr=str(self.log_dir / "mpas_build.stderr"),
-            inputs=[download_future]
+            inputs=[download_future],
         )
 
         try:
@@ -381,7 +381,6 @@ class MPASAgent:
             self.mpas_source_dir / "bin" / "mpas_init_atmosphere",
             self.mpas_source_dir / "mpas_init_atmosphere",
             self.mpas_source_dir / "build" / "bin" / "mpas_init_atmosphere",
-
         ]
         model_candidates = [
             self.mpas_source_dir / "bin" / "mpas_atmosphere",
@@ -403,11 +402,8 @@ class MPASAgent:
                 "MPAS build completed but mpas_init_atmosphere was not found"
             )
         if self.atmosphere_path is None:
-            raise RuntimeError(
-                "MPAS build completed but mpas_atmosphere was not found"
-            )
+            raise RuntimeError("MPAS build completed but mpas_atmosphere was not found")
         self.mpas_built = True
-
 
     # ---------------------------------------------------------------------
     # Public agent actions - GEOG setup and interpolation
@@ -415,7 +411,8 @@ class MPASAgent:
 
     @agent_action
     async def download_geog_data(
-        self, path: Optional[str] = None,
+        self,
+        path: Optional[str] = None,
     ) -> Dict[str, str]:
         """Ensure GEOG data exists for MPAS init interpolation.
 
@@ -435,9 +432,7 @@ class MPASAgent:
         if path:
             geog_dir = Path(path)
             if not geog_dir.exists():
-                raise RuntimeError(
-                    f"Configured GEOG path does not exist: {geog_dir}"
-                )
+                raise RuntimeError(f"Configured GEOG path does not exist: {geog_dir}")
             self.geog_data_dir = geog_dir
             self.geog_downloaded = True
             return {"geog_dir": str(geog_dir)}
@@ -452,9 +447,7 @@ class MPASAgent:
         try:
             await asyncio.wrap_future(future)
         except Exception as e:
-            raise RuntimeError(
-                f"GEOG download failed: {e}"
-            )
+            raise RuntimeError(f"GEOG download failed: {e}")
 
         self.geog_downloaded = True
         return {"geog_dir": str(self.geog_data_dir)}
@@ -530,7 +523,6 @@ class MPASAgent:
         return {
             "static": str(work_dir / static_filename),
         }
-
 
     @agent_action
     async def initialize_ics(

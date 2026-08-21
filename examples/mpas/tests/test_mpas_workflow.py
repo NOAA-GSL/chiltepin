@@ -5,7 +5,6 @@
 from copy import deepcopy
 
 import pytest
-
 from workflows import MPASForecastWorkflow
 
 
@@ -48,11 +47,17 @@ class TestMPASForecastWorkflow:
             def __init__(self):
                 self.calls = []
 
-            async def create_mesh_from_prompt(self, prompt, mesh_data_dir, model, llm_url):
+            async def create_mesh_from_prompt(
+                self, prompt, mesh_data_dir, model, llm_url
+            ):
                 self.calls.append((prompt, mesh_data_dir, model, llm_url))
                 return {
                     "mesh_config": {"resolution": "15km", "name": "japan_15km"},
-                    "mesh_result": {"mesh": "mesh.nc", "graph": "graph.info", "partitions": {}},
+                    "mesh_result": {
+                        "mesh": "mesh.nc",
+                        "graph": "graph.info",
+                        "partitions": {},
+                    },
                 }
 
         workflow = MPASForecastWorkflow(workflow_config)

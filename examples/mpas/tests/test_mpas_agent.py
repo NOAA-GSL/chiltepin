@@ -2,8 +2,6 @@
 
 """Tests for MPASAgent."""
 
-import pytest
-
 from agents import MPASAgent
 
 

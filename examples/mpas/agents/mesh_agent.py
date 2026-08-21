@@ -20,16 +20,15 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-
-from agents.geo_lookup import (
-    lookup_region,
-    geometry_to_ellipse,
-    geometry_to_circle,
-    geometry_to_polygon,
-    geometry_to_rectangle,
-)
 from parsl.app.errors import BashExitFailure
 
+from agents.geo_lookup import (
+    geometry_to_circle,
+    geometry_to_ellipse,
+    geometry_to_polygon,
+    geometry_to_rectangle,
+    lookup_region,
+)
 from chiltepin.agents import agent_action, agent_loop, chiltepin_agent
 from chiltepin.tasks import bash_task, python_task
 
@@ -161,7 +160,9 @@ class MeshAgent:
         self._last_good_prompt_mesh_configs[prompt] = dict(cached)
         return dict(cached)
 
-    def _store_cached_prompt_config(self, prompt: str, mesh_config: Dict[str, Any]) -> None:
+    def _store_cached_prompt_config(
+        self, prompt: str, mesh_config: Dict[str, Any]
+    ) -> None:
         """Store successful prompt mesh config in memory and on disk."""
         self._last_good_prompt_mesh_configs[prompt] = dict(mesh_config)
 
@@ -176,7 +177,9 @@ class MeshAgent:
 
         cache_payload[prompt] = mesh_config
         self.work_dir.mkdir(parents=True, exist_ok=True)
-        self._prompt_cache_file.write_text(json.dumps(cache_payload, indent=2, sort_keys=True))
+        self._prompt_cache_file.write_text(
+            json.dumps(cache_payload, indent=2, sort_keys=True)
+        )
 
     @staticmethod
     def _extract_json_object(text: str) -> Dict[str, Any]:
@@ -207,7 +210,7 @@ class MeshAgent:
         if start == -1 or end == -1 or end <= start:
             raise ValueError("Model response did not contain a JSON object.")
 
-        candidate = cleaned[start:end + 1]
+        candidate = cleaned[start : end + 1]
         parsed = json.loads(candidate)
         if not isinstance(parsed, dict):
             raise ValueError("Parsed JSON payload is not an object.")
@@ -223,14 +226,20 @@ class MeshAgent:
             raise ValueError("Mesh config must be a JSON object.")
 
         create_region_shape_keys = {"polygon", "circle", "ellipse", "channel"}
-        ellipse_keys = {"point", "semi-major-axis", "semi-minor-axis", "orientation-angle"}
+        ellipse_keys = {
+            "point",
+            "semi-major-axis",
+            "semi-minor-axis",
+            "orientation-angle",
+        }
         circle_keys = {"point", "radius"}
         channel_keys = {"upper-lat", "lower-lat"}
         polygon_keys = {"point", "vertices"}
 
         if "project_hexes" in config or "create_region" in config:
             config = {
-                key: value for key, value in config.items()
+                key: value
+                for key, value in config.items()
                 if key not in {"project_hexes", "create_region"}
             } | {
                 "regional": {
@@ -262,7 +271,8 @@ class MeshAgent:
             if not isinstance(regional, dict):
                 raise ValueError("'regional' must be an object when provided.")
             regional = {
-                key: value for key, value in regional.items()
+                key: value
+                for key, value in regional.items()
                 if value is not None and value != {}
             }
 
@@ -277,7 +287,9 @@ class MeshAgent:
                     }
                 }
 
-            if "create_region" in regional and isinstance(regional["create_region"], dict):
+            if "create_region" in regional and isinstance(
+                regional["create_region"], dict
+            ):
                 create_region_config = {
                     key: value
                     for key, value in regional["create_region"].items()
@@ -352,7 +364,9 @@ class MeshAgent:
                 if regional_keys and regional_keys.issubset(project_hexes_keys):
                     regional = {"project_hexes": regional}
             config["regional"] = regional
-            regional_modes = [k for k in ["project_hexes", "create_region"] if k in regional]
+            regional_modes = [
+                k for k in ["project_hexes", "create_region"] if k in regional
+            ]
             if len(regional_modes) != 1:
                 raise ValueError(
                     "'regional' must contain exactly one of 'project_hexes' or 'create_region'. "
@@ -518,6 +532,7 @@ class MeshAgent:
         boundary at its midpoint.
         """
         import math
+
         clat = rect["center_lat"]
         clon = rect["center_lon"]
         half_x = rect["extent_x_km"] * 1000.0 / 2.0
@@ -529,9 +544,9 @@ class MeshAgent:
 
         corners_local = [
             (-half_x, -half_y),
-            ( half_x, -half_y),
-            ( half_x,  half_y),
-            (-half_x,  half_y),
+            (half_x, -half_y),
+            (half_x, half_y),
+            (-half_x, half_y),
         ]
 
         vertices = []
@@ -563,9 +578,7 @@ class MeshAgent:
             cos_half = math.cos(half_dlon)
             for k in (i, j):
                 lat_k = math.radians(vertices[k][0])
-                vertices[k][0] = math.degrees(
-                    math.atan(math.tan(lat_k) * cos_half)
-                )
+                vertices[k][0] = math.degrees(math.atan(math.tan(lat_k) * cos_half))
 
         return [(round(v[0], 6), round(v[1], 6)) for v in vertices]
 
@@ -590,7 +603,7 @@ class MeshAgent:
         cos_mid = math.cos(math.radians((bounds[1] + bounds[3]) / 2.0))
         dx_km = (bounds[2] - bounds[0]) * 111.32 * cos_mid
         dy_km = (bounds[3] - bounds[1]) * 111.32
-        diagonal_km = math.sqrt(dx_km ** 2 + dy_km ** 2)
+        diagonal_km = math.sqrt(dx_km**2 + dy_km**2)
         buffer_km = max(buffer_km, diagonal_km * 0.10, boundary_thickness_km)
 
         if resolved_method == "project_hexes":
@@ -676,8 +689,13 @@ class MeshAgent:
         """LLM extracts region names, shape, and method; OSM provides geometry."""
         try:
             payload = await asyncio.to_thread(
-                self._llm_chat, prompt, model,
-                self._mesh_osm_system_prompt(), 300, api_key, api_base,
+                self._llm_chat,
+                prompt,
+                model,
+                self._mesh_osm_system_prompt(),
+                300,
+                api_key,
+                api_base,
             )
             region_names = payload.get("region_names", [])
             if not region_names:
@@ -690,11 +708,16 @@ class MeshAgent:
             method = payload.get("method")
 
             resolved_method = self._resolve_mesh_method(
-                resolution, shape, method, is_regional=True,
+                resolution,
+                shape,
+                method,
+                is_regional=True,
             )
 
             geom = await asyncio.to_thread(
-                lookup_region, region_names, exclude_names=exclude_names,
+                lookup_region,
+                region_names,
+                exclude_names=exclude_names,
             )
             if geom is None:
                 raise ValueError(
@@ -702,7 +725,12 @@ class MeshAgent:
                 )
 
             mesh_config = self._build_mesh_config_from_geometry(
-                resolved_method, resolution, name, shape, geom, buffer_km,
+                resolved_method,
+                resolution,
+                name,
+                shape,
+                geom,
+                buffer_km,
             )
             self._store_cached_prompt_config(prompt, mesh_config)
             return mesh_config
@@ -726,9 +754,12 @@ class MeshAgent:
 
     @staticmethod
     def _write_project_hexes_namelist(
-        work_dir: Path, cell_spacing_km: float,
-        extent_x_km: float, extent_y_km: float,
-        center_lat: float, center_lon: float,
+        work_dir: Path,
+        cell_spacing_km: float,
+        extent_x_km: float,
+        extent_y_km: float,
+        center_lat: float,
+        center_lon: float,
     ) -> None:
         """Write namelist.projections for hex_projection tool."""
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -752,11 +783,11 @@ class MeshAgent:
             f"/\n"
         )
 
-
     @staticmethod
     def _write_rotate_namelist(
         work_dir: Path,
-        center_lat: float, center_lon: float,
+        center_lat: float,
+        center_lon: float,
         rotation_degrees: float,
         original_lat: Optional[float] = None,
         original_lon: Optional[float] = None,
@@ -780,7 +811,9 @@ class MeshAgent:
 
     @staticmethod
     def _write_create_region_spec(
-        work_dir: Path, create_region_config: Dict[str, Any], name: str,
+        work_dir: Path,
+        create_region_config: Dict[str, Any],
+        name: str,
     ) -> Path:
         """Write a region specification file for MPAS-Limited-Area create_region.
 
@@ -1075,7 +1108,10 @@ class MeshAgent:
 
     @bash_task
     def _create_region(
-        self, parent_static_mesh: str, region_spec: str, output_dir: str,
+        self,
+        parent_static_mesh: str,
+        region_spec: str,
+        output_dir: str,
     ) -> str:
         """Run create_region to cut a regional mesh from a global mesh."""
         import textwrap
@@ -1116,13 +1152,15 @@ class MeshAgent:
         tarball.unlink()
 
     @python_task
-    def _plot_mpas_mesh_png(self, file_path: str, resolution: Optional[str] = None) -> str:
+    def _plot_mpas_mesh_png(
+        self, file_path: str, resolution: Optional[str] = None
+    ) -> str:
         """Plot an MPAS mesh to a PNG image and return the output path."""
         import geoviews as gv
         import holoviews as hv
         import numpy as np
-        from PIL import Image
         import uxarray as ux
+        from PIL import Image
 
         mesh_path = Path(file_path)
         if not mesh_path.exists():
@@ -1139,6 +1177,7 @@ class MeshAgent:
 
         if has_boundary_mask:
             from matplotlib.colors import ListedColormap
+
             _bdy_colors = [
                 "#ffffff",  # 0 = interior
                 "#d0e8ff",  # 1 = light blue
@@ -1167,43 +1206,73 @@ class MeshAgent:
 
         # Keep map overlay best-effort so mesh plotting remains robust.
         try:
-            import cartopy.feature as cfeature
             import cartopy.crs as ccrs
+            import cartopy.feature as cfeature
             import cartopy.io.shapereader as shpreader
 
-            coast_path = shpreader.natural_earth('10m', 'physical', 'coastline')
-            coastlines = gv.Feature(cfeature.ShapelyFeature(
-                shpreader.Reader(coast_path).geometries(), ccrs.PlateCarree(),
-                facecolor="none", edgecolor="black", linewidth=1.2,
-            ))
+            coast_path = shpreader.natural_earth("10m", "physical", "coastline")
+            coastlines = gv.Feature(
+                cfeature.ShapelyFeature(
+                    shpreader.Reader(coast_path).geometries(),
+                    ccrs.PlateCarree(),
+                    facecolor="none",
+                    edgecolor="black",
+                    linewidth=1.2,
+                )
+            )
 
-            borders_path = shpreader.natural_earth('10m', 'cultural', 'admin_0_boundary_lines_land')
-            borders = gv.Feature(cfeature.ShapelyFeature(
-                shpreader.Reader(borders_path).geometries(), ccrs.PlateCarree(),
-                facecolor="none", edgecolor="#222222", linewidth=1.4,
-            ))
+            borders_path = shpreader.natural_earth(
+                "10m", "cultural", "admin_0_boundary_lines_land"
+            )
+            borders = gv.Feature(
+                cfeature.ShapelyFeature(
+                    shpreader.Reader(borders_path).geometries(),
+                    ccrs.PlateCarree(),
+                    facecolor="none",
+                    edgecolor="#222222",
+                    linewidth=1.4,
+                )
+            )
 
-            states_path = shpreader.natural_earth('10m', 'cultural', 'admin_1_states_provinces_lines')
-            states = gv.Feature(cfeature.ShapelyFeature(
-                shpreader.Reader(states_path).geometries(), ccrs.PlateCarree(),
-                facecolor="none", edgecolor="#666666", linewidth=0.5,
-            ))
+            states_path = shpreader.natural_earth(
+                "10m", "cultural", "admin_1_states_provinces_lines"
+            )
+            states = gv.Feature(
+                cfeature.ShapelyFeature(
+                    shpreader.Reader(states_path).geometries(),
+                    ccrs.PlateCarree(),
+                    facecolor="none",
+                    edgecolor="#666666",
+                    linewidth=0.5,
+                )
+            )
 
             final_layout = mesh_plot * coastlines * borders
 
             center_lon = (lon_min + lon_max) / 2
             center_lat = (lat_min + lat_max) / 2
-            states_threshold = 60.0 if (-130 <= center_lon <= -60 and 20 <= center_lat <= 55) else 30.0
+            states_threshold = (
+                60.0 if (-130 <= center_lon <= -60 and 20 <= center_lat <= 55) else 30.0
+            )
             if extent_deg < states_threshold:
                 final_layout = final_layout * states
 
             if extent_deg < 15.0:
-                counties_path = shpreader.natural_earth('10m', 'cultural', 'admin_2_counties')
-                boundary_lines = [g.boundary for g in shpreader.Reader(counties_path).geometries()]
-                counties = gv.Feature(cfeature.ShapelyFeature(
-                    boundary_lines, ccrs.PlateCarree(),
-                    facecolor="none", edgecolor="#aaaaaa", linewidth=0.3,
-                ))
+                counties_path = shpreader.natural_earth(
+                    "10m", "cultural", "admin_2_counties"
+                )
+                boundary_lines = [
+                    g.boundary for g in shpreader.Reader(counties_path).geometries()
+                ]
+                counties = gv.Feature(
+                    cfeature.ShapelyFeature(
+                        boundary_lines,
+                        ccrs.PlateCarree(),
+                        facecolor="none",
+                        edgecolor="#aaaaaa",
+                        linewidth=0.3,
+                    )
+                )
                 final_layout = final_layout * counties
         except Exception:
             final_layout = mesh_plot
@@ -1239,7 +1308,6 @@ class MeshAgent:
                 resized.save(output_path)
 
         return str(output_path)
-
 
     # -------------------------------------------------------------------------
     # Public agent actions — Metis
@@ -1284,7 +1352,9 @@ class MeshAgent:
 
     @agent_action
     async def partition_mesh(
-        self, mesh_path: str, num_ranks: Union[int, List[int]],
+        self,
+        mesh_path: str,
+        num_ranks: Union[int, List[int]],
     ) -> Union[str, Dict[int, str]]:
         """Partition MPAS mesh graph file for MPI execution.
 
@@ -1338,9 +1408,7 @@ class MeshAgent:
                     f"see {self.log_dir}/partition_mesh.{rank}.stderr"
                 )
             if isinstance(result, Exception):
-                raise RuntimeError(
-                    f"Metis partition failed for {rank} ranks: {result}"
-                )
+                raise RuntimeError(f"Metis partition failed for {rank} ranks: {result}")
 
         partition_paths = {rank: f"{mesh_path}.part.{rank}" for rank in ranks}
         if is_single:
@@ -1435,8 +1503,7 @@ class MeshAgent:
         """
         if not self.mpas_tools_installed:
             raise RuntimeError(
-                "Must call install_mpas_tools() or install() before "
-                "project_hexes()"
+                "Must call install_mpas_tools() or install() before project_hexes()"
             )
 
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
@@ -1524,8 +1591,7 @@ class MeshAgent:
         """
         if not self.mpas_tools_installed:
             raise RuntimeError(
-                "Must call install_mpas_tools() or install() before "
-                "grid_rotate()"
+                "Must call install_mpas_tools() or install() before grid_rotate()"
             )
 
         work_dir = Path(input_mesh).parent
@@ -1616,8 +1682,7 @@ class MeshAgent:
         """
         if not self.limited_area_installed:
             raise RuntimeError(
-                "Must call install_limited_area() or install() before "
-                "create_region()"
+                "Must call install_limited_area() or install() before create_region()"
             )
         if resolution not in self.resolution_cells:
             raise ValueError(
@@ -1627,7 +1692,9 @@ class MeshAgent:
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
         output_dir = request_mesh_data_dir / mesh_name
         spec_file = self._write_create_region_spec(
-            output_dir, create_region_config, mesh_name,
+            output_dir,
+            create_region_config,
+            mesh_name,
         )
 
         cells = self.resolution_cells[resolution]
@@ -1657,7 +1724,6 @@ class MeshAgent:
             "static": str(output_dir / f"{mesh_name}.static.nc"),
             "graph": str(output_dir / f"{mesh_name}.graph.info"),
         }
-
 
     # -------------------------------------------------------------------------
     # Public agent actions — Combined install
@@ -1817,16 +1883,13 @@ class MeshAgent:
         try:
             await asyncio.wrap_future(future)
         except Exception as e:
-            raise RuntimeError(
-                f"Global mesh download failed: {e}"
-            )
+            raise RuntimeError(f"Global mesh download failed: {e}")
 
         cells = self.resolution_cells[resolution]
         return {
             "static": str(request_mesh_data_dir / f"x1.{cells}.static.nc"),
             "graph": str(request_mesh_data_dir / f"x1.{cells}.graph.info"),
         }
-
 
     @agent_action
     async def plot_mesh(
@@ -1891,7 +1954,9 @@ class MeshAgent:
         mesh_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a mesh from a natural language request using an LLM."""
-        mesh_config = await self._mesh_config_from_prompt(prompt, model, api_key, api_base)
+        mesh_config = await self._mesh_config_from_prompt(
+            prompt, model, api_key, api_base
+        )
         if mesh_name:
             mesh_config["name"] = mesh_name
         mesh_result = await self.generate_mesh(mesh_config, mesh_data_dir)
@@ -1912,14 +1977,16 @@ class MeshAgent:
         """Submit a prompt for background processing by the prompt queue loop."""
         request_id = uuid.uuid4().hex
         self._prompt_results[request_id] = {"status": "queued"}
-        self._pending_prompt_requests.append({
-            "request_id": request_id,
-            "prompt": prompt,
-            "mesh_data_dir": mesh_data_dir,
-            "model": model,
-            "api_key": api_key,
-            "api_base": api_base,
-        })
+        self._pending_prompt_requests.append(
+            {
+                "request_id": request_id,
+                "prompt": prompt,
+                "mesh_data_dir": mesh_data_dir,
+                "model": model,
+                "api_key": api_key,
+                "api_base": api_base,
+            }
+        )
         return request_id
 
     @agent_action
@@ -1989,7 +2056,6 @@ class MeshAgent:
 
         if install_tasks:
             await asyncio.gather(*install_tasks)
-
 
     @agent_action
     async def generate_mesh(
@@ -2078,7 +2144,6 @@ class MeshAgent:
                 "or 'create_region' key under 'regional'."
             )
 
-
         # Partition for MPI if graph file available and ranks specified
         if result.get("graph"):
             ranks_list = []
@@ -2088,7 +2153,8 @@ class MeshAgent:
                 ranks_list.append(forecast_ranks)
             if ranks_list:
                 partition_paths = await self.partition_mesh(
-                    result["graph"], ranks_list,
+                    result["graph"],
+                    ranks_list,
                 )
                 result["partitions"].update(partition_paths)
 

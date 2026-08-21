@@ -12,10 +12,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
+from agents import MeshAgent, MPASAgent, WPSAgent
+
 from chiltepin import AgentRuntime, Workflow
 from chiltepin.manager import Manager
-
-from agents import MeshAgent, MPASAgent, WPSAgent
 
 # Maps config "type" strings to agent classes
 AGENT_TYPES: Dict[str, Type] = {
@@ -87,7 +87,7 @@ class MPASForecastWorkflow:
 
         self.workflow = Workflow(
             workflow_config,
-            run_dir=str(Path(self.config.get("experiment_dir")) / "parsl_logs")
+            run_dir=str(Path(self.config.get("experiment_dir")) / "parsl_logs"),
         )
         self.workflow.start()
 
@@ -172,7 +172,7 @@ class MPASForecastWorkflow:
 
     async def mesh_phase(self) -> Dict[str, Any]:
         """Generate and partition mesh on all mesh agents concurrently.
-    
+
         Returns
         -------
         dict
@@ -188,7 +188,9 @@ class MPASForecastWorkflow:
         llm_config = model.get("llm", {})
         llm_model = llm_config.get("model", "ollama_chat/qwen2.5:3b")
         api_key = llm_config.get("api_key") or (
-            os.environ.get(llm_config["api_key_env"]) if llm_config.get("api_key_env") else None
+            os.environ.get(llm_config["api_key_env"])
+            if llm_config.get("api_key_env")
+            else None
         )
         api_base = llm_config.get("api_base")
 
@@ -229,30 +231,26 @@ class MPASForecastWorkflow:
 
     async def mpas_phase(self) -> Dict[str, Any]:
         """Run MPAS forecast on all MPAS agents concurrently.
-    
+
         Returns
         -------
         dict
             Per-agent results keyed by agent name
         """
         mpas_agents = self.agents_by_type("mpas")
-        results = await asyncio.gather(*[
-            a.install_mpas() for a in mpas_agents
-        ])
+        results = await asyncio.gather(*[a.install_mpas() for a in mpas_agents])
         return dict(zip(self._agents_by_type["mpas"], results))
 
     async def download_geog_phase(self) -> Dict[str, Any]:
         """Download GEOG data on all MPAS agents concurrently.
-    
+
         Returns
         -------
         dict
             Per-agent results keyed by agent name
         """
         mpas_agents = self.agents_by_type("mpas")
-        results = await asyncio.gather(*[
-            a.download_geog_data() for a in mpas_agents
-        ])
+        results = await asyncio.gather(*[a.download_geog_data() for a in mpas_agents])
         return dict(zip(self._agents_by_type["mpas"], results))
 
     async def interpolate_geog_phase(
@@ -295,10 +293,12 @@ class MPASForecastWorkflow:
             mesh_file = mesh_result.get("mesh")
             if not mesh_file:
                 continue
-            tasks.append(mpas_agent.interpolate_geog_only(
-                mesh_file=mesh_file,
-                num_ranks=init_ranks,
-            ))
+            tasks.append(
+                mpas_agent.interpolate_geog_only(
+                    mesh_file=mesh_file,
+                    num_ranks=init_ranks,
+                )
+            )
             labels.append(mesh_label)
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -415,16 +415,12 @@ class MPASForecastWorkflow:
         try:
             source_dir = await agent.download_mpas()
         except Exception as e:
-            raise RuntimeError(
-                f"MPAS download failed for agent '{label}': {e}"
-            ) from e
+            raise RuntimeError(f"MPAS download failed for agent '{label}': {e}") from e
 
         try:
             build_result = await agent.build()
         except Exception as e:
-            raise RuntimeError(
-                f"MPAS build failed for agent '{label}': {e}"
-            ) from e
+            raise RuntimeError(f"MPAS build failed for agent '{label}': {e}") from e
 
         return {
             "source": source_dir,
@@ -488,7 +484,9 @@ class MPASForecastWorkflow:
             geog_path = geog_cfg.get("path")
             for idx, agent in enumerate(mpas_agents):
                 label = self._agents_by_type.get("mpas", [])[idx]
-                phase_tasks.append(asyncio.create_task(agent.download_geog_data(path=geog_path)))
+                phase_tasks.append(
+                    asyncio.create_task(agent.download_geog_data(path=geog_path))
+                )
                 phase_labels.append(f"geog:{label}")
 
         phase_results = await asyncio.gather(*phase_tasks, return_exceptions=True)
@@ -508,10 +506,7 @@ class MPASForecastWorkflow:
             prepared[phase_type][agent_label] = result
 
             if phase_type == "mpas":
-                print(
-                    f"MPAS build completed for '{agent_label}': "
-                    f"{result['build']}"
-                )
+                print(f"MPAS build completed for '{agent_label}': {result['build']}")
             elif phase_type == "mesh":
                 plot_path = result.get("plot")
                 plot_error = result.get("plot_error")
@@ -523,10 +518,7 @@ class MPASForecastWorkflow:
                 if plot_path:
                     print(f"Mesh plot generated for '{agent_label}': {plot_path}")
             elif phase_type == "geog":
-                print(
-                    f"GEOG data ready for '{agent_label}': "
-                    f"{result['geog_dir']}"
-                )
+                print(f"GEOG data ready for '{agent_label}': {result['geog_dir']}")
 
         return prepared
 

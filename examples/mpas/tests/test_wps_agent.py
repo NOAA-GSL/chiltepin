@@ -2,8 +2,6 @@
 
 """Tests for WPSAgent."""
 
-import pytest
-
 from agents import WPSAgent
 
 
