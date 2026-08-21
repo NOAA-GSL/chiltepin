@@ -33,7 +33,7 @@ agents:
         provider: slurm
         partition: slurmpar
         nodes_per_block: 1
-        walltime: "00:10:00"
+        walltime: "00:20:00"
         environment:
           # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
           # - conda activate mpas-example
@@ -42,7 +42,7 @@ agents:
         provider: slurm
         partition: slurmpar
         nodes_per_block: 1
-        walltime: "00:10:00"
+        walltime: "00:20:00"
         environment:
           - source /usr/lmod/lmod/init/bash
           - module use /opt/spack-stack/envs/unified-env/modules/Core
@@ -147,8 +147,8 @@ model:
 
   # mesh: either specify a prompt or the full mesh creation config
   mesh:
-    name: Japan_15km
-    prompt: "Generate a 15km MPAS mesh that covers Japan."
+    name: Boulder_15km
+    # prompt: "Generate a 15km MPAS mesh that covers Japan."
     # prompt: "Generate a 15km MPAS mesh that covers Japan."
     # prompt: "Generate a 15km MPAS mesh that covers Chile."
     # prompt: "Generate a 15km MPAS mesh that covers Tornado Alley."
@@ -156,7 +156,9 @@ model:
     # prompt: "Generate a 15km MPAS mesh that covers Europe, excluding Russia and Iceland."
     # prompt: "Generate a 15km MPAS HRRR mesh."
     # prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina."
-    # prompt: "Generate a 15km MPAS mesh that covers CONUS."
+    # prompt: "Generate a 3km MPAS mesh that covers CONUS."
+    prompt: "Generate a 120km MPAS mesh that covers Boulder, Colorado."
+    # prompt: "Generate a 15km MPAS mesh that covers Tuscany."
     # OR specify full config instead of prompt
     # resolution: 15km
     # Add regional specs for regional meshes

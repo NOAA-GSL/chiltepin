@@ -583,6 +583,18 @@ class MeshAgent:
         if resolved_method == "global":
             return {"resolution": resolution, "name": name}
 
+        # Buffer must cover 7 boundary-layer cells and be >= 10% of diagonal
+        import math
+        resolution_km = self._parse_resolution_km(resolution)
+        boundary_thickness_km = resolution_km * 7
+        hull = geom.convex_hull
+        bounds = hull.bounds  # (minx, miny, maxx, maxy) in degrees
+        cos_mid = math.cos(math.radians((bounds[1] + bounds[3]) / 2.0))
+        dx_km = (bounds[2] - bounds[0]) * 111.32 * cos_mid
+        dy_km = (bounds[3] - bounds[1]) * 111.32
+        diagonal_km = math.sqrt(dx_km ** 2 + dy_km ** 2)
+        buffer_km = max(buffer_km, diagonal_km * 0.10, boundary_thickness_km)
+
         if resolved_method == "project_hexes":
             from agents.geo_lookup_osm import geometry_to_rectangle
             rect = geometry_to_rectangle(geom, buffer_km=buffer_km)
@@ -663,7 +675,7 @@ class MeshAgent:
         model: str,
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
-        buffer_km: float = 300.0,
+        buffer_km: float = 50.0,
     ) -> Dict[str, Any]:
         """LLM extracts region names, shape, and method; OSM provides geometry."""
         try:
