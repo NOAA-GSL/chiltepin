@@ -29,8 +29,20 @@ from agents.geo_lookup import (
     geometry_to_rectangle,
     lookup_region,
 )
+from pydantic import BaseModel, Field
+
 from chiltepin.agents import agent_action, agent_loop, chiltepin_agent
 from chiltepin.tasks import bash_task, python_task
+
+
+class MeshPromptResponse(BaseModel):
+    """Structured LLM response for mesh prompt interpretation."""
+    resolution: str = Field(description="Mesh resolution, e.g. '15km', '120km'")
+    name: str = Field(description="Short descriptive mesh name, e.g. 'japan_15km'")
+    region_names: List[str] = Field(default_factory=list, description="Geographic entity names whose union covers the region")
+    exclude_names: List[str] = Field(default_factory=list, description="Entity names to exclude from the region")
+    shape: Optional[str] = Field(default=None, description="Mesh shape: rectangle, ellipse, circle, or polygon")
+    method: Optional[str] = Field(default=None, description="Mesh method: project_hexes or create_region")
 
 
 @chiltepin_agent()
@@ -180,41 +192,6 @@ class MeshAgent:
         self._prompt_cache_file.write_text(
             json.dumps(cache_payload, indent=2, sort_keys=True)
         )
-
-    @staticmethod
-    def _extract_json_object(text: str) -> Dict[str, Any]:
-        """Extract and parse a JSON object from model output text."""
-        cleaned = text.strip()
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-
-        # Handle ```json ... ``` fenced code blocks
-        fence_start = cleaned.find("```json")
-        if fence_start != -1:
-            json_start = cleaned.find("\n", fence_start) + 1
-            fence_end = cleaned.find("```", json_start)
-            if fence_end != -1:
-                try:
-                    parsed = json.loads(cleaned[json_start:fence_end].strip())
-                    if isinstance(parsed, dict):
-                        return parsed
-                except json.JSONDecodeError:
-                    pass
-
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError("Model response did not contain a JSON object.")
-
-        candidate = cleaned[start : end + 1]
-        parsed = json.loads(candidate)
-        if not isinstance(parsed, dict):
-            raise ValueError("Parsed JSON payload is not an object.")
-        return parsed
 
     def _normalize_mesh_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize and validate a model-produced mesh configuration payload."""
@@ -383,39 +360,34 @@ class MeshAgent:
         timeout_seconds: int = 120,
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Call an LLM via litellm and return parsed JSON object.
+    ) -> MeshPromptResponse:
+        """Call an LLM via instructor/litellm and return a validated response.
 
         The model string uses litellm provider prefixes, e.g.
         ``anthropic/claude-sonnet-5``, ``ollama_chat/qwen2.5:3b``,
         ``openai/gpt-4o``.
         """
+        import instructor
         import litellm
 
+        client = instructor.from_litellm(litellm.completion)
         system = system_prompt or self._mesh_osm_system_prompt()
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ]
 
         try:
-            response = litellm.completion(
+            return client.chat.completions.create(
                 model=model,
-                messages=messages,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                response_model=MeshPromptResponse,
                 api_key=api_key,
                 api_base=api_base,
                 timeout=timeout_seconds,
-                num_retries=3,
+                max_retries=3,
             )
         except Exception as e:
-            raise RuntimeError(f"LLM endpoint request failed: {e}") from e
-
-        content = response.choices[0].message.content
-
-        if not isinstance(content, str) or not content.strip():
-            raise RuntimeError("LLM response did not contain message content.")
-
-        return self._extract_json_object(content)
+            raise RuntimeError(f"LLM request failed: {e}") from e
 
     def _mesh_osm_system_prompt(self) -> str:
         """System prompt for OSM Nominatim geo-lookup."""
@@ -423,16 +395,8 @@ class MeshAgent:
         return (
             "You extract geographic entity names, mesh shape, and mesh creation "
             "method from user mesh requests. "
-            "Return ONLY a JSON object (no markdown, no explanation). "
             f"Downloadable resolution values are: {resolutions}. "
             "Any resolution is valid if the user requests it explicitly. "
-            "Schema: "
-            '{"resolution": "STRING", "name": "STRING", '
-            '"region_names": ["NAME1", "NAME2", ...], '
-            '"exclude_names": ["NAME1", ...], '
-            '"shape": "STRING or null", '
-            '"method": "STRING or null"}. '
-            "Field definitions: "
             "- region_names: a list of standard geographic entity names (countries, "
             "states, provinces, cities, or sub-national regions) whose union covers "
             "the described region. "
@@ -697,15 +661,15 @@ class MeshAgent:
                 api_key,
                 api_base,
             )
-            region_names = payload.get("region_names", [])
+            region_names = payload.region_names
             if not region_names:
-                return self._normalize_mesh_config(payload)
+                return self._normalize_mesh_config(payload.model_dump())
 
-            resolution = payload.get("resolution", "120km")
-            name = payload.get("name", f"mesh_{resolution}")
-            exclude_names = payload.get("exclude_names", [])
-            shape = payload.get("shape")
-            method = payload.get("method")
+            resolution = payload.resolution
+            name = payload.name
+            exclude_names = payload.exclude_names
+            shape = payload.shape
+            method = payload.method
 
             resolved_method = self._resolve_mesh_method(
                 resolution,
