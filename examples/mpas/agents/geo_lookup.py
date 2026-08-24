@@ -9,19 +9,17 @@ then falls back to OpenStreetMap Nominatim for finer-grained entities
 """
 
 import hashlib
-import os
 import json
 import math
+import os
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib.request import urlretrieve
 
 import numpy as np
 import requests
-from typing import Union
-
 from shapely.geometry import MultiPoint, MultiPolygon, Polygon, shape
 from shapely.ops import unary_union
 
@@ -349,8 +347,6 @@ def lookup_region(
 # ---------------------------------------------------------------------------
 # Geometry-to-mesh-config conversion functions
 # ---------------------------------------------------------------------------
-
-
 
 
 def _project_and_buffer(geom, buffer_km: float):

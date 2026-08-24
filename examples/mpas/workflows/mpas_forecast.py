@@ -17,9 +17,9 @@ from typing import Any, Dict, List, Optional, Type
 from agents import MeshAgent, MPASAgent, WPSAgent
 
 from chiltepin import AgentRuntime, Workflow
+from chiltepin.manager import Manager
 
 logger = logging.getLogger(__name__)
-from chiltepin.manager import Manager
 
 # Maps config "type" strings to agent classes
 AGENT_TYPES: Dict[str, Type] = {
@@ -116,7 +116,9 @@ class MPASForecastWorkflow:
     def _build_agent_args(self, agent_conf: Dict[str, Any]) -> tuple:
         """Build (positional_args, keyword_args) for an agent based on its type."""
         agent_type = agent_conf["type"]
-        work_dir = str(Path(agent_conf.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_")))
+        work_dir = str(
+            Path(agent_conf.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_"))
+        )
         extra_kwargs = dict(agent_conf.get("kwargs", {}))
 
         if agent_type == "mesh":
@@ -213,7 +215,10 @@ class MPASForecastWorkflow:
             if matched is None:
                 raise RuntimeError(f"Missing configuration for mesh agent '{label}'")
 
-            mesh_data_dir = str(Path(matched.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_")) / "mesh_data")
+            mesh_data_dir = str(
+                Path(matched.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_"))
+                / "mesh_data"
+            )
             if mesh_prompt:
                 tasks.append(
                     agent.create_mesh_from_prompt(
@@ -325,7 +330,6 @@ class MPASForecastWorkflow:
 
         return output
 
-
     async def _prepare_mpas_agent(self, agent: Any, label: str) -> Dict[str, Any]:
         """Download and build MPAS for one agent with clear stage errors."""
         try:
@@ -388,7 +392,10 @@ class MPASForecastWorkflow:
             if matched is None:
                 raise RuntimeError(f"Missing configuration for mesh agent '{label}'")
 
-            mesh_data_dir = str(Path(matched.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_")) / "mesh_data")
+            mesh_data_dir = str(
+                Path(matched.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_"))
+                / "mesh_data"
+            )
             phase_tasks.append(
                 asyncio.create_task(
                     agent.generate_mesh(dict(mesh_config), mesh_data_dir)
@@ -422,19 +429,26 @@ class MPASForecastWorkflow:
             prepared[phase_type][agent_label] = result
 
             if phase_type == "mpas":
-                logger.info("MPAS build completed for '%s': %s", agent_label, result["build"])
+                logger.info(
+                    "MPAS build completed for '%s': %s", agent_label, result["build"]
+                )
             elif phase_type == "mesh":
                 plot_path = result.get("plot")
                 plot_error = result.get("plot_error")
                 if plot_error:
                     logger.warning(
                         "Mesh plot generation failed for agent '%s': %s",
-                        agent_label, plot_error,
+                        agent_label,
+                        plot_error,
                     )
                 if plot_path:
-                    logger.info("Mesh plot generated for '%s': %s", agent_label, plot_path)
+                    logger.info(
+                        "Mesh plot generated for '%s': %s", agent_label, plot_path
+                    )
             elif phase_type == "geog":
-                logger.info("GEOG data ready for '%s': %s", agent_label, result["geog_dir"])
+                logger.info(
+                    "GEOG data ready for '%s': %s", agent_label, result["geog_dir"]
+                )
 
         return prepared
 
@@ -462,9 +476,10 @@ class MPASForecastWorkflow:
                 await self.setup_agents()
 
                 mesh_results = await self.mesh_phase()
-                logger.info("Mesh generation completed for agents: %s", list(mesh_results))
+                logger.info(
+                    "Mesh generation completed for agents: %s", list(mesh_results)
+                )
                 logger.info("Mesh results: %s", mesh_results)
-
 
                 # Shutdown agents while manager/exchange client is still alive
                 await self.shutdown_agents()

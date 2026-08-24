@@ -36,6 +36,7 @@ dependencies:
   - cartopy
   - litellm
   - instructor
+  - boto3
 
   # Pip packages (chiltepin is only available on PyPI/GitHub)
   - pip

@@ -144,8 +144,9 @@ model:
   llm:
     # model: bedrock/anthropic.claude-sonnet-4-20250514-v1:0    
     model: anthropic/claude-sonnet-5
+    # model: ollama_chat/qwen2.5:14b
     api_key_env: ANTHROPIC_API_KEY
-
+    # api_base: http://localhost:11434
 
   # mesh: either specify a prompt or the full mesh creation config
   mesh:
@@ -158,10 +159,10 @@ model:
     # prompt: "Generate a 15km MPAS mesh that covers Europe, excluding Russia and Iceland."
     # prompt: "Generate a 15km MPAS HRRR mesh."
     # prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina."
-    prompt: "Generate a 15km MPAS mesh using hex projection that covers CONUS."
+    # prompt: "Generate a 15km MPAS mesh using hex projection that covers CONUS."
     # prompt: "Generate a 3km MPAS mesh that covers Boulder, Colorado."
     # prompt: "Generate a 15km MPAS mesh that covers Tuscany."
-    # prompt: "Generate a 15km rectangular MPAS mesh using limited area that covers Italy."
+    prompt: "Generate a 15km elliptical MPAS mesh that covers Italy."
     # OR specify full config instead of prompt
     # resolution: 15km
     # Add regional specs for regional meshes

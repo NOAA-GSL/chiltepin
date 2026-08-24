@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from parsl.app.errors import BashExitFailure
+from pydantic import BaseModel, Field
 
 from agents.geo_lookup import (
     geometry_to_circle,
@@ -31,20 +32,29 @@ from agents.geo_lookup import (
     geometry_to_rectangle,
     lookup_region,
 )
-from pydantic import BaseModel, Field
-
 from chiltepin.agents import agent_action, agent_loop, chiltepin_agent
 from chiltepin.tasks import bash_task, python_task
 
 
 class MeshPromptResponse(BaseModel):
     """Structured LLM response for mesh prompt interpretation."""
+
     resolution: str = Field(description="Mesh resolution, e.g. '15km', '120km'")
     name: str = Field(description="Short descriptive mesh name, e.g. 'japan_15km'")
-    region_names: List[str] = Field(default_factory=list, description="Geographic entity names whose union covers the region")
-    exclude_names: List[str] = Field(default_factory=list, description="Entity names to exclude from the region")
-    shape: Optional[str] = Field(default=None, description="Mesh shape: rectangle, ellipse, circle, or polygon")
-    method: Optional[str] = Field(default=None, description="Mesh method: project_hexes, create_region, hex_projection, limited_area, or mpas_limited_area")
+    region_names: List[str] = Field(
+        default_factory=list,
+        description="Geographic entity names whose union covers the region",
+    )
+    exclude_names: List[str] = Field(
+        default_factory=list, description="Entity names to exclude from the region"
+    )
+    shape: Optional[str] = Field(
+        default=None, description="Mesh shape: rectangle, ellipse, circle, or polygon"
+    )
+    method: Optional[str] = Field(
+        default=None,
+        description="Mesh method: project_hexes, create_region, hex_projection, limited_area, or mpas_limited_area",
+    )
 
 
 _CREATE_REGION_SHAPE_KEYS = {"polygon", "circle", "ellipse", "channel"}
@@ -62,7 +72,11 @@ _SHAPE_FIELD_SETS = {
     "polygon": {"point", "vertices"},
 }
 _PROJECT_HEXES_KEYS = {
-    "center_lat", "center_lon", "extent_x_km", "extent_y_km", "rotation_degrees",
+    "center_lat",
+    "center_lon",
+    "extent_x_km",
+    "extent_y_km",
+    "rotation_degrees",
 }
 
 
@@ -100,9 +114,11 @@ class MeshAgent:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
         version_re = re.compile(r"^v?[0-9][0-9a-zA-Z._-]*$")
-        for label, val in [("metis_version", metis_version),
-                           ("mpas_tools_version", mpas_tools_version),
-                           ("limited_area_version", limited_area_version)]:
+        for label, val in [
+            ("metis_version", metis_version),
+            ("mpas_tools_version", mpas_tools_version),
+            ("limited_area_version", limited_area_version),
+        ]:
             if not version_re.match(val):
                 raise ValueError(f"Invalid {label}: {val!r}")
         self.metis_version = metis_version
@@ -160,7 +176,6 @@ class MeshAgent:
     @staticmethod
     def _q(val) -> str:
         """Shell-quote a value for safe interpolation into bash scripts."""
-        import shlex
         return shlex.quote(str(val))
 
     @staticmethod
@@ -259,15 +274,12 @@ class MeshAgent:
         }
 
         # Normalize LLM key variants to MPAS-Limited-Area names.
-        config = {
-            _KEY_ALIASES.get(k, k): v for k, v in config.items()
-        }
+        config = {_KEY_ALIASES.get(k, k): v for k, v in config.items()}
         for shape_name in _CREATE_REGION_SHAPE_KEYS:
             shape_payload = config.get(shape_name)
             if isinstance(shape_payload, dict):
                 config[shape_name] = {
-                    _KEY_ALIASES.get(k, k): v
-                    for k, v in shape_payload.items()
+                    _KEY_ALIASES.get(k, k): v for k, v in shape_payload.items()
                 }
 
         config_keys = set(config.keys())
@@ -283,7 +295,8 @@ class MeshAgent:
                 if shape_type in _CREATE_REGION_SHAPE_KEYS:
                     config = {
                         shape_type: {
-                            k: v for k, v in config.items()
+                            k: v
+                            for k, v in config.items()
                             if k not in {"type", "shape"}
                         }
                     }
@@ -309,9 +322,7 @@ class MeshAgent:
         # Hoist project_hexes / create_region into regional block.
         regional_keys = {"project_hexes", "create_region"}
         if regional_keys & set(config.keys()):
-            config = {
-                k: v for k, v in config.items() if k not in regional_keys
-            } | {
+            config = {k: v for k, v in config.items() if k not in regional_keys} | {
                 "regional": {k: v for k, v in config.items() if k in regional_keys}
             }
         if "regional" not in config and (regional_keys & set(payload.keys())):
@@ -324,10 +335,7 @@ class MeshAgent:
         if regional is not None:
             if not isinstance(regional, dict):
                 raise ValueError("'regional' must be an object when provided.")
-            regional = {
-                k: v for k, v in regional.items()
-                if v is not None and v != {}
-            }
+            regional = {k: v for k, v in regional.items() if v is not None and v != {}}
 
             # Bare shape keys → wrap in create_region.
             if "create_region" not in regional and (
@@ -734,8 +742,6 @@ class MeshAgent:
             raise RuntimeError(
                 f"Failed to generate mesh config from prompt: {exc}"
             ) from exc
-
-
 
     @staticmethod
     def _write_project_hexes_namelist(
@@ -1359,7 +1365,6 @@ class MeshAgent:
                 "Must call install_metis() or install() before partition_mesh()"
             )
 
-
         is_single = isinstance(num_ranks, int)
         ranks = [num_ranks] if is_single else sorted(set(num_ranks))
 
@@ -1679,7 +1684,6 @@ class MeshAgent:
         parent_static_mesh = request_mesh_data_dir / f"x1.{cells}.static.nc"
         if not parent_static_mesh.exists():
             await self.download_global_mesh(resolution, mesh_data_dir)
-
 
         future = self._create_region(
             str(parent_static_mesh),

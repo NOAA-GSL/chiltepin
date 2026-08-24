@@ -48,8 +48,13 @@ class TestMPASForecastWorkflow:
                 self.calls = []
 
             async def create_mesh_from_prompt(
-                self, prompt, mesh_data_dir, model=None, api_key=None,
-                api_base=None, mesh_name=None,
+                self,
+                prompt,
+                mesh_data_dir,
+                model=None,
+                api_key=None,
+                api_base=None,
+                mesh_name=None,
             ):
                 self.calls.append((prompt, mesh_data_dir, model, api_key))
                 return {
