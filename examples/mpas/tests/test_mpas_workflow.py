@@ -26,10 +26,10 @@ class TestMPASForecastWorkflow:
         """mesh_phase should use create_mesh_from_prompt when model.mesh_prompt is set."""
         workflow_config = deepcopy(test_config)
         workflow_config["model"] = {
-            "mesh_prompt": "Generate a 15km MPAS mesh that covers Japan",
+            "mesh": {"prompt": "Generate a 15km MPAS mesh that covers Japan"},
             "llm": {
                 "model": "qwen2.5:3b",
-                "url": "http://localhost:11434/api/chat",
+                "api_key": "test-key",
             },
             "init_ranks": 2,
             "forecast_ranks": 4,
@@ -48,9 +48,10 @@ class TestMPASForecastWorkflow:
                 self.calls = []
 
             async def create_mesh_from_prompt(
-                self, prompt, mesh_data_dir, model, llm_url
+                self, prompt, mesh_data_dir, model=None, api_key=None,
+                api_base=None, mesh_name=None,
             ):
-                self.calls.append((prompt, mesh_data_dir, model, llm_url))
+                self.calls.append((prompt, mesh_data_dir, model, api_key))
                 return {
                     "mesh_config": {"resolution": "15km", "name": "japan_15km"},
                     "mesh_result": {
@@ -58,6 +59,14 @@ class TestMPASForecastWorkflow:
                         "graph": "graph.info",
                         "partitions": {},
                     },
+                }
+
+            async def generate_mesh(self, mesh_config, mesh_data_dir):
+                self.calls.append(("generate_mesh", mesh_data_dir))
+                return {
+                    "mesh": "mesh.nc",
+                    "graph": "graph.info",
+                    "partitions": {},
                 }
 
         workflow = MPASForecastWorkflow(workflow_config)
@@ -72,7 +81,7 @@ class TestMPASForecastWorkflow:
                 "Generate a 15km MPAS mesh that covers Japan",
                 "/tmp/mesh-foo/mesh_data",
                 "qwen2.5:3b",
-                "http://localhost:11434/api/chat",
+                "test-key",
             )
         ]
         assert result["mesh-foo"]["mesh"] == "mesh.nc"

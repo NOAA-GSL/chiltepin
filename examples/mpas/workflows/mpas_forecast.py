@@ -7,7 +7,9 @@ all MPAS component agents to build, configure, and run MPAS forecasts.
 """
 
 import asyncio
+import logging
 import os
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
@@ -15,6 +17,8 @@ from typing import Any, Dict, List, Optional, Type
 from agents import MeshAgent, MPASAgent, WPSAgent
 
 from chiltepin import AgentRuntime, Workflow
+
+logger = logging.getLogger(__name__)
 from chiltepin.manager import Manager
 
 # Maps config "type" strings to agent classes
@@ -75,6 +79,18 @@ class MPASForecastWorkflow:
         self.agents: Dict[str, Any] = {}
         self._agents_by_type: Dict[str, List[str]] = defaultdict(list)
 
+    @staticmethod
+    def resolve_llm_api_key(config: Dict[str, Any]) -> Optional[str]:
+        """Resolve LLM API key from config or environment variable."""
+        llm_cfg = config.get("model", {}).get("llm", {})
+        key = llm_cfg.get("api_key")
+        if key:
+            return key
+        env_name = llm_cfg.get("api_key_env")
+        if env_name:
+            return os.environ.get(env_name)
+        return None
+
     async def setup_workflow(self) -> None:
         """Create Workflow and AgentRuntime.
 
@@ -100,7 +116,7 @@ class MPASForecastWorkflow:
     def _build_agent_args(self, agent_conf: Dict[str, Any]) -> tuple:
         """Build (positional_args, keyword_args) for an agent based on its type."""
         agent_type = agent_conf["type"]
-        work_dir = str(Path(agent_conf.get("work_dir", "/tmp")))
+        work_dir = str(Path(agent_conf.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_")))
         extra_kwargs = dict(agent_conf.get("kwargs", {}))
 
         if agent_type == "mesh":
@@ -187,11 +203,7 @@ class MPASForecastWorkflow:
         mesh_name = mesh_config.get("name")
         llm_config = model.get("llm", {})
         llm_model = llm_config.get("model", "ollama_chat/qwen2.5:3b")
-        api_key = llm_config.get("api_key") or (
-            os.environ.get(llm_config["api_key_env"])
-            if llm_config.get("api_key_env")
-            else None
-        )
+        api_key = self.resolve_llm_api_key(self.config)
         api_base = llm_config.get("api_base")
 
         tasks = []
@@ -201,7 +213,7 @@ class MPASForecastWorkflow:
             if matched is None:
                 raise RuntimeError(f"Missing configuration for mesh agent '{label}'")
 
-            mesh_data_dir = str(Path(matched.get("work_dir", "/tmp")) / "mesh_data")
+            mesh_data_dir = str(Path(matched.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_")) / "mesh_data")
             if mesh_prompt:
                 tasks.append(
                     agent.create_mesh_from_prompt(
@@ -313,102 +325,6 @@ class MPASForecastWorkflow:
 
         return output
 
-    # async def preprocess_phase(self) -> Dict[str, str]:
-    #     """Fetch and process input data.
-
-    #     Returns
-    #     -------
-    #     dict
-    #         Dictionary with preprocessed data paths
-
-    #     Notes
-    #     -----
-    #     Parallel processing of:
-    #     - Initial conditions (ICS)
-    #     - Lateral boundary conditions (LBCS)
-    #     """
-    #     # TODO: Implement data fetching and preprocessing
-    #     # Reference: Old MPAS app get_ics, get_lbcs, ungrib steps
-    #     # - Fetch GRIB data for ICS and LBCS
-    #     # - Run ungrib for ICS
-    #     # - Run ungrib for LBCS (parallel)
-    #     # - Return paths to processed data
-
-    #     paths = self.config.get("paths", {})
-    #     grib_dir = Path(paths.get("grib_data_dir", "./grib_data"))
-    #     ungrib_dir = Path(paths.get("ungrib_dir", "./ungrib_output"))
-
-    #     # Placeholder for implementation
-    #     return {
-    #         "ics": str(ungrib_dir / "ics"),
-    #         "lbcs": str(ungrib_dir / "lbcs"),
-    #     }
-
-    # async def initialization_phase(
-    #     self, mesh: Dict[str, str], preprocessed_data: Dict[str, str]
-    # ) -> Dict[str, str]:
-    #     """Initialize MPAS with processed data.
-
-    #     Parameters
-    #     ----------
-    #     mesh : dict
-    #         Mesh file paths from mesh_phase
-    #     preprocessed_data : dict
-    #         Preprocessed data paths from preprocess_phase
-
-    #     Returns
-    #     -------
-    #     dict
-    #         Dictionary with initialized file paths
-
-    #     Notes
-    #     -----
-    #     Parallel initialization of:
-    #     - Initial conditions
-    #     - Lateral boundary conditions
-    #     """
-    #     # TODO: Implement MPAS initialization
-    #     # Reference: Old MPAS app mpas_init_ics, mpas_init_lbcs steps
-    #     # - Initialize ICS
-    #     # - Initialize LBCS (parallel)
-    #     # - Return paths to initialized files
-
-    #     paths = self.config.get("paths", {})
-    #     init_dir = Path(paths.get("init_dir", "./initialization"))
-
-    #     # Placeholder for implementation
-    #     return {
-    #         "ics_file": str(init_dir / "init.nc"),
-    #         "lbcs_dir": str(init_dir / "lbcs"),
-    #     }
-
-    # async def forecast_phase(
-    #     self, mesh: Dict[str, str], initialized: Dict[str, str]
-    # ) -> str:
-    #     """Run MPAS forecast.
-
-    #     Parameters
-    #     ----------
-    #     mesh : dict
-    #         Mesh file paths
-    #     initialized : dict
-    #         Initialized data paths
-
-    #     Returns
-    #     -------
-    #     str
-    #         Path to forecast output directory
-    #     """
-    #     # TODO: Implement MPAS forecast
-    #     # Reference: Old MPAS app mpas_forecast step
-    #     # - Run atmosphere_model
-    #     # - Return path to forecast output
-
-    #     paths = self.config.get("paths", {})
-    #     forecast_dir = Path(paths.get("forecast_dir", "./forecast"))
-
-    #     # Placeholder for implementation
-    #     return str(forecast_dir)
 
     async def _prepare_mpas_agent(self, agent: Any, label: str) -> Dict[str, Any]:
         """Download and build MPAS for one agent with clear stage errors."""
@@ -472,7 +388,7 @@ class MPASForecastWorkflow:
             if matched is None:
                 raise RuntimeError(f"Missing configuration for mesh agent '{label}'")
 
-            mesh_data_dir = str(Path(matched.get("work_dir", "/tmp")) / "mesh_data")
+            mesh_data_dir = str(Path(matched.get("work_dir") or tempfile.mkdtemp(prefix="chiltepin_")) / "mesh_data")
             phase_tasks.append(
                 asyncio.create_task(
                     agent.generate_mesh(dict(mesh_config), mesh_data_dir)
@@ -506,19 +422,19 @@ class MPASForecastWorkflow:
             prepared[phase_type][agent_label] = result
 
             if phase_type == "mpas":
-                print(f"MPAS build completed for '{agent_label}': {result['build']}")
+                logger.info("MPAS build completed for '%s': %s", agent_label, result["build"])
             elif phase_type == "mesh":
                 plot_path = result.get("plot")
                 plot_error = result.get("plot_error")
                 if plot_error:
-                    raise RuntimeError(
-                        f"Mesh plot generation failed for agent "
-                        f"'{agent_label}': {plot_error}"
+                    logger.warning(
+                        "Mesh plot generation failed for agent '%s': %s",
+                        agent_label, plot_error,
                     )
                 if plot_path:
-                    print(f"Mesh plot generated for '{agent_label}': {plot_path}")
+                    logger.info("Mesh plot generated for '%s': %s", agent_label, plot_path)
             elif phase_type == "geog":
-                print(f"GEOG data ready for '{agent_label}': {result['geog_dir']}")
+                logger.info("GEOG data ready for '%s': %s", agent_label, result["geog_dir"])
 
         return prepared
 
@@ -546,111 +462,13 @@ class MPASForecastWorkflow:
                 await self.setup_agents()
 
                 mesh_results = await self.mesh_phase()
-                print(f"Mesh generation completed for agents: {list(mesh_results)}")
-                print(f"Mesh results: {mesh_results}")
+                logger.info("Mesh generation completed for agents: %s", list(mesh_results))
+                logger.info("Mesh results: %s", mesh_results)
 
-                # mpas_results = await self.mpas_phase()
-                # print(f"MPAS build completed for agents: {list(mpas_results)}")
-                # print(f"MPAS results: {mpas_results}")
-
-                # geog_results = await self.download_geog_phase()
-                # print(f"GEOG download completed for agents: {list(geog_results)}")
-                # print(f"GEOG results: {geog_results}")
-
-                # interp_results = await self.interpolate_geog_phase(mesh_results)
-                # if interp_results:
-                #     print(f"GEOG interpolation completed: {interp_results}")
-                # else:
-                #     print("GEOG interpolation skipped (not a project_hexes mesh)")
-
-                # print(
-                #     "Preparing core assets (MPAS build, mesh generation, "
-                #     "and optional GEOG download) concurrently..."
-                # )
-                # prepared_assets = await self.prepare_core_assets_phase()
-
-                # GEOG interpolation is temporarily disabled until the
-                # geog_interpolation configuration path is finalized.
-                # model_cfg = self.config.get("model", {})
-                # mesh_cfg = model_cfg.get("mesh", {})
-                # regional_cfg = mesh_cfg.get("regional", {})
-                # geog_interp_cfg = model_cfg.get("geog_interpolation", {})
-                # geog_interp_enabled = bool(geog_interp_cfg.get("enabled", False))
-                # if (
-                #     isinstance(regional_cfg, dict)
-                #     and "project_hexes" in regional_cfg
-                #     and geog_interp_enabled
-                # ):
-                #     mpas_agents = self.agents_by_type("mpas")
-                #     if not mpas_agents:
-                #         raise RuntimeError(
-                #             "project_hexes mesh requires MPAS geog interpolation, "
-                #             "but no MPAS agent is configured."
-                #         )
-                #
-                #     namelist_file = geog_interp_cfg.get("namelist_file")
-                #     streams_file = geog_interp_cfg.get("streams_file")
-                #     if not namelist_file or not streams_file:
-                #         raise RuntimeError(
-                #             "Missing model.geog_interpolation.namelist_file or "
-                #             "model.geog_interpolation.streams_file in config."
-                #         )
-                #
-                #     mpas_agent = mpas_agents[0]
-                #     geog_info = await mpas_agent.download_geog_data(
-                #         model_cfg.get("geog", {})
-                #     )
-                #     geog_dir = geog_info["geog_dir"]
-                #
-                #     geog_tasks = []
-                #     geog_labels = []
-                #     for idx, mesh_result in enumerate(mesh_results):
-                #         mesh_label = self._agents_by_type.get("mesh", [])[idx]
-                #         mesh_file = mesh_result.get("mesh")
-                #         if not mesh_file:
-                #             continue
-                #         geog_tasks.append(
-                #             mpas_agent.interpolate_geog_only(
-                #                 mesh_file=mesh_file,
-                #                 geog_dir=geog_dir,
-                #             )
-                #         )
-                #         geog_labels.append(mesh_label)
-                #
-                #     geog_results = await asyncio.gather(*geog_tasks, return_exceptions=True)
-                #     for mesh_label, geog_result in zip(geog_labels, geog_results):
-                #         if isinstance(geog_result, Exception):
-                #             raise RuntimeError(
-                #                 f"GEOG interpolation failed for mesh agent "
-                #                 f"'{mesh_label}': {geog_result}"
-                #             ) from geog_result
-                #         print(
-                #             f"GEOG interpolation completed for '{mesh_label}': "
-                #             f"{geog_result['output_dir']}"
-                #         )
-
-                # Create regional mesh
-                # await self.agents["mesh"].create_region()
-
-                # Build phase - parallel compilation
-                # await self.build_phase()
-
-                # # Mesh phase - sequential mesh generation and partitioning
-                # mesh = await self.mesh_phase()
-
-                # # Preprocess phase - parallel data preparation
-                # preprocessed_data = await self.preprocess_phase()
-
-                # # Initialization phase - parallel MPAS initialization
-                # initialized = await self.initialization_phase(mesh, preprocessed_data)
-
-                # # Forecast phase - run model
-                # forecast_output = await self.forecast_phase(mesh, initialized)
 
                 # Shutdown agents while manager/exchange client is still alive
                 await self.shutdown_agents()
 
-                # return forecast_output
                 return ""
 
         finally:
@@ -666,7 +484,7 @@ class MPASForecastWorkflow:
             try:
                 await agent_handle.shutdown()
             except Exception as e:
-                print(f"Warning: Error shutting down {agent_name}: {e}")
+                logger.warning("Error shutting down %s: %s", agent_name, e)
 
     async def cleanup(self) -> None:
         """Clean up workflow resources.
@@ -681,4 +499,4 @@ class MPASForecastWorkflow:
             try:
                 self.workflow.cleanup()
             except Exception as e:
-                print(f"Warning: Error cleaning up workflow: {e}")
+                logger.warning("Error cleaning up workflow: %s", e)

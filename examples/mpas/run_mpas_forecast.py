@@ -14,6 +14,7 @@ Example:
 """
 
 import asyncio
+import logging
 import os
 import sys
 import warnings
@@ -21,6 +22,9 @@ from pathlib import Path
 
 import uwtools.api.config as uw_config
 from workflows import MPASForecastWorkflow
+
+logging.getLogger("workflows").setLevel(logging.INFO)
+logging.getLogger("workflows").addHandler(logging.StreamHandler())
 
 # Suppress benign Parsl warning during DFK shutdown
 warnings.filterwarnings(
@@ -93,14 +97,12 @@ async def main():
     config = load_config(config_files)
 
     # Resolve API key from environment now (workers may not have it)
+    key = MPASForecastWorkflow.resolve_llm_api_key(config)
     llm_cfg = config.get("model", {}).get("llm", {})
-    api_key_env = llm_cfg.get("api_key_env")
-    if api_key_env:
-        key = os.environ.get(api_key_env)
-        if key:
-            llm_cfg["api_key"] = key
-        else:
-            print(f"WARNING: {api_key_env} not set in environment")
+    if key:
+        llm_cfg["api_key"] = key
+    elif llm_cfg.get("api_key_env"):
+        print(f"WARNING: {llm_cfg['api_key_env']} not set in environment")
 
     # Print configuration summary
     print("\n" + "=" * 60)
@@ -126,7 +128,8 @@ async def main():
         forecast_output = await workflow.run()
         print("\n" + "=" * 60)
         print("Workflow completed successfully!")
-        print(f"Forecast output: {forecast_output}")
+        if forecast_output:
+            print(f"Forecast output: {forecast_output}")
         print("=" * 60)
     except Exception as e:
         print("\n" + "=" * 60)

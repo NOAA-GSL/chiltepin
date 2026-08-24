@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from agents import MeshAgent
+from agents.mesh_agent import MeshPromptResponse
 
 
 class TestMeshAgent:
@@ -264,26 +265,27 @@ class TestMeshAgent:
         behavior = agent._behavior
 
         # Geo-lookup approach: LLM returns region names
-        def fake_ollama_chat(
+        def fake_llm_chat(
             prompt,
             model,
-            llm_url,
             system_prompt=None,
             timeout_seconds=120,
             api_key=None,
+            api_base=None,
         ):
-            return {
-                "resolution": "15km",
-                "name": "japan_15km",
-                "region_names": ["Japan"],
-                "buffer_km": 50,
-            }
+            return MeshPromptResponse(
+                resolution="15km",
+                name="japan_15km",
+                region_names=["Japan"],
+                shape="ellipse",
+                method="create_region",
+            )
 
-        monkeypatch.setattr(behavior, "_ollama_chat", fake_ollama_chat)
+        monkeypatch.setattr(behavior, "_llm_chat", fake_llm_chat)
         config = await behavior._mesh_config_from_prompt(
             "Generate a 15km mesh that covers Japan",
             "qwen2.5:3b",
-            "http://localhost:11434/api/chat",
+            api_key="fake-key",
         )
 
         assert config["resolution"] == "15km"
@@ -317,14 +319,14 @@ class TestMeshAgent:
             },
         }
 
-        def fake_ollama_chat(*args, **kwargs):
+        def fake_llm_chat(*args, **kwargs):
             raise TimeoutError("timed out")
 
-        monkeypatch.setattr(behavior, "_ollama_chat", fake_ollama_chat)
+        monkeypatch.setattr(behavior, "_llm_chat", fake_llm_chat)
         config = await behavior._mesh_config_from_prompt(
             prompt,
             "qwen2.5:3b",
-            "http://localhost:11434/api/chat",
+            api_key="fake-key",
         )
 
         assert config["resolution"] == "15km"
@@ -360,14 +362,14 @@ class TestMeshAgent:
             "}"
         )
 
-        def fake_ollama_chat(*args, **kwargs):
+        def fake_llm_chat(*args, **kwargs):
             raise TimeoutError("timed out")
 
-        monkeypatch.setattr(behavior, "_ollama_chat", fake_ollama_chat)
+        monkeypatch.setattr(behavior, "_llm_chat", fake_llm_chat)
         config = await behavior._mesh_config_from_prompt(
             prompt,
             "qwen2.5:3b",
-            "http://localhost:11434/api/chat",
+            api_key="fake-key",
         )
 
         assert config["resolution"] == "15km"

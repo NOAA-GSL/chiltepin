@@ -7,6 +7,8 @@ initialization and forecasting.
 """
 
 import asyncio
+import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -64,6 +66,8 @@ class MPASAgent:
         self.work_dir = Path(work_dir)
         self.init_config = dict(init_config)
         self.fcst_config = dict(fcst_config)
+        if not re.match(r"^v?[0-9][0-9a-zA-Z._-]*$", mpas_version):
+            raise ValueError(f"Invalid mpas_version: {mpas_version!r}")
         self.mpas_version = mpas_version
         self.log_dir = self.work_dir / "logs"
 
@@ -152,11 +156,11 @@ class MPASAgent:
             set -eu -o pipefail
             echo "Started MPAS download at $(date)"
             echo "Executing on $(hostname)"
-            rm -rf {self.work_dir}/MPAS-Model/{self.mpas_version}
-            mkdir -p {self.work_dir}/MPAS-Model
-            cd {self.work_dir}/MPAS-Model
-            git clone --branch {self.mpas_version} \
-                https://github.com/MPAS-Dev/MPAS-Model.git {self.mpas_version}
+            rm -rf {shlex.quote(str(self.work_dir))}/MPAS-Model/{shlex.quote(self.mpas_version)}
+            mkdir -p {shlex.quote(str(self.work_dir))}/MPAS-Model
+            cd {shlex.quote(str(self.work_dir))}/MPAS-Model
+            git clone --branch {shlex.quote(self.mpas_version)} \
+                https://github.com/MPAS-Dev/MPAS-Model.git {shlex.quote(self.mpas_version)}
             echo "Completed MPAS download at $(date)"
             """
         )
@@ -171,7 +175,7 @@ class MPASAgent:
             set -eu -o pipefail
             echo "Started MPAS build at $(date)"
             echo "Executing on $(hostname)"
-            cd {self.work_dir}/MPAS-Model/{self.mpas_version}
+            cd {shlex.quote(str(self.work_dir))}/MPAS-Model/{shlex.quote(self.mpas_version)}
             cmake -B build \
                 -DCMAKE_INSTALL_PREFIX={self.work_dir}/MPAS-Model/{self.mpas_version} \
                 -DCMAKE_BUILD_TYPE=Release \

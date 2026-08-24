@@ -9,6 +9,7 @@ then falls back to OpenStreetMap Nominatim for finer-grained entities
 """
 
 import hashlib
+import os
 import json
 import math
 import time
@@ -19,6 +20,8 @@ from urllib.request import urlretrieve
 
 import numpy as np
 import requests
+from typing import Union
+
 from shapely.geometry import MultiPoint, MultiPolygon, Polygon, shape
 from shapely.ops import unary_union
 
@@ -35,7 +38,7 @@ _NE_BASE_URL = "https://naciscdn.org/naturalearth"
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _USER_AGENT = "chiltepin-mpas-mesh-agent"
-_CONTACT_EMAIL = "harrop@colorado.edu"
+_CONTACT_EMAIL = os.environ.get("NOMINATIM_EMAIL", "harrop@colorado.edu")
 _POLYGON_THRESHOLD = 0.01  # ~1.1 km at equator
 _REQUEST_INTERVAL = 1.1  # seconds between Nominatim requests
 _NOMINATIM_CACHE_DIR = Path(__file__).parent / ".nominatim_cache"
@@ -45,6 +48,7 @@ _NOMINATIM_CACHE_DIR = Path(__file__).parent / ".nominatim_cache"
 # ---------------------------------------------------------------------------
 
 _PROXIMITY_THRESHOLD_KM = 1000.0
+_METERS_PER_DEG = 111_320.0
 
 # ---------------------------------------------------------------------------
 # Natural Earth helpers
@@ -61,8 +65,13 @@ def _ensure_shapefile(data_dir: Path, dataset: str, scale: str) -> Path:
     zip_path = data_dir / f"{dataset}.zip"
     if not zip_path.exists():
         urlretrieve(url, zip_path)
+    target = data_dir / dataset
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(data_dir / dataset)
+        for member in zf.namelist():
+            resolved = (target / member).resolve()
+            if not str(resolved).startswith(str(target.resolve())):
+                raise ValueError(f"Zip path traversal detected: {member}")
+        zf.extractall(target)
     return shp
 
 
@@ -139,7 +148,8 @@ def _query_nominatim(
         time.sleep(2**attempt)
     data = resp.json()
     feature = data["features"][0] if data.get("features") else None
-    cache_file.write_text(json.dumps({"feature": feature}))
+    if feature is not None:
+        cache_file.write_text(json.dumps({"feature": feature}))
     return feature
 
 
@@ -157,7 +167,7 @@ def _feature_to_geometry(feature: dict) -> Optional[Polygon]:
 
 def _filter_proximate_polygons(
     geom, threshold_km: float = _PROXIMITY_THRESHOLD_KM
-) -> Polygon:
+) -> Union[Polygon, MultiPolygon]:
     """Keep only polygons within threshold_km of the largest polygon."""
     if isinstance(geom, Polygon):
         return geom
@@ -341,6 +351,27 @@ def lookup_region(
 # ---------------------------------------------------------------------------
 
 
+
+
+def _project_and_buffer(geom, buffer_km: float):
+    """Project geometry to meters around centroid and apply buffer.
+
+    Returns (center_lat, center_lon, buffered_shape).
+    """
+    hull = geom.convex_hull
+    center_lat = hull.centroid.y
+    center_lon = hull.centroid.x
+
+    coords = np.array(hull.exterior.coords)
+    cos_ref = math.cos(math.radians(center_lat))
+    x = (coords[:, 0] - center_lon) * _METERS_PER_DEG * cos_ref
+    y = (coords[:, 1] - center_lat) * _METERS_PER_DEG
+
+    buffer_m = buffer_km * 1000.0
+    projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
+    return center_lat, center_lon, projected
+
+
 def geometry_to_ellipse(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
     """Convert a geometry to minimum enclosing ellipse parameters.
 
@@ -351,12 +382,11 @@ def geometry_to_ellipse(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
 
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
-    meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
     cos_ref = math.cos(math.radians(center_lat))
-    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
-    y = (coords[:, 1] - center_lat) * meters_per_deg
+    x = (coords[:, 0] - center_lon) * _METERS_PER_DEG * cos_ref
+    y = (coords[:, 1] - center_lat) * _METERS_PER_DEG
 
     buffer_m = buffer_km * 1000.0
     projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
@@ -378,9 +408,9 @@ def geometry_to_ellipse(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
         orientation -= 180.0
 
     centroid = rect.centroid
-    final_lat = center_lat + float(centroid.y) / meters_per_deg
+    final_lat = center_lat + float(centroid.y) / _METERS_PER_DEG
     final_lon = center_lon + float(centroid.x) / (
-        meters_per_deg * math.cos(math.radians(final_lat))
+        _METERS_PER_DEG * math.cos(math.radians(final_lat))
     )
 
     semi_major = major_len / 2.0
@@ -419,12 +449,11 @@ def geometry_to_circle(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
 
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
-    meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
     cos_ref = math.cos(math.radians(center_lat))
-    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
-    y = (coords[:, 1] - center_lat) * meters_per_deg
+    x = (coords[:, 0] - center_lon) * _METERS_PER_DEG * cos_ref
+    y = (coords[:, 1] - center_lat) * _METERS_PER_DEG
 
     buffer_m = buffer_km * 1000.0
     projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
@@ -437,8 +466,8 @@ def geometry_to_circle(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
     dists = np.sqrt(dx**2 + dy**2)
     radius = float(dists.max())
 
-    final_lat = center_lat + cy / meters_per_deg
-    final_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(final_lat)))
+    final_lat = center_lat + cy / _METERS_PER_DEG
+    final_lon = center_lon + cx / (_METERS_PER_DEG * math.cos(math.radians(final_lat)))
 
     return {
         "center_lat": round(final_lat, 4),
@@ -457,11 +486,10 @@ def geometry_to_polygon(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
 
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
-    meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
-    x = (coords[:, 0] - center_lon) * meters_per_deg * np.cos(np.radians(coords[:, 1]))
-    y = (coords[:, 1] - center_lat) * meters_per_deg
+    x = (coords[:, 0] - center_lon) * _METERS_PER_DEG * np.cos(np.radians(coords[:, 1]))
+    y = (coords[:, 1] - center_lat) * _METERS_PER_DEG
 
     buffer_m = buffer_km * 1000.0
     projected = MultiPoint(list(zip(x, y))).buffer(buffer_m)
@@ -472,14 +500,14 @@ def geometry_to_polygon(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
         simplified = buffered_hull
 
     proj_coords = np.array(simplified.exterior.coords[:-1])
-    lats = center_lat + proj_coords[:, 1] / meters_per_deg
-    lons = center_lon + proj_coords[:, 0] / (meters_per_deg * np.cos(np.radians(lats)))
+    lats = center_lat + proj_coords[:, 1] / _METERS_PER_DEG
+    lons = center_lon + proj_coords[:, 0] / (_METERS_PER_DEG * np.cos(np.radians(lats)))
 
     vertices = list(zip(np.round(lats, 6).tolist(), np.round(lons, 6).tolist()))
 
     cx, cy = float(buffered_hull.centroid.x), float(buffered_hull.centroid.y)
-    point_lat = center_lat + cy / meters_per_deg
-    point_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(point_lat)))
+    point_lat = center_lat + cy / _METERS_PER_DEG
+    point_lon = center_lon + cx / (_METERS_PER_DEG * math.cos(math.radians(point_lat)))
 
     return {
         "point_lat": round(point_lat, 4),
@@ -501,12 +529,11 @@ def geometry_to_rectangle(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
 
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
-    meters_per_deg = 111_320.0
 
     coords = np.array(hull.exterior.coords)
     cos_ref = math.cos(math.radians(center_lat))
-    x = (coords[:, 0] - center_lon) * meters_per_deg * cos_ref
-    y = (coords[:, 1] - center_lat) * meters_per_deg
+    x = (coords[:, 0] - center_lon) * _METERS_PER_DEG * cos_ref
+    y = (coords[:, 1] - center_lat) * _METERS_PER_DEG
 
     unbuffered = MultiPoint(list(zip(x, y))).convex_hull
     buffer_m = buffer_km * 1000.0
@@ -542,11 +569,11 @@ def geometry_to_rectangle(geom, buffer_km: float = 50.0) -> Dict[str, Any]:
         extent_x_m = aa_width + 2.0 * buffer_m
         extent_y_m = aa_height + 2.0 * buffer_m
 
-    final_lat = center_lat + cy / meters_per_deg
-    final_lon = center_lon + cx / (meters_per_deg * math.cos(math.radians(final_lat)))
+    final_lat = center_lat + cy / _METERS_PER_DEG
+    final_lon = center_lon + cx / (_METERS_PER_DEG * math.cos(math.radians(final_lat)))
 
     # LC scale correction: tangent LC at center_lat undercovers at edges
-    half_y_deg = extent_y_m / (2.0 * meters_per_deg)
+    half_y_deg = extent_y_m / (2.0 * _METERS_PER_DEG)
     edge_lat = max(abs(final_lat - half_y_deg), abs(final_lat + half_y_deg))
     dlat_rad = math.radians(abs(edge_lat - abs(final_lat)))
     tan_ref = math.tan(math.radians(abs(final_lat))) if abs(final_lat) > 1 else 0.0

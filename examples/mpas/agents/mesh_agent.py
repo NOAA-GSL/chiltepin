@@ -15,6 +15,8 @@ This agent handles the complete mesh lifecycle for MPAS forecasts:
 import asyncio
 import json
 import math
+import re
+import shlex
 import urllib.request
 import uuid
 from pathlib import Path
@@ -42,7 +44,26 @@ class MeshPromptResponse(BaseModel):
     region_names: List[str] = Field(default_factory=list, description="Geographic entity names whose union covers the region")
     exclude_names: List[str] = Field(default_factory=list, description="Entity names to exclude from the region")
     shape: Optional[str] = Field(default=None, description="Mesh shape: rectangle, ellipse, circle, or polygon")
-    method: Optional[str] = Field(default=None, description="Mesh method: project_hexes or create_region")
+    method: Optional[str] = Field(default=None, description="Mesh method: project_hexes, create_region, hex_projection, limited_area, or mpas_limited_area")
+
+
+_CREATE_REGION_SHAPE_KEYS = {"polygon", "circle", "ellipse", "channel"}
+_KEY_ALIASES = {
+    "semi_major_axis": "semi-major-axis",
+    "semi_minor_axis": "semi-minor-axis",
+    "orientation_angle": "orientation-angle",
+    "upper_lat": "upper-lat",
+    "lower_lat": "lower-lat",
+}
+_SHAPE_FIELD_SETS = {
+    "ellipse": {"point", "semi-major-axis", "semi-minor-axis", "orientation-angle"},
+    "circle": {"point", "radius"},
+    "channel": {"upper-lat", "lower-lat"},
+    "polygon": {"point", "vertices"},
+}
+_PROJECT_HEXES_KEYS = {
+    "center_lat", "center_lon", "extent_x_km", "extent_y_km", "rotation_degrees",
+}
 
 
 @chiltepin_agent()
@@ -76,6 +97,14 @@ class MeshAgent:
         """
         self.work_dir = Path(work_dir)
         self.log_dir = self.work_dir / "logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        version_re = re.compile(r"^v?[0-9][0-9a-zA-Z._-]*$")
+        for label, val in [("metis_version", metis_version),
+                           ("mpas_tools_version", mpas_tools_version),
+                           ("limited_area_version", limited_area_version)]:
+            if not version_re.match(val):
+                raise ValueError(f"Invalid {label}: {val!r}")
         self.metis_version = metis_version
         self.mpas_tools_version = mpas_tools_version
         self.limited_area_version = limited_area_version
@@ -119,8 +148,7 @@ class MeshAgent:
             "3km": 65536002,
         }
 
-        # Optional list-based prompt handling for background processing.
-        self._pending_prompt_requests: List[Dict[str, Any]] = []
+        self._pending_prompt_requests: list = []
         self._prompt_results: Dict[str, Dict[str, Any]] = {}
         self._last_good_prompt_mesh_configs: Dict[str, Dict[str, Any]] = {}
         self._prompt_cache_file = self.work_dir / "prompt_mesh_config_cache.json"
@@ -130,9 +158,37 @@ class MeshAgent:
     # -------------------------------------------------------------------------
 
     @staticmethod
+    def _q(val) -> str:
+        """Shell-quote a value for safe interpolation into bash scripts."""
+        import shlex
+        return shlex.quote(str(val))
+
+    @staticmethod
     def _parse_resolution_km(resolution: str) -> float:
         """Convert resolution string like '120km' or '7.5km' to float km."""
         return float(resolution.lower().replace("km", ""))
+
+    @staticmethod
+    def _normalize_method(method: Optional[str]) -> Optional[str]:
+        """Map user-facing method names to canonical internal names."""
+        if method is None:
+            return None
+        key = method.lower().replace(" ", "_").replace("-", "_")
+        aliases = {
+            "project_hexes": "project_hexes",
+            "hex_projection": "project_hexes",
+            "create_region": "create_region",
+            "mpas_limited_area": "create_region",
+            "limited_area": "create_region",
+        }
+        canonical = aliases.get(key)
+        if canonical is None:
+            raise ValueError(
+                f"Unknown mesh method '{method}'. "
+                f"Valid methods: project_hexes, create_region, "
+                f"hex_projection, mpas_limited_area, limited_area"
+            )
+        return canonical
 
     @staticmethod
     def _parse_coordinate(value) -> float:
@@ -193,6 +249,54 @@ class MeshAgent:
             json.dumps(cache_payload, indent=2, sort_keys=True)
         )
 
+    @staticmethod
+    def _normalize_create_region_config(raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize a create_region config: aliases, shape inference, type field."""
+        config = {
+            key: value
+            for key, value in raw.items()
+            if value is not None and value != {}
+        }
+
+        # Normalize LLM key variants to MPAS-Limited-Area names.
+        config = {
+            _KEY_ALIASES.get(k, k): v for k, v in config.items()
+        }
+        for shape_name in _CREATE_REGION_SHAPE_KEYS:
+            shape_payload = config.get(shape_name)
+            if isinstance(shape_payload, dict):
+                config[shape_name] = {
+                    _KEY_ALIASES.get(k, k): v
+                    for k, v in shape_payload.items()
+                }
+
+        config_keys = set(config.keys())
+        has_shape_key = bool(config_keys & _CREATE_REGION_SHAPE_KEYS)
+
+        # Allow style: {"type": "ellipse", ...shape fields...}
+        if not has_shape_key:
+            shape_type = config.get("type")
+            if not isinstance(shape_type, str):
+                shape_type = config.get("shape")
+            if isinstance(shape_type, str):
+                shape_type = shape_type.strip().lower()
+                if shape_type in _CREATE_REGION_SHAPE_KEYS:
+                    config = {
+                        shape_type: {
+                            k: v for k, v in config.items()
+                            if k not in {"type", "shape"}
+                        }
+                    }
+                    has_shape_key = True
+
+        # Infer shape from field names.
+        if not has_shape_key and config:
+            for shape_name, fields in _SHAPE_FIELD_SETS.items():
+                if set(config.keys()).issubset(fields):
+                    return {shape_name: config}
+
+        return config
+
     def _normalize_mesh_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize and validate a model-produced mesh configuration payload."""
         if not isinstance(payload, dict):
@@ -202,144 +306,55 @@ class MeshAgent:
         if not isinstance(config, dict):
             raise ValueError("Mesh config must be a JSON object.")
 
-        create_region_shape_keys = {"polygon", "circle", "ellipse", "channel"}
-        ellipse_keys = {
-            "point",
-            "semi-major-axis",
-            "semi-minor-axis",
-            "orientation-angle",
-        }
-        circle_keys = {"point", "radius"}
-        channel_keys = {"upper-lat", "lower-lat"}
-        polygon_keys = {"point", "vertices"}
-
-        if "project_hexes" in config or "create_region" in config:
+        # Hoist project_hexes / create_region into regional block.
+        regional_keys = {"project_hexes", "create_region"}
+        if regional_keys & set(config.keys()):
             config = {
-                key: value
-                for key, value in config.items()
-                if key not in {"project_hexes", "create_region"}
+                k: v for k, v in config.items() if k not in regional_keys
             } | {
-                "regional": {
-                    key: payload_value
-                    for key, payload_value in config.items()
-                    if key in {"project_hexes", "create_region"}
-                }
+                "regional": {k: v for k, v in config.items() if k in regional_keys}
             }
-
-        if "regional" not in config and any(
-            key in payload for key in {"project_hexes", "create_region"}
-        ):
+        if "regional" not in config and (regional_keys & set(payload.keys())):
             config = dict(config)
             config["regional"] = {
-                key: payload_value
-                for key, payload_value in payload.items()
-                if key in {"project_hexes", "create_region"}
+                k: v for k, v in payload.items() if k in regional_keys
             }
-
-        resolution = config.get("resolution", "120km")
-        if resolution not in self.resolution_cells:
-            raise ValueError(
-                f"Resolution '{resolution}' is invalid. "
-                f"Valid values: {list(self.resolution_cells.keys())}"
-            )
 
         regional = config.get("regional")
         if regional is not None:
             if not isinstance(regional, dict):
                 raise ValueError("'regional' must be an object when provided.")
             regional = {
-                key: value
-                for key, value in regional.items()
-                if value is not None and value != {}
+                k: v for k, v in regional.items()
+                if v is not None and v != {}
             }
 
-            if "create_region" not in regional and any(
-                key in regional for key in create_region_shape_keys
+            # Bare shape keys → wrap in create_region.
+            if "create_region" not in regional and (
+                _CREATE_REGION_SHAPE_KEYS & set(regional.keys())
             ):
                 regional = {
                     "create_region": {
-                        key: regional[key]
-                        for key in create_region_shape_keys
-                        if key in regional
+                        k: regional[k]
+                        for k in _CREATE_REGION_SHAPE_KEYS
+                        if k in regional
                     }
                 }
 
             if "create_region" in regional and isinstance(
                 regional["create_region"], dict
             ):
-                create_region_config = {
-                    key: value
-                    for key, value in regional["create_region"].items()
-                    if value is not None and value != {}
-                }
-
-                # Normalize common LLM key variants to MPAS-Limited-Area names.
-                key_aliases = {
-                    "semi_major_axis": "semi-major-axis",
-                    "semi_minor_axis": "semi-minor-axis",
-                    "orientation_angle": "orientation-angle",
-                    "upper_lat": "upper-lat",
-                    "lower_lat": "lower-lat",
-                }
-                create_region_config = {
-                    key_aliases.get(key, key): value
-                    for key, value in create_region_config.items()
-                }
-
-                # Also normalize aliases inside explicit shape payloads, e.g.
-                # {"ellipse": {"semi_minor_axis": ...}}.
-                for shape_name in create_region_shape_keys:
-                    shape_payload = create_region_config.get(shape_name)
-                    if isinstance(shape_payload, dict):
-                        create_region_config[shape_name] = {
-                            key_aliases.get(key, key): value
-                            for key, value in shape_payload.items()
-                        }
-
-                create_region_keys = set(create_region_config.keys())
-                has_shape_key = any(
-                    key in create_region_shape_keys for key in create_region_keys
+                regional["create_region"] = self._normalize_create_region_config(
+                    regional["create_region"]
                 )
 
-                # Allow style: {"type": "ellipse", ...shape fields...}
-                if not has_shape_key:
-                    shape_type = create_region_config.get("type")
-                    if not isinstance(shape_type, str):
-                        shape_type = create_region_config.get("shape")
-                    if isinstance(shape_type, str):
-                        shape_type = shape_type.strip().lower()
-                        if shape_type in create_region_shape_keys:
-                            shape_payload = {
-                                key: value
-                                for key, value in create_region_config.items()
-                                if key not in {"type", "shape"}
-                            }
-                            create_region_config = {shape_type: shape_payload}
-                            create_region_keys = set(create_region_config.keys())
-                            has_shape_key = True
-
-                if not has_shape_key and create_region_keys:
-                    if create_region_keys.issubset(ellipse_keys):
-                        create_region_config = {"ellipse": create_region_config}
-                    elif create_region_keys.issubset(circle_keys):
-                        create_region_config = {"circle": create_region_config}
-                    elif create_region_keys.issubset(channel_keys):
-                        create_region_config = {"channel": create_region_config}
-                    elif create_region_keys.issubset(polygon_keys):
-                        create_region_config = {"polygon": create_region_config}
-                regional["create_region"] = create_region_config
-
-            project_hexes_keys = {
-                "center_lat",
-                "center_lon",
-                "extent_x_km",
-                "extent_y_km",
-                "rotation_degrees",
-            }
+            # Bare project_hexes fields → wrap.
             if "project_hexes" not in regional and "create_region" not in regional:
-                regional_keys = set(regional.keys())
-                if regional_keys and regional_keys.issubset(project_hexes_keys):
+                if set(regional.keys()) and set(regional.keys()).issubset(
+                    _PROJECT_HEXES_KEYS
+                ):
                     regional = {"project_hexes": regional}
+
             config["regional"] = regional
             regional_modes = [
                 k for k in ["project_hexes", "create_region"] if k in regional
@@ -416,6 +431,11 @@ class MeshAgent:
             "Only set this if the user explicitly mentions a shape. "
             "- method: the mesh creation method requested by the user, or null "
             "if not specified. Valid values: 'project_hexes', 'create_region'. "
+            "Aliases: 'hex_projection' means 'project_hexes'; "
+            "'limited_area' or 'mpas_limited_area' or 'MPAS limited area' "
+            "means 'create_region'. Accept any of these and pass them through. "
+            "These terms refer to mesh creation methods, NOT geographic regions — "
+            "do not let them affect region_names extraction. "
             "Only set this if the user explicitly mentions a method. "
             "Rules: "
             "- For continents, expand into ALL constituent countries. "
@@ -503,7 +523,7 @@ class MeshAgent:
         half_y = rect["extent_y_km"] * 1000.0 / 2.0
         rot = math.radians(rect.get("rotation_degrees", 0.0))
         meters_per_deg = 111_320.0
-        cos_clat = math.cos(math.radians(clat))
+        cos_clat = max(math.cos(math.radians(clat)), 1e-10)
         cos_r, sin_r = math.cos(rot), math.sin(rot)
 
         corners_local = [
@@ -586,14 +606,23 @@ class MeshAgent:
                 "regional": {"project_hexes": phex_config},
             }
 
-        # create_region with the requested shape (default to polygon)
-        # Rectangle/square use geometry_to_rectangle → 4 polygon vertices
+        # create_region rectangle: lat/lon bounding box of the buffered geometry
         if shape in ("rectangle", "square", None):
-            rect = geometry_to_rectangle(geom, buffer_km=buffer_km)
-            vertices = self._rectangle_to_vertices(rect)
+            hull = geom.convex_hull
+            bounds = hull.bounds  # (min_lon, min_lat, max_lon, max_lat)
+            mid_lat = (bounds[1] + bounds[3]) / 2.0
+            buf_lat = buffer_km / 111.32
+            buf_lon = buffer_km / (111.32 * max(math.cos(math.radians(mid_lat)), 1e-10))
+            s = round(bounds[1] - buf_lat, 6)
+            n = round(bounds[3] + buf_lat, 6)
+            w = round(bounds[0] - buf_lon, 6)
+            e = round(bounds[2] + buf_lon, 6)
+            clat = round((s + n) / 2, 4)
+            clon = round((w + e) / 2, 4)
+            vertices = [(s, w), (s, e), (n, e), (n, w)]
             create_region = {
                 "polygon": {
-                    "point": f"{rect['center_lat']}, {rect['center_lon']}",
+                    "point": f"{clat}, {clon}",
                     "vertices": vertices,
                 }
             }
@@ -642,7 +671,7 @@ class MeshAgent:
             "regional": {"create_region": create_region},
         }
 
-    async def _mesh_config_from_prompt_osm(
+    async def _mesh_config_from_prompt(
         self,
         prompt: str,
         model: str,
@@ -669,7 +698,7 @@ class MeshAgent:
             name = payload.name
             exclude_names = payload.exclude_names
             shape = payload.shape
-            method = payload.method
+            method = self._normalize_method(payload.method)
 
             resolved_method = self._resolve_mesh_method(
                 resolution,
@@ -706,15 +735,7 @@ class MeshAgent:
                 f"Failed to generate mesh config from prompt: {exc}"
             ) from exc
 
-    async def _mesh_config_from_prompt(
-        self,
-        prompt: str,
-        model: str,
-        api_key: Optional[str] = None,
-        api_base: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Convert natural language into mesh config via LLM + geo-lookup."""
-        return await self._mesh_config_from_prompt_osm(prompt, model, api_key, api_base)
+
 
     @staticmethod
     def _write_project_hexes_namelist(
@@ -907,9 +928,9 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started download at $(date)"
             echo "Executing on $(hostname)"
-            rm -rf {self.work_dir}/metis/build/{self.metis_version}
-            mkdir -p {self.work_dir}/metis/build/{self.metis_version}
-            cd {self.work_dir}/metis/build/{self.metis_version}
+            rm -rf {self._q(self.work_dir)}/metis/build/{self._q(self.metis_version)}
+            mkdir -p {self._q(self.work_dir)}/metis/build/{self._q(self.metis_version)}
+            cd {self._q(self.work_dir)}/metis/build/{self._q(self.metis_version)}
             # Clone GKlib tools needed by metis
             git clone https://github.com/KarypisLab/GKlib.git
             # Fetch and untar metis tarball
@@ -929,13 +950,12 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started build at $(date)"
             echo "Executing on $(hostname)"
-            cd {self.work_dir}/metis/build/{self.metis_version}/GKlib
-            make config prefix={self.work_dir}/metis/{self.metis_version}
+            cd {self._q(self.work_dir)}/metis/build/{self._q(self.metis_version)}/GKlib
+            make config prefix={self._q(self.work_dir)}/metis/{self._q(self.metis_version)}
             make install
-            cd {self.work_dir}/metis/build/{self.metis_version}/METIS-{self.metis_version}
-            make config prefix={self.work_dir}/metis/{self.metis_version}
+            cd {self._q(self.work_dir)}/metis/build/{self._q(self.metis_version)}/METIS-{self._q(self.metis_version)}
+            make config prefix={self._q(self.work_dir)}/metis/{self._q(self.metis_version)}
             make install
-            # rm -rf {self.work_dir}/metis/build
             echo "Completed build at $(date)"
             """
         )
@@ -950,8 +970,8 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started partition at $(date)"
             echo "Executing on $(hostname)"
-            echo "Partitioning {mesh_path} into {num_ranks} parts"
-            {self.gpmetis_path} -minconn -contig -niter=200 {mesh_path} {num_ranks}
+            echo "Partitioning {self._q(mesh_path)} into {num_ranks} parts"
+            {self._q(self.gpmetis_path)} -minconn -contig -niter=200 {self._q(mesh_path)} {num_ranks}
             echo "Completed partition at $(date)"
             """
         )
@@ -970,12 +990,12 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started MPAS-Tools clone at $(date)"
             echo "Executing on $(hostname)"
-            rm -rf {self.work_dir}/MPAS-Tools
-            mkdir -p {self.work_dir}
-            cd {self.work_dir}
+            rm -rf {self._q(self.work_dir)}/MPAS-Tools
+            mkdir -p {self._q(self.work_dir)}
+            cd {self._q(self.work_dir)}
             git clone https://github.com/MPAS-Dev/MPAS-Tools.git
             cd MPAS-Tools
-            git checkout {self.mpas_tools_version}
+            git checkout {self._q(self.mpas_tools_version)}
             echo "Completed MPAS-Tools clone at $(date)"
             """
         )
@@ -990,7 +1010,7 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started hex_projection build at $(date)"
             echo "Executing on $(hostname)"
-            cd {self.work_dir}/MPAS-Tools/mesh_tools/hex_projection
+            cd {self._q(self.work_dir)}/MPAS-Tools/mesh_tools/hex_projection
             make clean || true
             make
             echo "Completed hex_projection build at $(date)"
@@ -1007,7 +1027,7 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started grid_rotate build at $(date)"
             echo "Executing on $(hostname)"
-            cd {self.work_dir}/MPAS-Tools/mesh_tools/grid_rotate
+            cd {self._q(self.work_dir)}/MPAS-Tools/mesh_tools/grid_rotate
             make clean || true
             make
             echo "Completed grid_rotate build at $(date)"
@@ -1024,8 +1044,8 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started hex_projection at $(date)"
             echo "Executing on $(hostname)"
-            cd {work_dir}
-            {self.hex_projection_path}
+            cd {self._q(work_dir)}
+            {self._q(self.hex_projection_path)}
             echo "Completed hex_projection at $(date)"
             """
         )
@@ -1040,8 +1060,8 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started grid_rotate at $(date)"
             echo "Executing on $(hostname)"
-            cd {work_dir}
-            {self.grid_rotate_path} {input_file} {output_file}
+            cd {self._q(work_dir)}
+            {self._q(self.grid_rotate_path)} {self._q(input_file)} {self._q(output_file)}
             echo "Completed grid_rotate at $(date)"
             """
         )
@@ -1060,12 +1080,12 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started MPAS-Limited-Area install at $(date)"
             echo "Executing on $(hostname)"
-            rm -rf {self.work_dir}/MPAS-Limited-Area
-            mkdir -p {self.work_dir}
-            cd {self.work_dir}
+            rm -rf {self._q(self.work_dir)}/MPAS-Limited-Area
+            mkdir -p {self._q(self.work_dir)}
+            cd {self._q(self.work_dir)}
             git clone https://github.com/MPAS-Dev/MPAS-Limited-Area.git
             cd MPAS-Limited-Area
-            git checkout {self.limited_area_version}
+            git checkout {self._q(self.limited_area_version)}
             echo "Completed MPAS-Limited-Area install at $(date)"
             """
         )
@@ -1085,10 +1105,10 @@ class MeshAgent:
             set -eu -o pipefail
             echo "Started create_region at $(date)"
             echo "Executing on $(hostname)"
-            mkdir -p {output_dir}
-            cd {output_dir}
-            {self.create_region_path} {region_spec} \
-                {parent_static_mesh}
+            mkdir -p {self._q(output_dir)}
+            cd {self._q(output_dir)}
+            {self._q(self.create_region_path)} {self._q(region_spec)} \
+                {self._q(parent_static_mesh)}
             echo "Completed create_region at $(date)"
             """
         )
@@ -1112,7 +1132,7 @@ class MeshAgent:
 
         urllib.request.urlretrieve(url, tarball)
         with tarfile.open(tarball, "r:gz") as tf:
-            tf.extractall(path=mesh_data_dir)
+            tf.extractall(path=mesh_data_dir, filter="data")
         tarball.unlink()
 
     @python_task
@@ -1280,7 +1300,6 @@ class MeshAgent:
     @agent_action
     async def install_metis(self) -> None:
         """Download and build Metis in one step with Parsl pipelining."""
-        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         download_future = self._download_metis(
             executor=["service"],
@@ -1340,7 +1359,6 @@ class MeshAgent:
                 "Must call install_metis() or install() before partition_mesh()"
             )
 
-        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         is_single = isinstance(num_ranks, int)
         ranks = [num_ranks] if is_single else sorted(set(num_ranks))
@@ -1386,7 +1404,6 @@ class MeshAgent:
     @agent_action
     async def install_mpas_tools(self) -> None:
         """Clone MPAS-Tools and build hex_projection + grid_rotate."""
-        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         clone_future = self._clone_mpas_tools(
             executor=["service"],
@@ -1483,7 +1500,6 @@ class MeshAgent:
             self._parse_coordinate(project_hexes_config["center_lon"]),
         )
 
-        self.log_dir.mkdir(parents=True, exist_ok=True)
         future = self._project_hexes(
             str(work_dir),
             executor=["compute"],
@@ -1569,7 +1585,6 @@ class MeshAgent:
         )
 
         output_file = str(work_dir / "rotated_mesh.nc")
-        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         future = self._grid_rotate(
             str(work_dir),
@@ -1596,7 +1611,6 @@ class MeshAgent:
     @agent_action
     async def install_limited_area(self) -> None:
         """Install MPAS-Limited-Area by cloning from GitHub."""
-        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         future = self._install_limited_area(
             executor=["service"],
@@ -1666,7 +1680,6 @@ class MeshAgent:
         if not parent_static_mesh.exists():
             await self.download_global_mesh(resolution, mesh_data_dir)
 
-        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         future = self._create_region(
             str(parent_static_mesh),
@@ -1699,7 +1712,6 @@ class MeshAgent:
 
         Runs installations concurrently where possible.
         """
-        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         # Metis: download then build (pipelined)
         metis_download_future = self._download_metis(
@@ -1836,7 +1848,6 @@ class MeshAgent:
                 f"Available: {list(self.resolution_cells.keys())}"
             )
 
-        self.log_dir.mkdir(parents=True, exist_ok=True)
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
 
         future = self._download_global_mesh(
@@ -1880,7 +1891,6 @@ class MeshAgent:
         """
         if output_format.lower() != "png":
             raise ValueError("Only PNG output is supported")
-        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         future = self._plot_mpas_mesh_png(
             mesh_file,
@@ -2073,10 +2083,10 @@ class MeshAgent:
             mesh_dir.mkdir(parents=True, exist_ok=True)
             static_link = mesh_dir / f"{mesh_name}.static.nc"
             graph_link = mesh_dir / f"{mesh_name}.graph.info"
-            if not static_link.exists():
-                static_link.symlink_to(Path(paths["static"]).resolve())
-            if not graph_link.exists():
-                graph_link.symlink_to(Path(paths["graph"]).resolve())
+            static_link.unlink(missing_ok=True)
+            static_link.symlink_to(Path(paths["static"]).resolve())
+            graph_link.unlink(missing_ok=True)
+            graph_link.symlink_to(Path(paths["graph"]).resolve())
             result["mesh"] = str(static_link)
             result["graph"] = str(graph_link)
 
