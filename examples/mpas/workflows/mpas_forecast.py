@@ -103,9 +103,7 @@ class MPASForecastWorkflow:
 
         experiment_dir = self.config.get("experiment_dir")
         if not experiment_dir:
-            raise RuntimeError(
-                "'experiment_dir' must be set in configuration"
-            )
+            raise RuntimeError("'experiment_dir' must be set in configuration")
         self.workflow = Workflow(
             workflow_config,
             run_dir=str(Path(experiment_dir) / "parsl_logs"),

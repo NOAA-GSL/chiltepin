@@ -1142,7 +1142,6 @@ class MeshAgent:
     def _download_global_mesh(self, resolution: str, mesh_data_dir: str) -> None:
         """Download and extract a precomputed global mesh from UCAR."""
         import tarfile
-        import urllib.request
         from pathlib import Path
 
         mesh_data_dir = Path(mesh_data_dir)
