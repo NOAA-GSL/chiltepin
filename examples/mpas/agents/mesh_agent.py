@@ -49,11 +49,20 @@ class MeshPromptResponse(BaseModel):
         default_factory=list, description="Entity names to exclude from the region"
     )
     shape: Optional[str] = Field(
-        default=None, description="Mesh shape: rectangle, ellipse, circle, or polygon"
+        default=None,
+        description="Mesh shape: rectangle, ellipse, circle, polygon, or channel",
     )
     method: Optional[str] = Field(
         default=None,
         description="Mesh method: project_hexes, create_region, hex_projection, limited_area, or mpas_limited_area",
+    )
+    upper_lat: Optional[float] = Field(
+        default=None,
+        description="Upper latitude bound for channel shape (degrees, -90 to 90)",
+    )
+    lower_lat: Optional[float] = Field(
+        default=None,
+        description="Lower latitude bound for channel shape (degrees, -90 to 90)",
     )
 
 
@@ -435,7 +444,9 @@ class MeshAgent:
             "Use when the user says to exclude specific countries from a "
             "larger region (e.g. exclude Russia from Europe). "
             "- shape: the mesh shape requested by the user, or null if not "
-            "specified. Valid values: 'rectangle', 'ellipse', 'circle', 'polygon'. "
+            "specified. Valid values: 'rectangle', 'ellipse', 'circle', 'polygon', "
+            "'channel'. A channel is a latitude band around the entire globe "
+            "(e.g. the tropics, subtropics, mid-latitudes). "
             "Only set this if the user explicitly mentions a shape. "
             "- method: the mesh creation method requested by the user, or null "
             "if not specified. Valid values: 'project_hexes', 'create_region'. "
@@ -456,7 +467,12 @@ class MeshAgent:
             "exclude_names, not in region_names. "
             "- For global meshes, set region_names to an empty list. "
             "- If the user specifies a resolution, use it exactly. "
-            "- name should be a short descriptive slug (e.g. 'japan_15km')."
+            "- name should be a short descriptive slug (e.g. 'japan_15km'). "
+            "- upper_lat and lower_lat: latitude bounds for channel shapes. "
+            "Set these when shape is 'channel'. Use well-known boundaries: "
+            "tropics = (-23.43676, 23.43676), subtropics = (23.43676, 35.0) "
+            "or (-35.0, -23.43676), Arctic = (66.5, 90.0), etc. "
+            "For channel shapes, region_names should be empty."
         )
 
     def _resolve_mesh_method(
@@ -480,7 +496,7 @@ class MeshAgent:
             return "global"
 
         has_downloadable_resolution = resolution in self.resolution_cells
-        needs_create_region = shape in ("ellipse", "circle", "polygon")
+        needs_create_region = shape in ("ellipse", "circle", "polygon", "channel")
 
         if method == "project_hexes":
             if needs_create_region:
@@ -582,10 +598,29 @@ class MeshAgent:
         shape: Optional[str],
         geom,
         buffer_km: float,
+        upper_lat: Optional[float] = None,
+        lower_lat: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Build mesh_config dict from resolved method, shape, and geometry."""
         if resolved_method == "global":
             return {"resolution": resolution, "name": name}
+
+        # Channel: latitude band around the globe, no geometry needed
+        if shape == "channel":
+            if upper_lat is None or lower_lat is None:
+                raise ValueError("Channel shape requires upper_lat and lower_lat.")
+            return {
+                "resolution": resolution,
+                "name": name,
+                "regional": {
+                    "create_region": {
+                        "channel": {
+                            "upper-lat": upper_lat,
+                            "lower-lat": lower_lat,
+                        }
+                    }
+                },
+            }
 
         # Buffer must cover 7 boundary-layer cells and be >= 10% of diagonal
         resolution_km = self._parse_resolution_km(resolution)
@@ -699,14 +734,35 @@ class MeshAgent:
                 api_base,
             )
             region_names = payload.region_names
-            if not region_names:
-                return self._normalize_mesh_config(payload.model_dump())
-
             resolution = payload.resolution
             name = payload.name
             exclude_names = payload.exclude_names
             shape = payload.shape
             method = self._normalize_method(payload.method)
+
+            # Channel shape: use LLM-provided latitudes, skip geo-lookup
+            if shape == "channel":
+                resolved_method = self._resolve_mesh_method(
+                    resolution,
+                    shape,
+                    method,
+                    is_regional=True,
+                )
+                mesh_config = self._build_mesh_config_from_geometry(
+                    resolved_method,
+                    resolution,
+                    name,
+                    shape,
+                    None,
+                    buffer_km,
+                    upper_lat=payload.upper_lat,
+                    lower_lat=payload.lower_lat,
+                )
+                self._store_cached_prompt_config(prompt, mesh_config)
+                return mesh_config
+
+            if not region_names:
+                return self._normalize_mesh_config(payload.model_dump())
 
             resolved_method = self._resolve_mesh_method(
                 resolution,
