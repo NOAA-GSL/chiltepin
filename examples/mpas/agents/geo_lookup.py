@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -92,15 +93,17 @@ def _load_states(data_dir: Path = _NE_DATA_DIR):
 # ---------------------------------------------------------------------------
 
 _last_request_time = 0.0
+_rate_lock = threading.Lock()
 
 
 def _rate_limit():
     """Sleep if necessary to respect Nominatim's 1 req/sec policy."""
     global _last_request_time
-    elapsed = time.time() - _last_request_time
-    if elapsed < _REQUEST_INTERVAL:
-        time.sleep(_REQUEST_INTERVAL - elapsed)
-    _last_request_time = time.time()
+    with _rate_lock:
+        elapsed = time.time() - _last_request_time
+        if elapsed < _REQUEST_INTERVAL:
+            time.sleep(_REQUEST_INTERVAL - elapsed)
+        _last_request_time = time.time()
 
 
 def _cache_key(name: str, feature_type: Optional[str], polygon_threshold: float) -> str:
@@ -354,7 +357,13 @@ def _project_and_buffer(geom, buffer_km: float):
 
     Returns (center_lat, center_lon, buffered_shape).
     """
+    from shapely.geometry import Polygon as ShapelyPolygon
+
     hull = geom.convex_hull
+    if not isinstance(hull, ShapelyPolygon):
+        raise ValueError(
+            "Geometry is degenerate (Point or LineString); cannot compute region."
+        )
     center_lat = hull.centroid.y
     center_lon = hull.centroid.x
 

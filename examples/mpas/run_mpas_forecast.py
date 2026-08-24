@@ -98,7 +98,7 @@ async def main():
 
     # Resolve API key from environment now (workers may not have it)
     key = MPASForecastWorkflow.resolve_llm_api_key(config)
-    llm_cfg = config.get("model", {}).get("llm", {})
+    llm_cfg = config.setdefault("model", {}).setdefault("llm", {})
     if key:
         llm_cfg["api_key"] = key
     elif llm_cfg.get("api_key_env"):

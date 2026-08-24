@@ -160,13 +160,13 @@ model:
     # prompt: "Generate a 15km MPAS mesh that covers Europe, excluding Russia and Iceland."
     # prompt: "Generate a 15km MPAS HRRR mesh."
     # prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina."
-    # prompt: "Generate a 15km MPAS mesh using hex projection that covers CONUS."
+    prompt: "Generate a 15km MPAS mesh using project hexes that covers CONUS."
     # prompt: "Generate a 3km MPAS mesh that covers Boulder, Colorado."
     # prompt: "Generate a 15km MPAS mesh that covers Tuscany."
     # prompt: "Generate a 15km elliptical MPAS mesh that covers Italy."
     # prompt: "Generate a 15km MPAS channel mesh that covers the tropics."
     # prompt: "Generate a 15km MPAS channel mesh that covers the arctic."
-    prompt: "Generate a 15km MPAS channel mesh that covers Colorado."
+    # prompt: "Generate a 15km MPAS channel mesh that covers Colorado."
     # OR specify full config instead of prompt
     # resolution: 15km
     # Add regional specs for regional meshes

@@ -41,20 +41,20 @@ class MeshPromptResponse(BaseModel):
 
     resolution: str = Field(description="Mesh resolution, e.g. '15km', '120km'")
     name: str = Field(description="Short descriptive mesh name, e.g. 'japan_15km'")
+    method: Optional[str] = Field(
+        default=None,
+        description="Mesh creation method if user specifies one: 'project_hexes' (hex projection tool) or 'create_region' (limited area / LAM tool). Null if not specified.",
+    )
+    shape: Optional[str] = Field(
+        default=None,
+        description="Mesh shape: rectangle, ellipse, circle, polygon, or channel",
+    )
     region_names: List[str] = Field(
         default_factory=list,
         description="Geographic entity names whose union covers the region",
     )
     exclude_names: List[str] = Field(
         default_factory=list, description="Entity names to exclude from the region"
-    )
-    shape: Optional[str] = Field(
-        default=None,
-        description="Mesh shape: rectangle, ellipse, circle, polygon, or channel",
-    )
-    method: Optional[str] = Field(
-        default=None,
-        description="Mesh method: project_hexes, create_region, hex_projection, limited_area, or mpas_limited_area",
     )
     upper_lat: Optional[float] = Field(
         default=None,
@@ -198,6 +198,7 @@ class MeshAgent:
         if method is None:
             return None
         key = method.lower().replace(" ", "_").replace("-", "_")
+        # Exact alias lookup
         aliases = {
             "project_hexes": "project_hexes",
             "hex_projection": "project_hexes",
@@ -206,13 +207,23 @@ class MeshAgent:
             "limited_area": "create_region",
         }
         canonical = aliases.get(key)
-        if canonical is None:
-            raise ValueError(
-                f"Unknown mesh method '{method}'. "
-                f"Valid methods: project_hexes, create_region, "
-                f"hex_projection, mpas_limited_area, limited_area"
-            )
-        return canonical
+        if canonical is not None:
+            return canonical
+        # Keyword-based fallback for natural language variations
+        _HEX_KEYWORDS = {"hex", "hexagonal", "projection", "project"}
+        _REGION_KEYWORDS = {"region", "limited", "lam", "cutout", "extract"}
+        words = set(key.split("_"))
+        hex_score = len(words & _HEX_KEYWORDS)
+        region_score = len(words & _REGION_KEYWORDS)
+        if hex_score > region_score:
+            return "project_hexes"
+        if region_score > hex_score:
+            return "create_region"
+        raise ValueError(
+            f"Unknown mesh method '{method}'. "
+            f"Valid methods: project_hexes, create_region, "
+            f"hex_projection, mpas_limited_area, limited_area"
+        )
 
     @staticmethod
     def _parse_coordinate(value) -> float:
@@ -311,10 +322,10 @@ class MeshAgent:
                     }
                     has_shape_key = True
 
-        # Infer shape from field names.
+        # Infer shape from field names (require all required fields present).
         if not has_shape_key and config:
             for shape_name, fields in _SHAPE_FIELD_SETS.items():
-                if set(config.keys()).issubset(fields):
+                if fields.issubset(set(config.keys())):
                     return {shape_name: config}
 
         return config
@@ -450,12 +461,17 @@ class MeshAgent:
             "Only set this if the user explicitly mentions a shape. "
             "- method: the mesh creation method requested by the user, or null "
             "if not specified. Valid values: 'project_hexes', 'create_region'. "
-            "Aliases: 'hex_projection' means 'project_hexes'; "
-            "'limited_area' or 'mpas_limited_area' or 'MPAS limited area' "
-            "means 'create_region'. Accept any of these and pass them through. "
+            "project_hexes (also called hex_projection, hex projection, "
+            "hexagonal projection, hexagonal mesh) generates a mesh by "
+            "projecting hexagonal cells onto a region. "
+            "create_region (also called limited_area, mpas_limited_area, "
+            "MPAS limited area, LAM, regional mesh, regional extraction, "
+            "cutout) cuts a regional mesh from a global mesh. "
+            "If the user mentions any of these terms or synonyms, set method "
+            "to the matching canonical value (project_hexes or create_region). "
             "These terms refer to mesh creation methods, NOT geographic regions — "
             "do not let them affect region_names extraction. "
-            "Only set this if the user explicitly mentions a method. "
+            "Only set this if the user explicitly mentions a method or tool. "
             "Rules: "
             "- For continents, expand into ALL constituent countries. "
             "- For countries, use the country name (e.g. 'Japan', 'France'). "
@@ -530,65 +546,6 @@ class MeshAgent:
             return "create_region"
 
         return "project_hexes"
-
-    @staticmethod
-    def _rectangle_to_vertices(rect: Dict[str, Any]) -> list:
-        """Convert rectangle params to 4 (lat, lon) vertices.
-
-        The equator-facing corners are pushed equatorward so the
-        great-circle edge between them still covers the intended
-        boundary at its midpoint.
-        """
-        import math
-
-        clat = rect["center_lat"]
-        clon = rect["center_lon"]
-        half_x = rect["extent_x_km"] * 1000.0 / 2.0
-        half_y = rect["extent_y_km"] * 1000.0 / 2.0
-        rot = math.radians(rect.get("rotation_degrees", 0.0))
-        meters_per_deg = 111_320.0
-        cos_clat = max(math.cos(math.radians(clat)), 1e-10)
-        cos_r, sin_r = math.cos(rot), math.sin(rot)
-
-        corners_local = [
-            (-half_x, -half_y),
-            (half_x, -half_y),
-            (half_x, half_y),
-            (-half_x, half_y),
-        ]
-
-        vertices = []
-        for lx, ly in corners_local:
-            rx = lx * cos_r - ly * sin_r
-            ry = lx * sin_r + ly * cos_r
-            lat = clat + ry / meters_per_deg
-            lon = clon + rx / (meters_per_deg * cos_clat)
-            vertices.append([lat, lon])
-
-        # Correct equator-facing E-W edges for great-circle sag
-        n = len(vertices)
-        for i in range(n):
-            j = (i + 1) % n
-            lat1, lon1 = vertices[i]
-            lat2, lon2 = vertices[j]
-            dlon = abs(lon2 - lon1)
-            dlat = abs(lat2 - lat1)
-            if dlon <= dlat or dlon < 5.0:
-                continue
-            avg_lat = (lat1 + lat2) / 2.0
-            # Skip pole-facing edges (sag increases coverage there)
-            if clat >= 0 and avg_lat >= clat:
-                continue
-            if clat < 0 and avg_lat <= clat:
-                continue
-            # Push corners equatorward: gc midpoint will reach original lat
-            half_dlon = math.radians(dlon / 2.0)
-            cos_half = math.cos(half_dlon)
-            for k in (i, j):
-                lat_k = math.radians(vertices[k][0])
-                vertices[k][0] = math.degrees(math.atan(math.tan(lat_k) * cos_half))
-
-        return [(round(v[0], 6), round(v[1], 6)) for v in vertices]
 
     def _build_mesh_config_from_geometry(
         self,
@@ -762,7 +719,9 @@ class MeshAgent:
                 return mesh_config
 
             if not region_names:
-                return self._normalize_mesh_config(payload.model_dump())
+                mesh_config = self._normalize_mesh_config(payload.model_dump())
+                self._store_cached_prompt_config(prompt, mesh_config)
+                return mesh_config
 
             resolved_method = self._resolve_mesh_method(
                 resolution,
@@ -1183,6 +1142,8 @@ class MeshAgent:
     def _download_global_mesh(self, resolution: str, mesh_data_dir: str) -> None:
         """Download and extract a precomputed global mesh from UCAR."""
         import tarfile
+        import urllib.request
+        from pathlib import Path
 
         mesh_data_dir = Path(mesh_data_dir)
         mesh_data_dir.mkdir(parents=True, exist_ok=True)
