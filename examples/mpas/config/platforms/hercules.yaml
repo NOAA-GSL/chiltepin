@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Platform-specific configuration for MSU-HPC Hercules
+#
+# This file is automatically loaded when platform: hercules is set in user_config.yaml
+
+# Workflow executor configurations for Hercules
+workflow:
+  # Build executor
+  build-executor:
+    provider: "slurm"
+    partition: "hercules"
+    nodes_per_block: 1
+    cores_per_node: 4
+    max_blocks: 2
+    walltime: "01:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.9.2"
+      - "module load hdf5/1.14.0"
+
+  # Compute executor
+  compute-executor:
+    provider: "slurm"
+    partition: "hercules"
+    nodes_per_block: 2
+    cores_per_node: 64
+    max_blocks: 1
+    walltime: "02:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.9.2"
+      - "module load hdf5/1.14.0"
+      - "module load pnetcdf/1.12.3"
+
+# Agent workflow configuration for Hercules
+agent_workflow:
+  build-executor:
+    provider: "slurm"
+    partition: "hercules"
+    nodes_per_block: 1
+    cores_per_node: 4
+    max_blocks: 2
+    walltime: "01:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.9.2"
+
+  compute-executor:
+    provider: "slurm"
+    partition: "hercules"
+    nodes_per_block: 2
+    cores_per_node: 64
+    max_blocks: 1
+    walltime: "02:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.9.2"
+      - "module load hdf5/1.14.0"
+
+# Hercules-specific paths
+paths:
+  # Default experiment directory on Hercules
+  experiment_dir: /work/noaa/${USER}/mpas_experiments/run_$(date +%Y%m%d_%H%M%S)
+
+# Notes for Hercules users:
+# - Login nodes: hercules-login-[1-2].hpc.msstate.edu
+# - Work space: /work/noaa/{user}
+# - Home directory quota: 50 GB
+# - Work quota: Check with system administrators
+# - Compute nodes: 64 cores per node (2x AMD EPYC 7713)

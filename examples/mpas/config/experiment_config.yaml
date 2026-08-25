@@ -1,0 +1,237 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# User configuration template for MPAS multi-agent forecast workflow
+#
+# Copy this file to user_config.yaml and customize for your experiment:
+#   cp config/user_config.yaml.template config/user_config.yaml
+#
+# This file overrides default_config.yaml and platform-specific configs.
+# Only specify settings you want to change from the defaults.
+
+# =============================================================================
+# REQUIRED: Paths
+# =============================================================================
+
+# Experiment directory (customize for your system)
+experiment_dir: /home/admin/experiments/mpas_forecast/local
+
+workflow_config:
+  agent-executor:
+    provider: localhost
+    max_blocks: 1
+    max_workers_per_node: 4
+    environment:
+      - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+
+agents:
+  - name: mesh-foo
+    type: mesh
+    work_dir: /home/admin/experiments/mpas_forecast/site_foo
+    executor: agent-executor
+    workflow_config:
+      service:
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:20:00"
+        environment:
+          # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+          # - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+      compute:
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:20:00"
+        environment:
+          - source /usr/lmod/lmod/init/bash
+          - module use /opt/spack-stack/envs/unified-env/modules/Core
+          - module load stack-gcc
+          - module load cmake
+          # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+          # - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+
+  - name: mpas-foo
+    type: mpas
+    work_dir: /home/admin/experiments/mpas_forecast/site_foo
+    executor: agent-executor
+    workflow_config:
+      service:
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "01:00:00"
+        environment:
+          - source /usr/lmod/lmod/init/bash
+          - module use /opt/spack-stack/envs/unified-env/modules/Core
+          - module load stack-gcc
+          - module load stack-openmpi
+          - module load cmake
+          - module load parallel-netcdf
+          - module load parallelio
+          # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+          # - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+      compute:
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:10:00"
+        environment:
+          - source /usr/lmod/lmod/init/bash
+          - module use /opt/spack-stack/envs/unified-env/modules/Core
+          - module load stack-gcc
+          - module load stack-openmpi
+          - module load cmake
+          - module load parallel-netcdf
+          - module load parallelio
+          # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+          # - conda activate mpas-example
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+      mpi:
+        mpi: true
+        provider: slurm
+        partition: slurmpar
+        nodes_per_block: 1
+        walltime: "00:30:00"
+        environment:
+          - source /usr/lmod/lmod/init/bash
+          - module use /opt/spack-stack/envs/unified-env/modules/Core
+          - module load stack-gcc
+          - module load stack-openmpi
+          - module load cmake
+          - module load parallel-netcdf
+          - module load parallelio
+          - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+
+  # - name: mesh-bar
+  #   type: mesh
+  #   work_dir: /home/admin/experiments/mpas_forecast/site_bar
+  #   executor: agent-executor
+  #   workflow_config:
+  #     service:
+  #       provider: slurm
+  #       partition: slurmpar
+  #       nodes_per_block: 1
+  #       walltime: "00:10:00"
+  #       environment:
+  #         # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+  #         # - conda activate mpas-example
+  #         - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+  #     compute:
+  #       provider: slurm
+  #       partition: slurmpar
+  #       nodes_per_block: 1
+  #       walltime: "00:10:00"
+  #       environment:
+  #         - source /usr/lmod/lmod/init/bash
+  #         - module use /opt/spack-stack/envs/unified-env/modules/Core
+  #         - module load stack-gcc
+  #         - module load cmake
+  #         # - source /home/admin/chiltepin/examples/mpas/miniforge3/etc/profile.d/conda.sh
+  #         # - conda activate mpas-example
+  #         - export PYTHONPATH=$PYTHONPATH:/home/admin/chiltepin/examples/mpas
+  
+
+# =============================================================================
+# OPTIONAL: Model Configuration
+# =============================================================================
+
+# Uncomment and customize as needed
+model:
+
+  llm:
+    # bedrock reference: https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html
+    # model: bedrock/anthropic.claude-sonnet-4-20250514-v1:0
+    model: anthropic/claude-sonnet-5
+    # model: ollama_chat/qwen2.5:14b
+    api_key_env: ANTHROPIC_API_KEY
+    # api_base: http://localhost:11434
+
+  # mesh: either specify a prompt or the full mesh creation config
+  mesh:
+    name: CONUS_15km
+    # prompt: "Generate a 15km MPAS mesh using create_region that covers Japan."
+    # prompt: "Generate a 15km MPAS mesh that covers Japan."
+    # prompt: "Generate a 15km MPAS mesh thgit sat covers Chile."
+    # prompt: "Generate a 15km MPAS mesh that covers Tornado Alley."
+    # prompt: "Generate a 15km MPAS mesh that covers CONUS."
+    # prompt: "Generate a 15km MPAS mesh that covers Europe, excluding Russia and Iceland."
+    # prompt: "Generate a 15km MPAS HRRR mesh."
+    # prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina."
+    prompt: "Generate a 15km MPAS mesh using project hexes that covers CONUS."
+    # prompt: "Generate a 3km MPAS mesh that covers Boulder, Colorado."
+    # prompt: "Generate a 15km MPAS mesh that covers Tuscany."
+    # prompt: "Generate a 15km elliptical MPAS mesh that covers Italy."
+    # prompt: "Generate a 15km MPAS channel mesh that covers the tropics."
+    # prompt: "Generate a 15km MPAS channel mesh that covers the arctic."
+    # prompt: "Generate a 15km MPAS channel mesh that covers Colorado."
+    # OR specify full config instead of prompt
+    # resolution: 15km
+    # Add regional specs for regional meshes
+    # regional:  # Leave the section out for global meshes
+      # # Choose either "project_hexes" or "create_region" method
+      # project_hexes:
+      #   extent_x_km: 5403.0
+      #   extent_y_km: 3183.0
+      #   center_lat: 38.5
+      #   center_lon: -97.5
+      #   rotation_degrees: 0.0 # Birds-eye counter-clockwise
+      # create_region:  # Choose one of the types: "polygon", "circle", "ellipse", "channel"
+        # polygon:
+        #   point: 38.5, -97.5  # A point inside the polygon
+        #   vertices:  # In counter clock-wise order (can be any convex shape)
+        #   - 21.03, -122.82
+        #   - 47.94, -134.20
+        #   - 47.94, -60.80
+        #   - 21.03, -72.18
+        # circle:
+        #   point: 39.0, -105.5 # Center
+        #   radius: 400000  # Meters
+        # ellipse:
+        #   point: 38.0, 138.0 # Center
+        #   semi-major-axis: 1580000  # Meters (oriented N/S before rotation)
+        #   semi-minor-axis: 1000000  # Meters (oriented E/W before rotation)
+        #   orientation-angle: 45 # Clockwise rotation from north
+        # channel:
+        #   upper-lat: 23.43676
+        #   lower-lat: -23.43676
+
+#   # Forecast settings
+#   forecast_length_hours: 24
+#   output_interval_hours: 1
+#
+#   # MPI configuration
+  init_ranks: 1
+  forecast_ranks: 48
+
+# =============================================================================
+# OPTIONAL: Executor Configuration Overrides
+# =============================================================================
+
+# Uncomment to override platform defaults
+# workflow:
+#   compute-executor:
+#     nodes_per_block: 4
+#     walltime: "03:00:00"
+
+# =============================================================================
+# OPTIONAL: Data Sources
+# =============================================================================
+
+# Uncomment to use different data sources
+# data_sources:
+#   ics_source: GFS
+#   lbcs_source: GFS
+
+# =============================================================================
+# OPTIONAL: Software Versions
+# =============================================================================
+
+# Uncomment to use specific versions
+# versions:
+#   metis: 5.2.1
+#   limited_area: master
+#   wps: 4.5
+#   mpas: v8.2.0

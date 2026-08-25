@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Conda environment for MPAS multi-agent example
+#
+# This environment includes:
+# - Python 3.11
+# - uwtools: Configuration management (from ufs-community channel)
+# - chiltepin: Workflow management (from PyPI via pip)
+#
+# Note: Build tools (compilers, make, cmake) and system utilities (git, wget, curl)
+# are NOT included. They should be provided by the system (HPC modules) or container.
+
+name: mpas-example
+
+channels:
+  - ufs-community
+  - conda-forge
+  # Note: defaults channel omitted to reduce conflicts
+
+dependencies:
+  # Python
+  - python=3.11
+
+  # uwtools from ufs-community channel
+  # Note: Official docs recommend: conda install -c ufs-community -c conda-forge --override-channels uwtools
+  # This environment.yml approach uses channel priority instead (ufs-community is first)
+  - gcc
+  - gfortran
+  - mpas_tools
+  - uwtools
+  - uxarray>=2025.02.0
+  - holoviews
+  - geoviews
+  - bokeh
+  - matplotlib
+  - cartopy
+  - pyogrio
+  - litellm
+  - instructor
+  - boto3
+
+  # Pip packages (chiltepin is only available on PyPI/GitHub)
+  - pip
+  - pip:
+    - chiltepin[test] @ git+https://github.com/NOAA-GSL/chiltepin.git@main
