@@ -17,6 +17,7 @@ import json
 import math
 import re
 import shlex
+import time
 import urllib.request
 import uuid
 from pathlib import Path
@@ -416,21 +417,27 @@ class MeshAgent:
         client = instructor.from_litellm(litellm.completion)
         system = system_prompt or self._mesh_osm_system_prompt()
 
-        try:
-            return client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-                response_model=MeshPromptResponse,
-                api_key=api_key,
-                api_base=api_base,
-                timeout=timeout_seconds,
-                max_retries=3,
-            )
-        except Exception as e:
-            raise RuntimeError(f"LLM request failed: {e}") from e
+        # Retry on transient content filter false positives
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            try:
+                return client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_model=MeshPromptResponse,
+                    api_key=api_key,
+                    api_base=api_base,
+                    timeout=timeout_seconds,
+                    max_retries=3,
+                )
+            except Exception as e:
+                if "content filtering policy" in str(e).lower() and attempt < max_attempts - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise RuntimeError(f"LLM request failed: {e}") from e
 
     def _mesh_osm_system_prompt(self) -> str:
         """System prompt for OSM Nominatim geo-lookup."""
@@ -461,7 +468,7 @@ class MeshAgent:
             "Only set this if the user explicitly mentions a shape. "
             "- method: the mesh creation method requested by the user, or null "
             "if not specified. Valid values: 'project_hexes', 'create_region'. "
-            "project_hexes (also called hex_projection, hex projection, "
+            "project_hexes (also called project hexes, hex_projection, hex projection, "
             "hexagonal projection, hexagonal mesh) generates a mesh by "
             "projecting hexagonal cells onto a region. "
             "create_region (also called limited_area, mpas_limited_area, "
