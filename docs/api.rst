@@ -32,11 +32,12 @@ Tasks Module
    :members:
    :show-inheritance:
 
-Agents Module
--------------
+Agents Package
+--------------
 
 .. automodule:: chiltepin.agents
    :members:
+   :imported-members:
    :show-inheritance:
 
 Manager Module
@@ -59,4 +60,3 @@ Data Module
 .. automodule:: chiltepin.data
    :members:
    :show-inheritance:
-
