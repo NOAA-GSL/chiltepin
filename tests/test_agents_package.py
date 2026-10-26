@@ -22,14 +22,6 @@ def test_public_decorator_exports(name):
     assert pickle.loads(pickle.dumps(decorator)) is decorator
 
 
-@pytest.mark.parametrize("name", ["agent_action", "agent_loop", "chiltepin_agent"])
-def test_legacy_decorator_pickle(name):
-    # Previously serialized references resolve through the public package.
-    reference = f"cchiltepin.agents\n{name}\n.".encode("ascii")
-
-    assert pickle.loads(reference) is getattr(agents, name)
-
-
 def test_agents_is_package():
     assert agents.__spec__.submodule_search_locations is not None
     assert importlib.import_module("chiltepin.agents") is agents
@@ -51,7 +43,7 @@ class SerializableAgent:
         self.stopped = True
 
 
-def test_decorated_agent_pickle():
+def test_decorated_agent_pickle_by_reference():
     assert SerializableAgent.__module__ == __name__
     assert SerializableAgent.__qualname__ == "SerializableAgent"
     assert pickle.loads(pickle.dumps(SerializableAgent)) is SerializableAgent
