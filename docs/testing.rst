@@ -29,6 +29,9 @@ command to authenticate:
    $ chiltepin login
 
 This will open a web browser, or provide a URL, for you to complete the authentication flow.
+Compute, Transfer, and Academy scopes are requested together in one login flow.
+Sign in with an identity that has access to the integration-test Globus data collections.
+Login does not probe collection permissions.
 
 Platform-Specific Testing
 -------------------------
@@ -126,6 +129,7 @@ The test suite is organized into several files:
 
 * ``test_configure.py`` - Tests for configuration parsing and executor creation
 * ``test_cli.py`` - Tests for command-line interface functionality
+* ``test_auth.py`` - Offline tests for shared Chiltepin authentication, CI, and service consumers
 * ``test_tasks.py`` - Tests for task decorators
 * ``test_endpoint.py`` - Tests for Globus Compute endpoint management (Linux only, except platform-check tests)
 * ``test_data.py`` - Tests for data handling utilities

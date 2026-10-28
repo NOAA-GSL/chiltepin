@@ -11,8 +11,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from academy.exchange.cloud.client import HttpExchangeFactory
+from academy.exchange.cloud.scopes import AcademyExchangeScopes
 from parsl.concurrent import ParslPoolExecutor
 
+from .endpoint import get_chiltepin_app
 from .manager import Manager
 
 if TYPE_CHECKING:
@@ -133,6 +135,21 @@ class AgentRuntime:
         # hardcoding the old unversioned address makes the server reject
         # messages with 400 Bad Request.)
         factory_kwargs: Dict[str, Any] = {"auth_method": self.auth_method}
+        if self.auth_method == "globus":
+            app = get_chiltepin_app()
+            if app.login_required():
+                raise RuntimeError(
+                    "Chiltepin login is required. Run 'chiltepin login' "
+                    "before starting the workflow."
+                )
+            header = app.get_authorizer(
+                AcademyExchangeScopes.resource_server
+            ).get_authorization_header()
+            if header is None:
+                raise RuntimeError("Academy authorizer did not provide a bearer token")
+            factory_kwargs.update(
+                auth_method=None, additional_headers={"Authorization": header}
+            )
         if self.exchange_address is not None:
             factory_kwargs["url"] = self.exchange_address
 

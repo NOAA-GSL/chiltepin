@@ -1024,7 +1024,15 @@ class TestAgentRuntime:
         # would otherwise require a started workflow.
         agent_runtime._executors = {}
 
-        with patch("chiltepin.agent_runtime.HttpExchangeFactory") as mock_factory:
+        with (
+            patch("chiltepin.agent_runtime.get_chiltepin_app") as get_apps,
+            patch("chiltepin.agent_runtime.HttpExchangeFactory") as mock_factory,
+        ):
+            app = get_apps.return_value = MagicMock()
+            app.login_required.return_value = False
+            app.get_authorizer.return_value.get_authorization_header.return_value = (
+                "Bearer test-academy-token"
+            )
             with patch(
                 "chiltepin.agent_runtime.Manager.from_exchange_factory",
                 new_callable=AsyncMock,
@@ -1033,7 +1041,8 @@ class TestAgentRuntime:
 
         # A custom address must be forwarded as url=
         mock_factory.assert_called_once_with(
-            auth_method="globus",
+            auth_method=None,
+            additional_headers={"Authorization": "Bearer test-academy-token"},
             url="https://custom.example.com",
         )
 
@@ -1051,7 +1060,15 @@ class TestAgentRuntime:
         )
         agent_runtime._executors = {}
 
-        with patch("chiltepin.agent_runtime.HttpExchangeFactory") as mock_factory:
+        with (
+            patch("chiltepin.agent_runtime.get_chiltepin_app") as get_apps,
+            patch("chiltepin.agent_runtime.HttpExchangeFactory") as mock_factory,
+        ):
+            app = get_apps.return_value = MagicMock()
+            app.login_required.return_value = False
+            app.get_authorizer.return_value.get_authorization_header.return_value = (
+                "Bearer test-academy-token"
+            )
             with patch(
                 "chiltepin.agent_runtime.Manager.from_exchange_factory",
                 new_callable=AsyncMock,
@@ -1059,7 +1076,10 @@ class TestAgentRuntime:
                 await agent_runtime.manager()
 
         # No url= is passed, so academy uses its own DEFAULT_EXCHANGE_URL
-        mock_factory.assert_called_once_with(auth_method="globus")
+        mock_factory.assert_called_once_with(
+            auth_method=None,
+            additional_headers={"Authorization": "Bearer test-academy-token"},
+        )
 
     def test_agent_runtime_requires_started_workflow(self):
         """Test that AgentRuntime raises error at initialization if workflow not started."""

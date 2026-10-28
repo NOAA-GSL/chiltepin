@@ -57,10 +57,29 @@ Stage, process, and cleanup data in a workflow::
 
 from typing import Optional
 
-from globus_sdk import TransferClient
+from globus_sdk import GlobusAPIError, TransferAPIError, TransferClient
+from globus_sdk.gare import to_gare
 
 import chiltepin.endpoint as endpoint
 from chiltepin.tasks import python_task
+
+
+def _transfer_error_message(err: TransferAPIError) -> str:
+    if isinstance(err, GlobusAPIError) and to_gare(err) is not None:
+        return (
+            "Transfer authentication requirements are not satisfied. Run "
+            "'chiltepin logout' followed by 'chiltepin login' in the foreground "
+            "and sign in with an identity that has collection access. "
+            "For client credentials, check "
+            f"the service identity's collection permissions. Original error: {err}"
+        )
+    if err.info.consent_required:
+        return (
+            "Encountered a ConsentRequired error. Run "
+            "the collection's Globus authorization flow to grant the required "
+            f"consents before starting the workflow. Original error: {err}"
+        )
+    return str(err)
 
 
 @python_task
@@ -71,7 +90,6 @@ def transfer_task(
     dst_path: str,
     timeout: int = 3600,
     polling_interval: int = 30,
-    client: Optional[TransferClient] = None,
     recursive: bool = False,
 ):
     """Transfer data asynchronously in a Parsl task
@@ -106,11 +124,6 @@ def transfer_task(
     polling_interval: int
         Number of seconds to wait between checking the status of the transfer
 
-    client: TransferClient | None
-        Transfer client to use for submitting the transfers. If None, one
-        will be retrieved via the login process. If a login has already been
-        performed, no login flow prompts will be issued.
-
     recursive: bool
         Whether or not a recursive transfer should be performed
     """
@@ -122,7 +135,6 @@ def transfer_task(
         dst_path,
         timeout=timeout,
         polling_interval=polling_interval,
-        client=client,
         recursive=recursive,
     )
     return completed  # pragma: no cover
@@ -134,7 +146,6 @@ def delete_task(
     src_path: str,
     timeout: int = 3600,
     polling_interval: int = 30,
-    client: Optional[TransferClient] = None,
     recursive: bool = False,
 ):
     """Delete data asynchronously in a Parsl task
@@ -161,12 +172,6 @@ def delete_task(
     polling_interval: int
         Number of seconds to wait between checking the status of the deletion
 
-    client: TransferClient | None
-        Transfer client to use for submitting the deletion. If None, one
-        will be retrieved via the login process. If a login has already been
-        performed, no login flow prompts will be issued.  NOTE: Yes, deletion
-        is done using a TransferClient.
-
     recursive: bool
         Whether or not a recursive deletion should be performed
     """
@@ -176,7 +181,6 @@ def delete_task(
         src_path,
         timeout=timeout,
         polling_interval=polling_interval,
-        client=client,
         recursive=recursive,
     )
     return completed  # pragma: no cover
@@ -235,7 +239,7 @@ def transfer(
 
     # Get transfer client
     if not client:
-        clients = endpoint.login()
+        clients = endpoint.login(interactive=False)
         client = clients["transfer"]
 
     # Get the source endpoint
@@ -253,9 +257,6 @@ def transfer(
             dst_id = ep["id"]
     if not dst_id:
         raise RuntimeError(f"Destination endpoint '{dst_ep}' could not be found")
-
-    # Add data access scopes for both endpoints (just in case)
-    # client.add_app_data_access_scope([src_id, dst_id])
 
     # Build the transfer data
     task_data = globus_sdk.TransferData(
@@ -277,14 +278,7 @@ def transfer(
         )
         return done
     except globus_sdk.TransferAPIError as err:
-        if err.info.consent_required:
-            raise RuntimeError(
-                "Encountered a ConsentRequired error.\n"
-                "You must login a second time to grant consents.\n\n"
-                "err.info"
-            )
-        else:
-            raise RuntimeError(str(err))
+        raise RuntimeError(_transfer_error_message(err)) from err
 
 
 def delete(
@@ -330,7 +324,7 @@ def delete(
 
     # Get transfer client
     if not client:
-        clients = endpoint.login()
+        clients = endpoint.login(interactive=False)
         client = clients["transfer"]
 
     # Get the source endpoint
@@ -340,9 +334,6 @@ def delete(
             src_id = ep["id"]
     if not src_id:
         raise RuntimeError(f"Source endpoint '{src_ep}' could not be found")
-
-    # Add data access scopes for both endpoints (just in case)
-    # client.add_app_data_access_scope([src_id, dst_id])
 
     # Build the delete data payload
     task_data = globus_sdk.DeleteData(endpoint=src_id, recursive=recursive)
@@ -359,11 +350,4 @@ def delete(
         )
         return done
     except globus_sdk.TransferAPIError as err:
-        if err.info.consent_required:
-            raise RuntimeError(
-                "Encountered a ConsentRequired error.\n"
-                "You must login a second time to grant consents.\n\n"
-                "err.info"
-            )
-        else:
-            raise RuntimeError(str(err))
+        raise RuntimeError(_transfer_error_message(err)) from err

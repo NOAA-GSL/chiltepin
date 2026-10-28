@@ -88,10 +88,6 @@ Parameters
      - integer
      - ``30``
      - Seconds between status checks
-   * - ``client``
-     - TransferClient
-     - ``None``
-     - Globus TransferClient (auto-created if None)
    * - ``recursive``
      - boolean
      - ``False``
@@ -194,10 +190,6 @@ Parameters
      - integer
      - ``30``
      - Seconds between status checks
-   * - ``client``
-     - TransferClient
-     - ``None``
-     - Globus TransferClient (auto-created if None)
    * - ``recursive``
      - boolean
      - ``False``
@@ -425,6 +417,8 @@ dependencies:
    # Ensure cleanup completes before exiting
    cleanup.result()
 
+.. _data-authentication:
+
 Authentication
 --------------
 
@@ -434,12 +428,25 @@ Data transfer tasks require Globus authentication. Use the Chiltepin login comma
 
    $ chiltepin login
 
-This authenticates you with Globus and grants the necessary permissions for data
-transfers. The authentication persists across workflow runs until you log out.
+This requests Compute, Transfer, and Academy Exchange scopes together in one
+authorization URL/code prompt and caches their tokens in a shared store. It does
+not check access to specific Globus endpoint data collections. Sign in with the
+identity that has access to the collections you intend to use.
 
-.. note::
-   You only need to authenticate once. The credentials are cached and reused for
-   subsequent transfers.
+The equivalent Python call is ``chiltepin.endpoint.login()``.
+
+Unattended CI
+^^^^^^^^^^^^^
+
+Set ``GLOBUS_COMPUTE_CLIENT_ID`` and ``GLOBUS_COMPUTE_CLIENT_SECRET`` to the
+confidential client's credentials, then run:
+
+.. code-block:: bash
+
+   $ chiltepin login --non-interactive
+
+The CI identity must havev its own guest-collection permissions, including
+write access for transfer/delete tests
 
 Setting Up Data Endpoints
 --------------------------
@@ -527,4 +534,3 @@ See Also
 - :doc:`endpoints` - Globus Compute endpoints for task execution
 - :doc:`api` - Full API reference for the data module
 - `Globus Documentation <https://docs.globus.org/>`_ - Official Globus guides
-

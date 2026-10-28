@@ -31,6 +31,12 @@ login_parser = cmd_parsers.add_parser(
     "login",
     help="login to the Chiltepin App",
 )
+login_parser.add_argument(
+    "--non-interactive",
+    dest="interactive",
+    action="store_false",
+    help="never prompt for user authentication (for CI)",
+)
 login_parser.set_defaults(func=endpoint.login)
 
 # Add parser for the login command

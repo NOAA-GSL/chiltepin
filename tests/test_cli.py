@@ -261,7 +261,7 @@ class TestCLIIntegration:
             {
                 "argv": ["chiltepin", "login"],
                 "expected_func_name": "login",
-                "expected_args": {},
+                "expected_args": {"interactive": True},
             },
             {
                 "argv": ["chiltepin", "logout"],
