@@ -445,7 +445,7 @@ confidential client's credentials, then run:
 
    $ chiltepin login --non-interactive
 
-The CI identity must havev its own guest-collection permissions, including
+The CI identity must have its own guest-collection permissions, including
 write access for transfer/delete tests
 
 Setting Up Data Endpoints
