@@ -241,9 +241,6 @@ def login(*, interactive: bool = True) -> Dict[str, Union[Client, TransferClient
     Transfer client in a dictionary. Those clients can then be used for accessing
     those services.
 
-    Sign in with an identity that has access to the intended collections.
-    Login does not probe collection access or permissions.
-
     Parameters
     ----------
 
@@ -265,7 +262,7 @@ def login(*, interactive: bool = True) -> Dict[str, Union[Client, TransferClient
     RuntimeError
         If interactive is False and user authentication requires a login prompt.
     """
-    # Get the shared Chiltepin app for both clients.
+    # Get the Chiltepin app
     app = get_chiltepin_app()
 
     if app.login_required():
