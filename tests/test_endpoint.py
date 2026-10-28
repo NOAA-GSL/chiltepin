@@ -205,8 +205,8 @@ class TestEndpointIntegration:
 # =============================================================================
 
 
-class TestGetChiltepinApps:
-    """Tests for get_chiltepin_apps() function."""
+class TestGetChiltepinApp:
+    """Tests for get_chiltepin_app() function."""
 
     def test_with_client_secret_but_no_id(self):
         """Test that RuntimeError is raised when SECRET is set but ID is not."""
@@ -222,7 +222,7 @@ class TestGetChiltepinApps:
                 RuntimeError,
                 match=r"\$GLOBUS_COMPUTE_CLIENT_SECRET is set but \$GLOBUS_COMPUTE_CLIENT_ID is not",
             ):
-                endpoint.get_chiltepin_apps()
+                endpoint.get_chiltepin_app()
         finally:
             # Restore original env vars
             os.environ.pop("GLOBUS_COMPUTE_CLIENT_SECRET", None)
@@ -241,22 +241,12 @@ class TestGetChiltepinApps:
             },
             clear=False,
         ):
-            with patch(
-                "chiltepin.endpoint.get_globus_compute_app"
-            ) as mock_get_compute_app:
-                with patch(
-                    "chiltepin.endpoint.get_globus_academy_app"
-                ) as mock_get_academy_app:
+            with patch("chiltepin.endpoint.get_token_storage") as mock_storage:
+                with patch("chiltepin.endpoint.ComputeClientV2"):
                     with patch("chiltepin.endpoint.ClientApp") as mock_client_app:
                         with patch("chiltepin.endpoint.UserApp"):
-                            mock_compute_app = MagicMock()
-                            mock_academy_app = MagicMock()
-                            mock_get_compute_app.return_value = mock_compute_app
-                            mock_get_academy_app.return_value = mock_academy_app
-
-                            compute_app, transfer_app, academy_app = (
-                                endpoint.get_chiltepin_apps()
-                            )
+                            app = endpoint.get_chiltepin_app()
+                            assert app is mock_client_app.return_value
 
                             # Verify GLOBUS_CLI_* env vars were set
                             assert (
@@ -279,6 +269,11 @@ class TestGetChiltepinApps:
                                 "chiltepin",
                                 client_id="test_client_id",
                                 client_secret="test_secret",
+                                config=endpoint.GlobusAppConfig(
+                                    token_validation_error_handler=None,
+                                    token_storage=mock_storage.return_value,
+                                    request_refresh_tokens=True,
+                                ),
                             )
 
     def test_without_client_credentials(self):
@@ -288,26 +283,21 @@ class TestGetChiltepinApps:
         orig_secret = os.environ.pop("GLOBUS_COMPUTE_CLIENT_SECRET", None)
 
         try:
-            with patch(
-                "chiltepin.endpoint.get_globus_compute_app"
-            ) as mock_get_compute_app:
-                with patch(
-                    "chiltepin.endpoint.get_globus_academy_app"
-                ) as mock_get_academy_app:
+            with patch("chiltepin.endpoint.get_token_storage") as mock_storage:
+                with patch("chiltepin.endpoint.ComputeClientV2"):
                     with patch("chiltepin.endpoint.UserApp") as mock_user_app:
-                        mock_compute_app = MagicMock()
-                        mock_academy_app = MagicMock()
-                        mock_get_compute_app.return_value = mock_compute_app
-                        mock_get_academy_app.return_value = mock_academy_app
-
-                        compute_app, transfer_app, academy_app = (
-                            endpoint.get_chiltepin_apps()
-                        )
+                        app = endpoint.get_chiltepin_app()
+                        assert app is mock_user_app.return_value
 
                         # Verify UserApp was called for transfer client
                         mock_user_app.assert_called_once_with(
                             "chiltepin",
                             client_id=endpoint.CHILTEPIN_CLIENT_UUID,
+                            config=endpoint.GlobusAppConfig(
+                                token_validation_error_handler=None,
+                                token_storage=mock_storage.return_value,
+                                request_refresh_tokens=True,
+                            ),
                         )
         finally:
             # Restore original env vars
@@ -321,31 +311,20 @@ class TestLogin:
     """Tests for login() function."""
 
     def test_with_login_required(self):
-        """Test login when both apps require login."""
-        with patch("chiltepin.endpoint.get_chiltepin_apps") as mock_get_apps:
+        """Test login when the shared app requires login."""
+        with patch("chiltepin.endpoint.get_chiltepin_app") as mock_get_apps:
             with patch("chiltepin.endpoint.Client"):
                 with patch("chiltepin.endpoint.TransferClient"):
                     # Setup mocks
                     mock_compute_app = MagicMock()
-                    mock_transfer_app = MagicMock()
-                    mock_academy_app = MagicMock()
                     mock_compute_app.login_required.return_value = True
-                    mock_transfer_app.login_required.return_value = True
-                    mock_academy_app.login_required.return_value = True
-
-                    mock_get_apps.return_value = (
-                        mock_compute_app,
-                        mock_transfer_app,
-                        mock_academy_app,
-                    )
+                    mock_get_apps.return_value = mock_compute_app
 
                     # Call login
                     clients = endpoint.login()
 
-                    # Verify login was called on all apps
+                    # The shared app is logged in once.
                     mock_compute_app.login.assert_called_once()
-                    mock_transfer_app.login.assert_called_once()
-                    mock_academy_app.login.assert_called_once()
 
                     # Verify clients were created
                     assert "compute" in clients
@@ -354,76 +333,46 @@ class TestLogin:
 
     def test_without_login_required(self):
         """Test login when apps don't require login."""
-        with patch("chiltepin.endpoint.get_chiltepin_apps") as mock_get_apps:
+        with patch("chiltepin.endpoint.get_chiltepin_app") as mock_get_apps:
             with patch("chiltepin.endpoint.Client"):
                 with patch("chiltepin.endpoint.TransferClient"):
                     # Setup mocks
                     mock_compute_app = MagicMock()
-                    mock_transfer_app = MagicMock()
-                    mock_academy_app = MagicMock()
                     mock_compute_app.login_required.return_value = False
-                    mock_transfer_app.login_required.return_value = False
-                    mock_academy_app.login_required.return_value = False
-
-                    mock_get_apps.return_value = (
-                        mock_compute_app,
-                        mock_transfer_app,
-                        mock_academy_app,
-                    )
+                    mock_get_apps.return_value = mock_compute_app
 
                     # Call login
                     endpoint.login()
 
                     # Verify login was NOT called
                     mock_compute_app.login.assert_not_called()
-                    mock_transfer_app.login.assert_not_called()
-                    mock_academy_app.login.assert_not_called()
 
 
 class TestLoginRequired:
     """Tests for login_required() function."""
 
     def test_returns_true_when_login_needed(self):
-        """Test login_required returns True if any app requires login."""
-        with patch("chiltepin.endpoint.get_chiltepin_apps") as mock_get_apps:
+        """Test login_required checks the shared app."""
+        with patch("chiltepin.endpoint.get_chiltepin_app") as mock_get_apps:
             mock_compute_app = MagicMock()
-            mock_transfer_app = MagicMock()
-            mock_academy_app = MagicMock()
             mock_compute_app.login_required.return_value = True
-            mock_transfer_app.login_required.return_value = False
-            mock_academy_app.login_required.return_value = False
-
-            mock_get_apps.return_value = (
-                mock_compute_app,
-                mock_transfer_app,
-                mock_academy_app,
-            )
-
-            # Should return True if either app requires login
+            mock_get_apps.return_value = mock_compute_app
             assert endpoint.login_required() is True
 
 
 class TestLogout:
     """Tests for logout() function."""
 
-    def test_logout_calls_all_apps(self):
-        """Test logout calls logout on all apps."""
-        with patch("chiltepin.endpoint.get_chiltepin_apps") as mock_get_apps:
+    def test_logout_calls_shared_app(self):
+        """Test logout revokes the shared app once."""
+        with patch("chiltepin.endpoint.get_chiltepin_app") as mock_get_apps:
             mock_compute_app = MagicMock()
-            mock_transfer_app = MagicMock()
-            mock_academy_app = MagicMock()
-            mock_get_apps.return_value = (
-                mock_compute_app,
-                mock_transfer_app,
-                mock_academy_app,
-            )
+            mock_get_apps.return_value = mock_compute_app
 
             endpoint.logout()
 
-            # Verify logout was called on all apps
+            # Only the shared app is logged out.
             mock_compute_app.logout.assert_called_once()
-            mock_transfer_app.logout.assert_called_once()
-            mock_academy_app.logout.assert_called_once()
 
 
 class TestPlatformChecks:

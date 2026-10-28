@@ -522,12 +522,7 @@ class TestWorkflowExceptionHandling:
                     pass
 
     def test_logger_handler_exception(self, tmp_path):
-        """Test that exceptions during logger_handler() are properly raised.
-
-        Note: Logger cleanup happens both inside dfk.cleanup() and in our explicit
-        logger_handler() call. When it fails during dfk.cleanup(), that exception
-        is what gets raised.
-        """
+        """Test that exceptions during logger_handler() are properly raised."""
         # Ensure clean state before test
         try:
             parsl.clear()
@@ -553,8 +548,7 @@ class TestWorkflowExceptionHandling:
             return failing_handler
 
         with mock.patch("parsl.set_file_logger", side_effect=mock_set_file_logger):
-            # The logger cleanup exception will be raised (either from dfk.cleanup or our call)
-            with pytest.raises(RuntimeError):
+            with pytest.raises(RuntimeError, match="Logger cleanup failed"):
                 with Workflow(
                     config,
                     run_dir=str(tmp_path / "runinfo_exc3"),
@@ -975,16 +969,12 @@ class TestUserExceptionPrecedence:
             }
         }
 
-        #  Create a handler that succeeds first time (dfk cleanup) but fails second time (our explicit call)
-        call_count = [0]
-
+        # Workflow.cleanup() is the only caller of the logger handler
         def mock_set_file_logger(*args, **kwargs):
-            def conditional_failing_handler():
-                call_count[0] += 1
-                if call_count[0] == 2:  # Fail on second call (our explicit cleanup)
-                    raise RuntimeError("Logger cleanup failed")
+            def failing_handler():
+                raise RuntimeError("Logger cleanup failed")
 
-            return conditional_failing_handler
+            return failing_handler
 
         with mock.patch("parsl.set_file_logger", side_effect=mock_set_file_logger):
             # Logger cleanup exception should be raised

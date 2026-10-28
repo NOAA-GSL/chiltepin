@@ -26,7 +26,7 @@ def config(config_file):
         raise RuntimeError("Chiltepin login is required")
 
     # Get transfer client
-    clients = endpoint.login()
+    clients = endpoint.login(interactive=False)
     transfer_client = clients["transfer"]
 
     # Generate unique destination filename to avoid conflicts in concurrent tests
@@ -54,7 +54,6 @@ def test_data_task_basic(config):
         timeout=120,
         polling_interval=10,
         executor=["local"],
-        client=config["client"],
     )
     transfer_completed = transfer_future.result()
     assert transfer_completed is True
@@ -66,7 +65,6 @@ def test_data_task_basic(config):
         timeout=120,
         polling_interval=10,
         executor=["local"],
-        client=config["client"],
     )
     delete_completed = delete_future.result()
     assert delete_completed is True

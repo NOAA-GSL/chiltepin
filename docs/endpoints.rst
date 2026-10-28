@@ -54,11 +54,14 @@ Login
 
 This will:
 
-1. Open a browser window (or present a URL) for Globus authentication
-2. Save authentication tokens for future use
+1. Present one authorization URL/code prompt requesting Compute, Transfer, and
+   Academy Exchange scopes together, under the Chiltepin application's client ID
+2. Save all service tokens in the shared Compute-compatible token store for
+   future use, requesting refresh tokens for interactive users
 
 .. note::
-   Login credentials are cached, so you typically only need to login once per system.
+   Credentials are cached. Reauthentication is not required for as long as
+   credentials continue to satisfy the combined scope requirements.
 
 Logout
 ^^^^^^
