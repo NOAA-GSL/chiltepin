@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Agent decorators for Chiltepin workflows.
+"""Internal implementation of agent decorators for Chiltepin workflows.
 
 This module provides decorators for creating Academy agents that work with
 Chiltepin workflows and Parsl executors.

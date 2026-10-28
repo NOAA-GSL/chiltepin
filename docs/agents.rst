@@ -17,13 +17,23 @@ be launched on remote resources and interacted with asynchronously through an ag
    `Academy documentation <https://docs.academy-agents.org/latest/get-started/>`_.
 
 .. note::
-   **Module Organization:**
+   **Package Organization:**
    
-   Chiltepin's agent functionality is split across three focused modules:
+   Chiltepin's agent functionality is split across a package and two modules:
    
    - **chiltepin.agents**: Agent decorators (``@chiltepin_agent``, ``@agent_action``, ``@agent_loop``)
    - **chiltepin.manager**: Manager class for launching agents with workflow configuration
    - **chiltepin.agent_runtime**: AgentRuntime class for simplified agent runtime setup
+
+   Import decorators from the public ``chiltepin.agents`` package:
+
+   .. code-block:: python
+
+      from chiltepin.agents import agent_action, agent_loop, chiltepin_agent
+
+   The package re-exports these decorators from its private ``_decorators``
+   implementation module. Existing imports are unchanged; applications should
+   not import the private module directly.
    
    You can import these from the main package:
    
