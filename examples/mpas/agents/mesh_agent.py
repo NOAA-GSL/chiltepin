@@ -414,8 +414,19 @@ class MeshAgent:
         import instructor
         import litellm
 
-        client = instructor.from_litellm(litellm.completion)
+        def completion(**kwargs):
+            # Bedrock Sonnet models can reject Instructor's forced tool choice.
+            if model.startswith("bedrock/"):
+                kwargs["tool_choice"] = "auto"
+            return litellm.completion(**kwargs)
+
+        client = instructor.from_litellm(completion)
         system = system_prompt or self._mesh_osm_system_prompt()
+        if model.startswith("bedrock/"):
+            system += (
+                "\nReturn your answer by calling the MeshPromptResponse tool. "
+                "Do not return the mesh configuration as plain text."
+            )
 
         # Retry on transient content filter false positives
         max_attempts = 4

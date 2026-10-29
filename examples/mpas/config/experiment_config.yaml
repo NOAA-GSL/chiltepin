@@ -144,23 +144,24 @@ model:
   llm:
     # bedrock reference: https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html
     # model: bedrock/anthropic.claude-sonnet-4-20250514-v1:0
-    model: anthropic/claude-sonnet-5
+    model: bedrock/us.anthropic.claude-sonnet-5-5
+    # model: anthropic/claude-sonnet-5
     # model: ollama_chat/qwen2.5:14b
-    api_key_env: ANTHROPIC_API_KEY
+    # api_key_env: ANTHROPIC_API_KEY
     # api_base: http://localhost:11434
 
   # mesh: either specify a prompt or the full mesh creation config
   mesh:
-    name: CONUS_15km
+    name: Tornado_Alley
     # prompt: "Generate a 15km MPAS mesh using create_region that covers Japan."
     # prompt: "Generate a 15km MPAS mesh that covers Japan."
     # prompt: "Generate a 15km MPAS mesh thgit sat covers Chile."
-    # prompt: "Generate a 15km MPAS mesh that covers Tornado Alley."
+    prompt: "Generate a 15km MPAS mesh that covers Tornado Alley."
     # prompt: "Generate a 15km MPAS mesh that covers CONUS."
     # prompt: "Generate a 15km MPAS mesh that covers Europe, excluding Russia and Iceland."
     # prompt: "Generate a 15km MPAS HRRR mesh."
     # prompt: "Generate a 15km MPAS mesh covering the full track of Hurricane Katrina."
-    prompt: "Generate a 15km MPAS mesh using project hexes that covers CONUS."
+    # prompt: "Generate a 15km MPAS mesh using project hexes that covers CONUS."
     # prompt: "Generate a 3km MPAS mesh that covers Boulder, Colorado."
     # prompt: "Generate a 15km MPAS mesh that covers Tuscany."
     # prompt: "Generate a 15km elliptical MPAS mesh that covers Italy."

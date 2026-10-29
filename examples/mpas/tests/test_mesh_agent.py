@@ -13,6 +13,64 @@ from agents.mesh_agent import MeshPromptResponse
 class TestMeshAgent:
     """Test suite for MeshAgent."""
 
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "bedrock/us.anthropic.claude-sonnet-5-5",
+            "openai/gpt-4o",
+        ],
+    )
+    def test_llm_chat_tool_choice(self, mock_install_dir, monkeypatch, model):
+        import litellm
+
+        calls = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return litellm.ModelResponse(
+                choices=[
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "mesh-response",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "MeshPromptResponse",
+                                        "arguments": '{"resolution":"15km","name":"CONUS_15km"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            )
+
+        monkeypatch.setattr(litellm, "completion", fake_completion)
+        behavior = MeshAgent(work_dir=str(mock_install_dir))._behavior
+        response = behavior._llm_chat(
+            "Generate a CONUS mesh", model, system_prompt="Extract mesh parameters."
+        )
+
+        assert isinstance(response, MeshPromptResponse)
+        assert response.resolution == "15km"
+        assert response.name == "CONUS_15km"
+        assert len(calls) == 1
+        assert calls[0]["tools"][0]["function"]["name"] == "MeshPromptResponse"
+        if model.startswith("bedrock/"):
+            assert calls[0]["tool_choice"] == "auto"
+            assert "calling the MeshPromptResponse tool" in calls[0]["messages"][0]["content"]
+        else:
+            assert calls[0]["tool_choice"] == {
+                "type": "function",
+                "function": {"name": "MeshPromptResponse"},
+            }
+            assert calls[0]["messages"][0]["content"] == "Extract mesh parameters."
+
     def test_init(self, mock_install_dir):
         """Test MeshAgent initialization with defaults."""
         agent = MeshAgent(work_dir=str(mock_install_dir))

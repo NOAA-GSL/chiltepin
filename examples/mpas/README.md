@@ -220,6 +220,14 @@ See [docs/platforms.md](docs/platforms.md) for detailed platform instructions.
 
 ## Troubleshooting
 
+### Bedrock structured responses
+
+Some Bedrock Claude models reject forced tool use. The mesh prompt parser uses
+`tool_choice="auto"` for `bedrock/` models and explicitly requests the
+`MeshPromptResponse` tool in its system prompt. Instructor still validates the
+tool response and retries invalid responses. Other providers retain Instructor's
+default tool choice; global LiteLLM parameter dropping is not enabled.
+
 ### Environment Issues
 
 If conda environment creation fails:
