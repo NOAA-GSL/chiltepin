@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Conda environment
+miniforge3/
+mpas-example/
+*.tar.bz2
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.log
+
+# User configuration
+config/user_config.yaml
+
+# Experiment directories
+experiments/
+runs/
+scratch/
+work/
+
+# Downloaded source code
+downloads/
+src/
+metis-*/
+wps-*/
+mpas-limited-area-*/
+mpas-model-*/
+MPAS-Model/
+WPS/
+MPAS-Limited-Area/
+metis/
+
+# Build artifacts
+*.o
+*.a
+*.mod
+*.exe
+
+# Run directories and output
+runinfo/
+*.err
+*.out
+slurm-*.out
+parsl.log
+
+# Data files
+*.nc
+*.grb
+*.grb2
+*.grib
+*.grib2
+mesh_files/
+static_files/
+grib_data/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

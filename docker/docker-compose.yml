@@ -10,7 +10,6 @@ x-node-common: &node-common
   volumes:
     - home-vol:/home/admin
     - opt-vol:/opt:ro
-    - ..:/home/admin/chiltepin
   depends_on:
     slurmmaster:
       condition: service_started
@@ -33,7 +32,6 @@ services:
     volumes:
       - home-vol:/home/admin
       - opt-vol:/opt
-      - ..:/home/admin/chiltepin
     ports:
       - 8888:8888
     healthcheck:
@@ -52,7 +50,6 @@ services:
     volumes:
       - home-vol:/home/admin
       - opt-vol:/opt:ro
-      - ..:/home/admin/chiltepin
     environment:
       - SLURM_CPUS_ON_NODE=8
     ports:

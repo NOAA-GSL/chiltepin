@@ -53,6 +53,33 @@ pip install chiltepin
 For detailed installation instructions including conda, Docker, and platform-specific guidance,
 see the [Installation Guide](https://chiltepin.readthedocs.io/en/latest/installation.html).
 
+## Examples
+
+Chiltepin includes real-world example applications that demonstrate agent-based workflows for numerical weather prediction (NWP) models:
+
+### MPAS Multi-Agent Forecast
+
+A complete MPAS (Model for Prediction Across Scales) forecast application using a **component-based multi-agent architecture**. Each independent software component (Metis, WPS, MPAS-Limited-Area, MPAS) has its own agent managing its lifecycle.
+
+**Key Features:**
+- Multi-agent design showcasing loose coupling and component reusability
+- Automated setup with conda environment for uwtools integration
+- Complete workflow from mesh generation through forecast
+- Platform-specific configurations for Hera, Hercules, and Jet
+- Comprehensive documentation and tests
+
+**Get Started:**
+```bash
+cd examples/mpas
+./setup.sh
+conda activate mpas-example
+cp config/user_config.yaml.template config/user_config.yaml
+# Edit config/user_config.yaml with your settings
+python run_mpas_forecast.py config/user_config.yaml
+```
+
+See [examples/mpas/README.md](examples/mpas/README.md) for complete documentation.
+
 ## Contributing
 
 Contributions are welcome! For development installation and running tests, clone the repository

@@ -1,0 +1,158 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Default configuration for MPAS multi-agent forecast workflow
+#
+# This file provides sensible defaults for all settings.
+# Override these in:
+# - config/platforms/{platform}.yaml for platform-specific settings
+# - config/experiment_config.yaml for your experiment customizations
+
+executors:
+  # Agent executor - where agents run
+  agent-executor:
+    provider: "localhost"
+    cores_per_node: 8
+    max_workers_per_node: 4
+
+  metis-executors: agent-executor
+# # Workflow executor configurations
+# workflow:
+#   # Manager executor - where agents run
+#   manager-executor:
+#     provider: "localhost"
+#     cores_per_node: 1
+#     max_workers_per_node: 1
+
+#   # Build executor - for compiling software
+#   build-executor:
+#     provider: "slurm"
+#     partition: "batch"
+#     nodes_per_block: 1
+#     cores_per_node: 4
+#     max_blocks: 1
+#     walltime: "01:00:00"
+
+#   # Compute executor - for running MPAS
+#   compute-executor:
+#     provider: "slurm"
+#     partition: "batch"
+#     nodes_per_block: 2
+#     cores_per_node: 40
+#     max_blocks: 1
+#     walltime: "02:00:00"
+
+# # Agent workflow configuration (passed to agents)
+# agent_workflow:
+#   # Executors available to agents
+#   build-executor:
+#     provider: "slurm"
+#     partition: "batch"
+#     nodes_per_block: 1
+#     cores_per_node: 4
+#     max_blocks: 2
+#     walltime: "01:00:00"
+
+#   compute-executor:
+#     provider: "slurm"
+#     partition: "batch"
+#     nodes_per_block: 2
+#     cores_per_node: 40
+#     max_blocks: 1
+#     walltime: "02:00:00"
+
+# # Executor lists for manager and agents
+# manager_executors:
+#   - manager-executor
+
+# build_executors:
+#   - build-executor
+
+# compute_executors:
+#   - compute-executor
+
+# # Agent configuration (list of agent entries, each with name + type)
+# agents:
+#   - name: mesh-local       # unique identifier for this agent instance
+#     type: mesh              # agent class: mesh, wps, mpas
+#     experiment_dir: /path/to/experiment
+#     executor: agent-executor
+#     workflow_config:
+#       service: { ... }
+#       compute: { ... }
+
+# # Model configuration
+# model:
+#   # Mesh configuration
+#   mesh:
+#     type: "global"         # "global" or "regional"
+#     resolution: "120km"    # cell spacing
+#     # Regional-only parameters:
+#     # extent_x_km: 5403.0
+#     # extent_y_km: 3183.0
+#     # center_lat: 38.5
+#     # center_lon: -97.5
+#     # rotation_degrees: 0.0
+#
+#   # MPI ranks for different steps
+#   init_ranks: 24
+#   forecast_ranks: 48
+
+#   # Forecast settings
+#   forecast_length_hours: 24
+#   output_interval_hours: 1
+
+#   # Physics options
+#   physics:
+#     microphysics: "wsm6"
+#     radiation: "rrtmg"
+#     pbl: "ysu"
+#     cumulus: "kain_fritsch"
+
+# # Paths configuration (override in user_config.yaml)
+# paths:
+#   # Base experiment directory
+#   experiment_dir: "./experiment"
+
+#   # Installation directory for built software
+#   install_dir: "${experiment_dir}/installs"
+
+#   # Mesh directory
+#   mesh_dir: "${experiment_dir}/mesh"
+
+#   # GRIB data directory
+#   grib_data_dir: "${experiment_dir}/grib_data"
+
+#   # Ungrib output directory
+#   ungrib_dir: "${experiment_dir}/ungrib_output"
+
+#   # Initialization directory
+#   init_dir: "${experiment_dir}/initialization"
+
+#   # Forecast directory
+#   forecast_dir: "${experiment_dir}/forecast"
+
+#   # Parsl run directory
+#   run_dir: "${experiment_dir}/runinfo"
+
+# # Data sources
+# data_sources:
+#   # Initial conditions source
+#   ics_source: "GFS"
+#   ics_url_template: "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.{yyyymmdd}/{hh}/atmos/gfs.t{hh}z.pgrb2.0p25.f000"
+
+#   # Lateral boundary conditions source
+#   lbcs_source: "GFS"
+#   lbcs_url_template: "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gfs.{yyyymmdd}/{hh}/atmos/gfs.t{hh}z.pgrb2.0p25.f{hhh}"
+#   lbcs_interval_hours: 3
+
+# # Software versions
+# versions:
+#   metis: "5.2.1"
+#   limited_area: "master"
+#   wps: "4.5"
+#   mpas: "v8.2.0"
+
+# # Logging configuration
+# logging:
+#   level: "INFO"
+#   log_dir: "${experiment_dir}/logs"

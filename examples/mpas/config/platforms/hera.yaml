@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Platform-specific configuration for NOAA RDHPCS Hera
+#
+# This file is automatically loaded when platform: hera is set in user_config.yaml
+
+# Workflow executor configurations for Hera
+workflow:
+  # Build executor
+  build-executor:
+    provider: "slurm"
+    partition: "service"  # Hera service partition for builds
+    nodes_per_block: 1
+    cores_per_node: 4
+    max_blocks: 2
+    walltime: "01:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.7.4"
+      - "module load hdf5/1.10.6"
+      - "module load pnetcdf/1.12.1"
+      - "module load pio/2.5.7"
+
+  # Compute executor
+  compute-executor:
+    provider: "slurm"
+    partition: "hera"  # Hera compute partition
+    nodes_per_block: 2
+    cores_per_node: 40
+    max_blocks: 1
+    walltime: "02:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.7.4"
+      - "module load hdf5/1.10.6"
+      - "module load pnetcdf/1.12.1"
+      - "module load pio/2.5.7"
+
+# Agent workflow configuration for Hera
+agent_workflow:
+  build-executor:
+    provider: "slurm"
+    partition: "service"
+    nodes_per_block: 1
+    cores_per_node: 4
+    max_blocks: 2
+    walltime: "01:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.7.4"
+
+  compute-executor:
+    provider: "slurm"
+    partition: "hera"
+    nodes_per_block: 2
+    cores_per_node: 40
+    max_blocks: 1
+    walltime: "02:00:00"
+    environment:
+      - "module purge"
+      - "module load intel/2022.1.2"
+      - "module load impi/2022.1.2"
+      - "module load netcdf/4.7.4"
+      - "module load hdf5/1.10.6"
+
+# Hera-specific paths
+paths:
+  # Default experiment directory on Hera
+  experiment_dir: /scratch1/${USER}/mpas_experiments/run_$(date +%Y%m%d_%H%M%S)
+
+# Notes for Hera users:
+# - Login nodes: hera-login-[1-4].boulder.rdhpcs.noaa.gov
+# - Scratch space: /scratch1/{user} and /scratch2/{user}
+# - Home directory quota: 50 GB
+# - Scratch quota: 5 TB per user
+# - Compute nodes: 40 cores per node (2x Intel Xeon Gold 6148)

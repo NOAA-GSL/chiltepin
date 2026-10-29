@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Platform-specific configuration for Docker container
+#
+# This file is automatically loaded when platform: docker is set in user_config.yaml
+
+# Workflow executor configurations for Docker
+workflow:
+  # Build executor - localhost for container builds
+  build-executor:
+    provider: "localhost"
+    cores_per_node: 4
+    max_workers_per_node: 4
+    # No modules needed - container has dependencies built-in
+    environment: []
+
+  # Compute executor - localhost for container compute
+  compute-executor:
+    provider: "localhost"
+    cores_per_node: 4
+    max_workers_per_node: 2
+    environment: []
+
+# Agent workflow configuration for Docker
+agent_workflow:
+  build-executor:
+    provider: "localhost"
+    cores_per_node: 4
+    max_workers_per_node: 4
+    environment: []
+
+  compute-executor:
+    provider: "localhost"
+    cores_per_node: 4
+    max_workers_per_node: 2
+    environment: []
+
+# Docker-specific paths
+paths:
+  # Default experiment directory in container
+  experiment_dir: /home/admin/mpas_experiments/run_$(date +%Y%m%d_%H%M%S)
+
+# Notes for Docker users:
+# - This configuration uses localhost provider for all executors
+# - No Slurm or module system required
+# - Suitable for testing and development
+# - For production runs, use HPC platform configurations
+# - Container should have all dependencies pre-installed
+# - Adjust cores_per_node based on container resources
+# - For small tests, reduce MPI ranks in model configuration:
+#     model:
+#       init_ranks: 2
+#       forecast_ranks: 4

@@ -2,6 +2,9 @@
 *#
 *~
 
+# Ignore vscode settings
+.vscode/
+
 # Ignore python chiltepin venv
 .chiltepin
 
