@@ -63,7 +63,10 @@ class TestMeshAgent:
         assert calls[0]["tools"][0]["function"]["name"] == "MeshPromptResponse"
         if model.startswith("bedrock/"):
             assert calls[0]["tool_choice"] == "auto"
-            assert "calling the MeshPromptResponse tool" in calls[0]["messages"][0]["content"]
+            assert (
+                "calling the MeshPromptResponse tool"
+                in calls[0]["messages"][0]["content"]
+            )
         else:
             assert calls[0]["tool_choice"] == {
                 "type": "function",

@@ -445,8 +445,11 @@ class MeshAgent:
                     max_retries=3,
                 )
             except Exception as e:
-                if "content filtering policy" in str(e).lower() and attempt < max_attempts - 1:
-                    time.sleep(2 ** attempt)
+                if (
+                    "content filtering policy" in str(e).lower()
+                    and attempt < max_attempts - 1
+                ):
+                    time.sleep(2**attempt)
                     continue
                 raise RuntimeError(f"LLM request failed: {e}") from e
 
