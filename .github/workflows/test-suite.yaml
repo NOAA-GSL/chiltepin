@@ -13,6 +13,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  generate-compose-tests:
+    name: generate-compose.py unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      -
+        name: Checkout repository
+        uses: actions/checkout@v4
+      -
+        name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      -
+        name: Install test dependencies
+        run: python -m pip install pyyaml
+      -
+        name: Verify Docker Compose is available
+        run: docker compose version
+      -
+        name: Run generator tests
+        run: python -m unittest discover -s docker -p 'test_generate_compose.py' -v
+
   test-chiltepin-amd64:
     runs-on: ubuntu2204-16c-64g-600ssd
     timeout-minutes: 360
