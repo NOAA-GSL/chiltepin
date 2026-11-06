@@ -236,7 +236,7 @@ async def test_task_routing_and_error_chaining(monkeypatch, tmp_path, behavior):
     named = await behavior.generate_mesh(
         {"resolution": "480km", "name": "forecast"}, str(output)
     )
-    assert Path(named["mesh"]).resolve() == Path(result["static"])
+    assert Path(named["static"]).resolve() == Path(result["static"])
     assert Path(named["graph"]).resolve() == Path(result["graph"])
     task.assert_called_with("480km", str(output), executor=["service"])
 
@@ -272,18 +272,77 @@ async def test_generate_mesh_links(tmp_path, mesh_agent, config, resolution, nam
         path.write_bytes(b"mesh data")
         paths[key] = str(path)
     expected = {
-        "mesh": str(output / name / f"{name}.static.nc"),
+        "static": str(output / name / f"{name}.static.nc"),
         "graph": str(output / name / f"{name}.graph.info"),
     }
-    for _ in range(2):
-        result = await mesh_agent.generate_mesh(config, str(output))
-        assert result == expected
-        assert Path(result["mesh"]).is_symlink()
-        assert Path(result["mesh"]).resolve() == Path(paths["static"])
-        assert Path(result["graph"]).is_symlink()
-        assert Path(result["graph"]).resolve() == Path(paths["graph"])
-        assert Path(result["mesh"]).read_bytes() == b"mesh data"
-        assert Path(result["graph"]).read_bytes() == b"mesh data"
+    result = await mesh_agent.generate_mesh(config, str(output))
+    assert result == expected
+    with pytest.raises(FileExistsError):
+        await mesh_agent.generate_mesh(config, str(output))
+    assert Path(result["static"]).is_symlink()
+    assert Path(result["static"]).resolve() == Path(paths["static"])
+    assert Path(result["graph"]).is_symlink()
+    assert Path(result["graph"]).resolve() == Path(paths["graph"])
+    assert Path(result["static"]).read_bytes() == b"mesh data"
+    assert Path(result["graph"]).read_bytes() == b"mesh data"
+
+
+@pytest.mark.parametrize("kind", ["directory", "file", "symlink", "dangling-symlink"])
+@pytest.mark.asyncio(loop_scope="module")
+async def test_existing_mesh_name_is_not_modified(tmp_path, mesh_agent, kind):
+    output = tmp_path / "meshes"
+    output.mkdir()
+    target = tmp_path / "external"
+    target.mkdir()
+    original = target / "forecast.static.nc"
+    original.write_bytes(b"keep original")
+    named = output / "forecast"
+    if kind == "directory":
+        named.mkdir()
+        (named / "marker").write_bytes(b"keep marker")
+    elif kind == "file":
+        named.write_bytes(b"keep file")
+    else:
+        named.symlink_to(target if kind == "symlink" else tmp_path / "missing")
+    before = named.lstat()
+    with pytest.raises(FileExistsError):
+        await mesh_agent.generate_mesh({"name": "forecast"}, str(output))
+    assert named.lstat() == before
+    assert original.read_bytes() == b"keep original"
+    assert list(output.iterdir()) == [named]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_failed_link_creation_cleans_named_directory(
+    monkeypatch, tmp_path, behavior
+):
+    output = tmp_path / "meshes"
+    output.mkdir()
+    for name, content in mesh_files().items():
+        (output / name).write_bytes(content)
+    future = Future()
+    future.set_result(None)
+    monkeypatch.setattr(behavior, "_download_global_mesh", Mock(return_value=future))
+    symlink_to = Path.symlink_to
+
+    def fail_graph_link(path, target):
+        if path.name == "forecast.graph.info":
+            raise PermissionError("cannot create graph link")
+        symlink_to(path, target)
+
+    monkeypatch.setattr(Path, "symlink_to", fail_graph_link)
+    with pytest.raises(PermissionError, match="cannot create graph link"):
+        await behavior.generate_mesh(
+            {"resolution": "480km", "name": "forecast"}, str(output)
+        )
+    assert not (output / "forecast").exists()
+    for name, content in mesh_files().items():
+        assert (output / name).read_bytes() == content
+    monkeypatch.setattr(Path, "symlink_to", symlink_to)
+    result = await behavior.generate_mesh(
+        {"resolution": "480km", "name": "forecast"}, str(output)
+    )
+    assert Path(result["graph"]).is_symlink()
 
 
 @pytest.mark.parametrize(

@@ -199,8 +199,13 @@ class _MeshBehavior:
         Returns
         -------
         dict
-            - mesh: path to final mesh file (in mesh_name subdirectory)
+            - static: path to static mesh file (in mesh_name subdirectory)
             - graph: path to graph.info file (in mesh_name subdirectory)
+
+        Raises
+        ------
+        FileExistsError
+            If the named mesh directory already exists.
         """
         resolution = mesh_config.get("resolution", "120km")
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
@@ -209,7 +214,7 @@ class _MeshBehavior:
             or mesh_name in ("", ".", "..")
             or Path(mesh_name).name != mesh_name
         ):
-            raise ValueError("Mesh name must be a nonempty directory name, not a path")
+            raise ValueError("Mesh name must be a valid file name and not a path")
 
         result: Dict[str, Any] = {}
 
@@ -220,21 +225,27 @@ class _MeshBehavior:
                 f"Available: {list(self.resolution_cells.keys())}"
             )
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
-        paths = await self.download_global_mesh(resolution, str(request_mesh_data_dir))
-
-        # Symlink into mesh_name subdir for consistent naming
         mesh_dir = request_mesh_data_dir / mesh_name
-        mesh_dir.mkdir(parents=True, exist_ok=True)
-        static_link = mesh_dir / f"{mesh_name}.static.nc"
-        graph_link = mesh_dir / f"{mesh_name}.graph.info"
-        static_link.unlink(missing_ok=True)
-        static_link.symlink_to(Path(paths["static"]).resolve())
-        graph_link.unlink(missing_ok=True)
-        graph_link.symlink_to(Path(paths["graph"]).resolve())
-        result["mesh"] = str(static_link)
-        result["graph"] = str(graph_link)
-
-        return result
+        mesh_dir.mkdir()
+        created_links = []
+        complete = False
+        try:
+            paths = await self.download_global_mesh(
+                resolution, str(request_mesh_data_dir)
+            )
+            for key, suffix in (("static", "static.nc"), ("graph", "graph.info")):
+                link = mesh_dir / f"{mesh_name}.{suffix}"
+                link.symlink_to(Path(paths[key]).resolve())
+                created_links.append(link)
+                result[key] = str(link)
+            complete = True
+            return result
+        finally:
+            # Remove only links created by this call so a failed request can be retried.
+            if not complete:
+                for link in created_links:
+                    link.unlink()
+                mesh_dir.rmdir()
 
 
 @chiltepin_agent()

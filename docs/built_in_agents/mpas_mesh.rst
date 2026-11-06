@@ -69,11 +69,15 @@ Actions
 
 ``generate_mesh(mesh_config, mesh_data_dir)``
    Generates the requested mesh and creates named symlinks in a subdirectory of
-   ``mesh_data_dir``. Returns ``"mesh"`` and ``"graph"`` paths to those links.
+   ``mesh_data_dir``. Returns ``"static"`` and ``"graph"`` paths to those links.
 
    * ``mesh_config``: Dictionary with optional ``resolution`` (default
      ``"120km"``) and mesh ``name`` (default ``"mesh_<resolution>"``).
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
+
+   A mesh with the ``mesh_config``'s name must not already exist in the specified
+   ``mesh_data_dir``. An existing mesh raises ``FileExistsError`` without
+   overwriting it. Choose a new name for another mesh.
 
 Both actions return absolute paths and reuse mesh files already downloaded to
 ``mesh_data_dir``.
@@ -122,7 +126,7 @@ This example launches the agent and its tasks locally:
                named = await mesh.generate_mesh(
                    {"resolution": "480km", "name": "forecast"}, mesh_data_dir
                )
-               print(named["mesh"])
+               print(named["static"])
                print(named["graph"])
 
    asyncio.run(main())
