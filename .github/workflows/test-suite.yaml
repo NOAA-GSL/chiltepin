@@ -44,6 +44,15 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.10', '3.11', '3.12', '3.13']
+        include:
+          - python-version: '3.10'
+            minimum-python-version: '3.10.12'
+          - python-version: '3.11'
+            minimum-python-version: '3.11.4'
+          - python-version: '3.12'
+            minimum-python-version: '3.12.0'
+          - python-version: '3.13'
+            minimum-python-version: '3.13.0'
     permissions:
       packages: write
       contents: read
@@ -101,6 +110,12 @@ jobs:
             docker exec $node bash -c "sudo apt-get update && sudo apt-get install -y software-properties-common"
             docker exec $node bash -c "sudo add-apt-repository -y ppa:deadsnakes/ppa"
             docker exec $node bash -c "sudo apt-get update && sudo apt-get install -y python${{ matrix.python-version }} python${{ matrix.python-version }}-venv python${{ matrix.python-version }}-dev"
+          done
+      -
+        name: Verify minimum Python version on all nodes
+        run: |
+          for node in chiltepin-frontend chiltepin-node1 chiltepin-node2 chiltepin-node3 chiltepin-node4 chiltepin-node5; do
+            docker exec "$node" python${{ matrix.python-version }} -c "import sys; minimum = tuple(map(int, '${{ matrix.minimum-python-version }}'.split('.'))); print(sys.version); assert sys.version_info[:3] >= minimum, 'Python version is below the supported minimum'"
           done
       -
         name: Copy test files to work directory

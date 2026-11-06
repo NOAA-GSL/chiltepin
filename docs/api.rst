@@ -40,6 +40,14 @@ Agents Package
    :imported-members:
    :show-inheritance:
 
+Built-in Agents
+---------------
+
+.. toctree::
+   :maxdepth: 2
+
+   api/agents/index
+
 Manager Module
 --------------
 

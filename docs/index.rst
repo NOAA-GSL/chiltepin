@@ -80,12 +80,20 @@ Getting Started
    installation
    quickstart
    tasks
-   agents
+   Creating Agents <agents>
    data
    configuration
    endpoints
    testing
    container
+
+Built-in Agents
+---------------
+
+.. toctree::
+   :maxdepth: 2
+
+   built_in_agents/index
 
 API Reference
 -------------

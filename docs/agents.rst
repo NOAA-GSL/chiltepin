@@ -5,6 +5,9 @@ Chiltepin integrates with `Academy Agents <https://docs.academy-agents.org/lates
 distributed agent-based workflows. Agents enable long-running, stateful computations that can
 be launched on remote resources and interacted with asynchronously through an agent_action-based API.
 
+This guide covers creating and deploying agents. For ready-to-use components
+included with Chiltepin, see :doc:`built_in_agents/index`.
+
 .. note::
    Chiltepin's agent system builds on Academy Agents to provide:
 
