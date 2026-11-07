@@ -17,7 +17,7 @@ Chiltepin's and Parsl's reliance on fork-based multiprocessing.
 Prerequisites
 -------------
 
-* Python 3.10 or higher
+* Python 3.10.12+, 3.11.4+, or 3.12+
 * Linux (required for endpoint management features)
 * macOS (supported for task submission and data transfer only)
 
