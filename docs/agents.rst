@@ -645,6 +645,13 @@ an Academy Manager with ParslPoolExecutors:
        # Use manager - Manager with config/include/run_dir support
        pass
 
+On exit, the manager requests its agents to shut down and waits for them and
+the current Parsl tasks to finish. Parsl does not support canceling pending
+tasks, so manager shutdown waits for them rather than canceling them. The
+surrounding ``Workflow`` remains responsible for cleaning up Parsl resources.
+Executors exposed through ``AgentRuntime.executors`` use the same shutdown
+behavior, including when called directly.
+
 Manager
 ----------------
 
