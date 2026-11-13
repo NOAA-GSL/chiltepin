@@ -931,6 +931,22 @@ class TestManager:
 class TestAgentRuntime:
     """Test the AgentRuntime class."""
 
+    @pytest.mark.parametrize("wait", [False, True])
+    @pytest.mark.parametrize("cancel_futures", [False, True])
+    def test_shutdown_passes_wait_without_requesting_cancellation(
+        self, wait, cancel_futures
+    ):
+        from unittest.mock import patch, sentinel
+
+        from parsl.concurrent import ParslPoolExecutor
+
+        from chiltepin.agent_runtime import _ManagerParslExecutor
+
+        executor = _ManagerParslExecutor(dfk=sentinel.dfk)
+        with patch.object(ParslPoolExecutor, "shutdown") as shutdown:
+            executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        shutdown.assert_called_once_with(wait=wait, cancel_futures=False)
+
     def test_agent_runtime_uses_dfk_loaded_include(self, tmp_path):
         """AgentRuntime creates executors from the started workflow's loaded executors."""
         from chiltepin import AgentRuntime, Workflow
@@ -1097,6 +1113,7 @@ class TestAgentRuntime:
     def test_agent_runtime_creates_executors(self, tmp_path):
         """Test that AgentRuntime creates ParslPoolExecutors correctly."""
         from chiltepin import AgentRuntime, Workflow
+        from chiltepin.agent_runtime import _ManagerParslExecutor
 
         config = {
             "test-executor-1": {
@@ -1135,11 +1152,8 @@ class TestAgentRuntime:
             assert "test-executor-1" in agent_runtime.executors
             assert "test-executor-2" in agent_runtime.executors
 
-            # Verify they're ParslPoolExecutors
-            from parsl.concurrent import ParslPoolExecutor
-
             for executor in agent_runtime.executors.values():
-                assert isinstance(executor, ParslPoolExecutor)
+                assert isinstance(executor, _ManagerParslExecutor)
 
         finally:
             workflow.cleanup()

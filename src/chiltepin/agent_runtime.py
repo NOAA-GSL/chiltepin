@@ -21,6 +21,15 @@ if TYPE_CHECKING:
     from chiltepin.workflow import Workflow
 
 
+class _ManagerParslExecutor(ParslPoolExecutor):
+    """Adapt Academy's shutdown request to Parsl's non-cancelable tasks."""
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        # Academy requests cancellation after waiting for its agents, but Parsl
+        # cannot cancel tasks. Preserve its normal wait and shutdown behavior.
+        super().shutdown(wait=wait, cancel_futures=False)
+
+
 class AgentRuntime:
     """Simplified agent runtime infrastructure for Chiltepin workflows.
 
@@ -99,7 +108,7 @@ class AgentRuntime:
             raise ValueError("No executor names could be inferred from workflow.")
 
         self._executors = {
-            name: ParslPoolExecutor(dfk=self.workflow.dfk, executors=[name])
+            name: _ManagerParslExecutor(dfk=self.workflow.dfk, executors=[name])
             for name in names
         }
 
