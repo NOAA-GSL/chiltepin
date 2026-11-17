@@ -101,7 +101,7 @@ async def test_real_metis_install_and_partition(config_file, directory):
     download_log = work / "logs" / "metis_download.stdout"
 
     async with launch_agent(config_file, directory, "first") as agent:
-        # Concurrent requests share one Metis installation and use separate logs
+        # Concurrent requests both get a working installation and use separate logs
         first, second = await asyncio.gather(
             agent.generate_mesh(
                 {"resolution": "480km", "name": "p4", "forecast_ranks": 4},
@@ -121,7 +121,12 @@ async def test_real_metis_install_and_partition(config_file, directory):
         assert_valid_partitions(second, {4, 8})
         assert gpmetis.is_file()
         assert (gpmetis.parent.parent / ".installed").is_file()
+        # The downloaded sources are removed once the build has finished
+        assert not (work / "metis" / "build" / METIS_VERSION).exists()
 
+        # The lock that makes these concurrent requests share one install is
+        # covered by test_concurrent_installs_run_once, because the logs of one
+        # install cannot be told apart from those of two.
         # An explicit install and a later request do not change the installation
         installed = (gpmetis.stat().st_mtime_ns, download_log.stat().st_mtime_ns)
         await agent.install_metis()

@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import parsl
 from parsl.app.errors import BashExitFailure
 
 from chiltepin.agents import agent_action, chiltepin_agent
@@ -23,6 +24,13 @@ _VERSION_RE = re.compile(r"[0-9][0-9a-zA-Z._-]*")
 
 # Names of the downloaded global mesh files, which a mesh name must not reuse
 _SHARED_MESH_FILE_RE = re.compile(r"x1\.[0-9]+\.(static\.nc|graph\.info)")
+
+
+# Most rank counts one partition_mesh call may request, since each one is a task
+_MAX_PARTITION_RANKS = 16
+
+# Keys a mesh request may contain
+_MESH_CONFIG_KEYS = frozenset({"resolution", "name", "init_ranks", "forecast_ranks"})
 
 
 class _MeshBehavior:
@@ -129,11 +137,17 @@ class _MeshBehavior:
         """Return the distinct rank counts above 1 requested by a mesh config.
 
         A single rank needs no partition. Values that are not positive integers
-        are rejected, as is a ``mesh_config`` that is not a dict.
+        are rejected, as are unknown keys and a ``mesh_config`` that is not a dict.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
                 f"mesh_config must be a dict, got {type(mesh_config).__name__}"
+            )
+        unknown = sorted(str(k) for k in mesh_config if k not in _MESH_CONFIG_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unknown mesh_config keys: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(sorted(_MESH_CONFIG_KEYS))}"
             )
         ranks: List[int] = []
         for key in ("init_ranks", "forecast_ranks"):
@@ -145,6 +159,57 @@ class _MeshBehavior:
             if value > 1 and value not in ranks:
                 ranks.append(value)
         return ranks
+
+    @staticmethod
+    def _configured_resources() -> Optional[set]:
+        """Return the names of the resources the workflow defines.
+
+        Returns None if no workflow is loaded in this process, in which case
+        the resources cannot be checked.
+        """
+        try:
+            return set(parsl.dfk().executors)
+        except Exception:
+            return None
+
+    def _require_resources(self, action: str, *needed: str) -> None:
+        """Fail before any work starts if a needed resource is not defined.
+
+        Checking first avoids starting a download, or leaving files behind, for
+        work that cannot finish.
+
+        Raises
+        ------
+        RuntimeError
+            If the workflow does not define one of the resources.
+        """
+        configured = self._configured_resources()
+        if configured is None:
+            return
+        missing = [name for name in needed if name not in configured]
+        if missing:
+            names = ", ".join(repr(name) for name in missing)
+            defined = sorted(name for name in configured if not name.startswith("_"))
+            raise RuntimeError(
+                f"{action} needs the resource {names}, which the agent's workflow "
+                f"configuration does not define. Defined resources: {defined}"
+            )
+
+    @property
+    def _gpmetis(self) -> Path:
+        """Path of the gpmetis executable."""
+        return self._metis_prefix / "bin" / "gpmetis"
+
+    def _metis_usable(self) -> bool:
+        """Whether a finished Metis install with a runnable gpmetis exists."""
+        gpmetis = self._gpmetis
+        return (
+            (self._metis_prefix / ".installed").is_file()
+            and gpmetis.is_file()
+            # Some filesystems report every file as executable to os.access
+            and bool(gpmetis.stat().st_mode & 0o111)
+            and os.access(gpmetis, os.X_OK)
+        )
 
     @property
     def _metis_prefix(self) -> Path:
@@ -200,6 +265,9 @@ class _MeshBehavior:
             cd "$build/METIS-{self.metis_version}"
             make config prefix="$prefix"
             make install
+            # The sources are no longer needed. A failed build keeps them to debug.
+            cd /
+            rm -rf "$build"
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
             echo "Completed build at $(date)"
@@ -298,13 +366,15 @@ class _MeshBehavior:
         Raises
         ------
         RuntimeError
-            If the download or build fails. The message names the log file.
+            If the ``service`` or ``compute`` resource is not defined, or the
+            download or build fails. The message names the log file.
         """
         async with self._install_lock:
-            if self.metis_built:
-                return
-            gpmetis = self._metis_prefix / "bin" / "gpmetis"
-            if not (self._metis_prefix / ".installed").is_file():
+            # Check the install on disk each time, so a removed or damaged
+            # install is rebuilt instead of failing every later partition
+            if not self._metis_usable():
+                self.metis_built = False
+                self._require_resources("Installing Metis", "service", "compute")
                 download_future = self._download_metis(
                     executor=["service"],
                     stdout=str(self.log_dir / "metis_download.stdout"),
@@ -330,7 +400,12 @@ class _MeshBehavior:
                         f"Metis build failed (exit {e.exitcode}), "
                         f"see {self.log_dir}/metis_build.stderr"
                     ) from e
-            self.gpmetis_path = gpmetis
+                if not self._metis_usable():
+                    raise RuntimeError(
+                        f"Metis build finished but {self._gpmetis} is not usable, "
+                        f"see {self.log_dir}/metis_build.stderr"
+                    )
+            self.gpmetis_path = self._gpmetis
             self.metis_built = True
 
     @agent_action
@@ -362,11 +437,12 @@ class _MeshBehavior:
         Raises
         ------
         ValueError
-            If ``mesh_path`` is empty, ``num_ranks`` is empty, or any rank
-            count is not an integer greater than 1.
+            If ``mesh_path`` is empty, ``num_ranks`` is empty, any rank
+            count is not an integer greater than 1, or more than 16 distinct
+            rank counts are requested.
         RuntimeError
-            If Metis cannot be installed or a partition fails. The message
-            names the log file.
+            If the ``compute`` resource is not defined, Metis cannot be
+            installed, or a partition fails. The message names the log file.
         """
         if not isinstance(mesh_path, str) or not mesh_path:
             raise ValueError("mesh_path must be a non-empty string")
@@ -382,7 +458,13 @@ class _MeshBehavior:
                     f"Rank counts must be integers greater than 1, got {rank!r}"
                 )
         ranks = sorted(set(requested))
+        if len(ranks) > _MAX_PARTITION_RANKS:
+            raise ValueError(
+                f"At most {_MAX_PARTITION_RANKS} distinct rank counts can be "
+                f"partitioned in one call, got {len(ranks)}"
+            )
 
+        self._require_resources("Partitioning", "compute")
         await self.install_metis()
 
         # Each call gets its own logs, since concurrent calls can use the same ranks
@@ -531,7 +613,9 @@ class _MeshBehavior:
             count is invalid. A name must not be that of a downloaded global mesh
             file such as ``x1.2562.graph.info``.
         RuntimeError
-            If a download, tool install, or partition fails.
+            If a resource the request needs (``service``, plus ``compute`` for
+            partitioning) is not defined, or a download, tool install, or
+            partition fails.
         """
         ranks = self._partition_ranks(mesh_config)
         resolution = mesh_config.get("resolution", "120km")
@@ -555,6 +639,10 @@ class _MeshBehavior:
                 f"Resolution {resolution!r} not supported. "
                 f"Available: {list(self.resolution_cells.keys())}"
             )
+        # Check resources before creating anything, so a request that cannot
+        # finish downloads nothing and leaves nothing behind
+        needed = ["service"] + (["compute"] if ranks else [])
+        self._require_resources("This mesh request", *needed)
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
         mesh_dir = request_mesh_data_dir / mesh_name
         mesh_dir.mkdir()

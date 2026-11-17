@@ -72,6 +72,23 @@ def run_download(behavior, directory, resolution="480km"):
     _MeshBehavior._download_global_mesh.func(behavior, resolution, str(directory))
 
 
+@pytest.fixture(autouse=True)
+def no_resource_check(monkeypatch):
+    """Skip the resource check, since the workflow loaded by a fixture is partial.
+
+    Tests of the check itself set the resources they want.
+    """
+    monkeypatch.setattr(
+        _MeshBehavior, "_configured_resources", staticmethod(lambda: None)
+    )
+
+
+def define_resources(monkeypatch, *names):
+    monkeypatch.setattr(
+        _MeshBehavior, "_configured_resources", staticmethod(lambda: set(names))
+    )
+
+
 @pytest.fixture
 def behavior(tmp_path):
     return _MeshBehavior(str(tmp_path / "work"))
@@ -403,16 +420,26 @@ def done_future(result=None, error=None):
 def mark_metis_installed(behavior):
     """Create what a finished Metis build leaves in work_dir."""
     prefix = behavior.work_dir / "metis" / behavior.metis_version
-    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin").mkdir(parents=True, exist_ok=True)
     (prefix / "bin" / "gpmetis").write_text("#!/bin/sh\n")
+    (prefix / "bin" / "gpmetis").chmod(0o755)
     (prefix / ".installed").touch()
     return prefix / "bin" / "gpmetis"
 
 
 def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
     """Replace the Metis download and build tasks with mocks."""
+    def run_build(**kwargs):
+        # A successful build leaves a finished install behind
+        for dependency in kwargs.get("inputs", []):
+            if dependency.done() and dependency.exception() is not None:
+                return done_future(error=dependency.exception())
+        if build is None:
+            mark_metis_installed(behavior)
+        return done_future(error=build)
+
     download_task = Mock(return_value=done_future(error=download))
-    build_task = Mock(return_value=done_future(error=build))
+    build_task = Mock(side_effect=run_build)
     monkeypatch.setattr(behavior, "_download_metis", download_task)
     monkeypatch.setattr(behavior, "_build_metis", build_task)
     return download_task, build_task
@@ -497,7 +524,13 @@ def test_metis_scripts(tmp_path):
     assert f"prefix='{behavior.work_dir}/metis/5.2.1'" in build
     # A failed earlier install is removed, and a finished one is marked
     assert build.index('rm -rf "$prefix"') < build.index("make install")
-    assert build.rstrip().splitlines()[-2].strip() == 'touch "$prefix/.installed"'
+    # The sources are removed after a successful build, before it is marked
+    assert build.rindex('rm -rf "$build"') < build.index('touch "$prefix/.installed"')
+    lines = [line.strip() for line in build.splitlines()]
+    marker = lines.index('touch "$prefix/.installed"')
+    assert marker > max(i for i, line in enumerate(lines) if line == "make install")
+    # Only echo commands may follow the marker
+    assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
 
 
 @pytest.mark.parametrize(
@@ -545,8 +578,20 @@ async def test_install_metis_ignores_an_unfinished_install(monkeypatch, behavior
 
 
 async def test_concurrent_installs_run_once(monkeypatch, behavior):
+    # Keep the download unfinished while the other requests arrive, so they
+    # would start installs of their own if nothing made them wait
+    pending, build_pending = Future(), Future()
     download, build = mock_metis_tasks(monkeypatch, behavior)
-    await asyncio.gather(*(behavior.install_metis() for _ in range(3)))
+    download.return_value = pending
+    build.side_effect = lambda **kwargs: build_pending
+    requests = [asyncio.create_task(behavior.install_metis()) for _ in range(3)]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert download.call_count == 1
+    pending.set_result(None)
+    mark_metis_installed(behavior)
+    build_pending.set_result(None)
+    await asyncio.gather(*requests)
     download.assert_called_once_with(
         executor=["service"],
         stdout=str(behavior.log_dir / "metis_download.stdout"),
@@ -585,7 +630,10 @@ async def test_failed_install_is_reported_and_retried(monkeypatch, behavior, sta
     assert not behavior.metis_built
 
     download.return_value = done_future()
-    build.return_value = done_future()
+    build.side_effect = lambda **kwargs: (
+        mark_metis_installed(behavior),
+        done_future(),
+    )[1]
     await behavior.install_metis()
     assert behavior.metis_built
 
@@ -635,6 +683,7 @@ async def test_partition_mesh_returns_absolute_paths(monkeypatch, tmp_path, beha
         ("/graph.info", [2, "x"], "greater than 1"),
         ("/graph.info", True, "greater than 1"),
         ("/graph.info", [], "must not be empty"),
+        ("/graph.info", list(range(2, 19)), "At most 16 distinct"),
         ("", 4, "non-empty string"),
         (None, 4, "non-empty string"),
     ],
@@ -800,6 +849,119 @@ async def test_existing_name_fails_before_install(monkeypatch, mesh_download, be
     with pytest.raises(FileExistsError):
         await behavior.generate_mesh(PARTITIONED, str(output))
     download.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "config", [{"forecast_rank": 4}, {"resolution": "480km", "ranks": 4}]
+)
+async def test_unknown_mesh_config_keys_are_rejected(
+    monkeypatch, tmp_path, behavior, config
+):
+    output = tmp_path / "meshes"
+    download, _ = mock_metis_tasks(monkeypatch, behavior)
+    with pytest.raises(ValueError, match="Unknown mesh_config keys"):
+        await behavior.generate_mesh(config, str(output))
+    assert not output.exists()
+    download.assert_not_called()
+
+
+@pytest.mark.parametrize("damage", ["binary", "not_executable"])
+async def test_install_metis_rebuilds_a_marked_install_without_a_binary(
+    monkeypatch, behavior, damage
+):
+    gpmetis = mark_metis_installed(behavior)
+    if damage == "binary":
+        gpmetis.unlink()
+    else:
+        gpmetis.chmod(0o644)
+    download, build = mock_metis_tasks(monkeypatch, behavior)
+    await behavior.install_metis()
+    download.assert_called_once()
+    build.assert_called_once()
+    assert behavior.metis_built
+
+
+async def test_install_metis_notices_an_install_removed_while_running(
+    monkeypatch, behavior
+):
+    gpmetis = mark_metis_installed(behavior)
+    await behavior.install_metis()
+    gpmetis.unlink()
+    download, build = mock_metis_tasks(monkeypatch, behavior)
+    await behavior.install_metis()
+    build.assert_called_once()
+
+
+async def test_build_that_leaves_no_binary_is_an_error(monkeypatch, behavior):
+    download = Mock(return_value=done_future())
+    build = Mock(return_value=done_future())
+    monkeypatch.setattr(behavior, "_download_metis", download)
+    monkeypatch.setattr(behavior, "_build_metis", build)
+    with pytest.raises(RuntimeError, match="not usable"):
+        await behavior.install_metis()
+    assert not behavior.metis_built
+
+
+@pytest.mark.parametrize(
+    ("defined", "missing"),
+    [(["compute"], "service"), (["service"], "compute"), ([], "service")],
+)
+async def test_install_metis_checks_resources_before_submitting(
+    monkeypatch, behavior, defined, missing
+):
+    define_resources(monkeypatch, "_parsl_internal", *defined)
+    download, build = mock_metis_tasks(monkeypatch, behavior)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.install_metis()
+    download.assert_not_called()
+    build.assert_not_called()
+
+
+async def test_install_metis_does_not_need_resources_once_installed(
+    monkeypatch, behavior
+):
+    mark_metis_installed(behavior)
+    define_resources(monkeypatch)
+    await behavior.install_metis()
+    assert behavior.metis_built
+
+
+async def test_partition_mesh_checks_for_compute_first(monkeypatch, behavior):
+    define_resources(monkeypatch, "service")
+    download, _ = mock_metis_tasks(monkeypatch, behavior)
+    with pytest.raises(RuntimeError, match="Partitioning needs.*'compute'"):
+        await behavior.partition_mesh("/tmp/x.graph.info", 4)
+    download.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("config", "defined", "missing"),
+    [
+        (PARTITIONED, ["service"], "compute"),
+        (PARTITIONED, ["compute"], "service"),
+        ({"resolution": "480km"}, ["compute"], "service"),
+    ],
+)
+async def test_generate_mesh_checks_resources_before_any_work(
+    monkeypatch, mesh_download, behavior, config, defined, missing
+):
+    output, download = mesh_download
+    define_resources(monkeypatch, *defined)
+    metis_download, _ = mock_metis_tasks(monkeypatch, behavior)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.generate_mesh(config, str(output))
+    download.assert_not_called()
+    metis_download.assert_not_called()
+    assert not (output / config.get("name", "mesh_480km")).exists()
+
+
+async def test_generate_mesh_without_partitions_needs_only_service(
+    monkeypatch, mesh_download, behavior
+):
+    output, _ = mesh_download
+    define_resources(monkeypatch, "service")
+    result = await behavior.generate_mesh({"resolution": "480km"}, str(output))
+    assert "partitions" not in result
 
 
 async def test_ensure_tools_installed(monkeypatch, behavior):

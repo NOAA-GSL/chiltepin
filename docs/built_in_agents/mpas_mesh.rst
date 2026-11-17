@@ -101,12 +101,17 @@ Actions
      ``init_ranks`` and ``forecast_ranks``. The rank entries are positive
      integers giving MPI rank counts to partition the mesh graph for. A count
      of 1 needs no partition. A name must not be that of a downloaded global
-     mesh file, such as ``x1.2562.graph.info``.
+     mesh file, such as ``x1.2562.graph.info``. Any other key raises
+     ``ValueError``, so a misspelled key is not silently ignored.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
 
    If partitions are requested, the result also has ``"partitions"``, a
    dictionary mapping each rank count to its partition file in the mesh
    subdirectory. Metis is installed first if it is not already installed.
+   Before it creates anything or downloads anything, the action checks that the
+   workflow defines the resources the request needs, ``service`` and, if
+   partitions are requested, ``compute``. If one is missing it raises
+   ``RuntimeError`` naming it.
 
    A mesh with the ``mesh_config``'s name must not already exist in the specified
    ``mesh_data_dir``. An existing mesh raises ``FileExistsError`` without
@@ -124,26 +129,27 @@ Actions
    Downloads and builds Metis in ``work_dir``, unless a finished install is
    already there. A finished build leaves a marker file,
    ``work_dir/metis/<metis_version>/.installed``, which is also how a restarted
-   agent finds an earlier installation. A build always starts from an empty
-   ``work_dir/metis/<metis_version>``, so an interrupted or failed install is
-   replaced by the next one. To force a rebuild, remove
-   ``work_dir/metis/<metis_version>`` and restart the agent, since a running agent
-   remembers that it has installed Metis. This runs automatically when a
-   request needs Metis, so calling it is optional, but it can be called early to
-   have Metis ready. Requests that need Metis while it is being installed wait
-   for that install. If it fails, each waiting request tries again in turn and
-   reports its own error. The install logs are ``metis_download.*`` and
-   ``metis_build.*`` in ``work_dir/logs``. Installing needs both the
-   ``service`` and ``compute`` resources. If one is missing, Parsl reports that
-   the task requested an invalid executor.
-
+   agent finds an earlier installation. An install counts only if the marker
+   exists and ``bin/gpmetis`` is an executable file, and this is checked on every
+   call, so a damaged or removed install is rebuilt, even in a running agent.
+   A build always starts from an empty ``work_dir/metis/<metis_version>``, so an
+   interrupted or failed install is replaced by the next one. After a successful
+   build the downloaded sources in ``work_dir/metis/build`` are removed. After a
+   failed build they stay for debugging. This runs
+   automatically when a request needs Metis, so calling it is optional, but it
+   can be called early to have Metis ready. Requests that need Metis while it
+   is being installed wait for that install. If it fails, each waiting request
+   tries again in turn and reports its own error. The install logs are
+   ``metis_download.*`` and ``metis_build.*`` in ``work_dir/logs``. Installing
+   needs both the ``service`` and ``compute`` resources. If one is missing, the
+   action raises ``RuntimeError`` naming it, before it starts any download.
 ``partition_mesh(mesh_path, num_ranks)``
    Partitions a graph file with Metis, installing Metis first if needed.
    ``mesh_path`` must be a non-empty string. A relative path or one starting
    with ``~`` is made absolute on the agent, and the returned paths are
    absolute. Partition files are written next to the graph file.
-   ``num_ranks`` is one integer greater than 1 or a non-empty list of them;
-   anything else raises ``ValueError``. Returns the partition file path for an
+   ``num_ranks`` is one integer greater than 1 or a non-empty list of at most 16
+   distinct ones; anything else raises ``ValueError``. Returns the partition file path for an
    integer, or a dictionary of ``{rank: path}`` for a list. Each call writes its
    own logs, ``partition_mesh.<rank>.<id>.stdout`` and ``.stderr`` in
    ``work_dir/logs``, whose first lines show the graph file, and a failure
