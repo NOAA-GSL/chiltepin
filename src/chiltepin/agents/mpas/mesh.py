@@ -11,7 +11,7 @@ import shlex
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import parsl
 from parsl.app.errors import BashExitFailure
@@ -59,6 +59,7 @@ class _MeshBehavior:
         self,
         work_dir: str,
         metis_version: str = "5.2.1",
+        mpas_tools_version: str = "2.0.0",
     ):
         """Initialize the mesh behavior.
 
@@ -68,16 +69,21 @@ class _MeshBehavior:
             Directory where mesh tools will be installed and logs will be written
         metis_version : str, optional
             Metis version to install, by default "5.2.1"
+        mpas_tools_version : str, optional
+            MPAS-Tools tag to install, by default "2.0.0"
 
         Raises
         ------
         ValueError
-            If ``metis_version`` is not a plain version string.
+            If ``metis_version`` or ``mpas_tools_version`` is not a plain
+            version string.
         """
-        if not isinstance(metis_version, str) or not _VERSION_RE.fullmatch(
-            metis_version
+        for name, version in (
+            ("metis_version", metis_version),
+            ("mpas_tools_version", mpas_tools_version),
         ):
-            raise ValueError(f"Invalid metis_version: {metis_version!r}")
+            if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
+                raise ValueError(f"Invalid {name}: {version!r}")
 
         # Tasks run elsewhere with their own working directory, so use an absolute path
         self.work_dir = Path(os.path.abspath(Path(work_dir).expanduser()))
@@ -88,6 +94,12 @@ class _MeshBehavior:
         self.metis_version = metis_version
         self.metis_built = False
         self.gpmetis_path: Optional[Path] = None
+
+        # MPAS-Tools state (the project_hexes and grid_rotate programs)
+        self.mpas_tools_version = mpas_tools_version
+        self.mpas_tools_built = False
+        self.project_hexes_path: Optional[Path] = None
+        self.grid_rotate_path: Optional[Path] = None
 
         # Serializes tool installs, so concurrent requests that need a tool wait
         # for one install instead of each starting their own
@@ -365,6 +377,56 @@ class _MeshBehavior:
                 f"configuration does not define. Defined resources: {defined}"
             )
 
+    @staticmethod
+    def _is_executable(path: Path) -> bool:
+        """Whether ``path`` is a regular file that can be run."""
+        return (
+            path.is_file()
+            # Some filesystems report every file as executable to os.access
+            and bool(path.stat().st_mode & 0o111)
+            and os.access(path, os.X_OK)
+        )
+
+    async def _run_install(
+        self,
+        label: str,
+        log_name: str,
+        download_task: Callable[..., Any],
+        build_task: Callable[..., Any],
+    ) -> None:
+        """Download and build a tool, and report the first failure.
+
+        The download runs on ``service`` and the build on ``compute``. Logs are
+        ``<log_name>_download.*`` and ``<log_name>_build.*`` in ``log_dir``. The
+        caller holds the install lock and has checked that the resources exist.
+
+        Raises
+        ------
+        RuntimeError
+            If the download or build fails. The message names the log file.
+        """
+        download_future = download_task(
+            executor=["service"],
+            stdout=str(self.log_dir / f"{log_name}_download.stdout"),
+            stderr=str(self.log_dir / f"{log_name}_download.stderr"),
+        )
+        build_future = build_task(
+            executor=["compute"],
+            stdout=str(self.log_dir / f"{log_name}_build.stdout"),
+            stderr=str(self.log_dir / f"{log_name}_build.stderr"),
+            inputs=[download_future],
+        )
+        for stage, future in (("download", download_future), ("build", build_future)):
+            try:
+                await asyncio.wrap_future(future)
+            except BashExitFailure as e:
+                raise RuntimeError(
+                    f"{label} {stage} failed (exit {e.exitcode}), "
+                    f"see {self.log_dir}/{log_name}_{stage}.stderr"
+                ) from e
+            except Exception as e:
+                raise RuntimeError(f"{label} {stage} failed: {e}") from e
+
     @property
     def _gpmetis(self) -> Path:
         """Path of the gpmetis executable."""
@@ -372,19 +434,36 @@ class _MeshBehavior:
 
     def _metis_usable(self) -> bool:
         """Whether a finished Metis install with a runnable gpmetis exists."""
-        gpmetis = self._gpmetis
-        return (
-            (self._metis_prefix / ".installed").is_file()
-            and gpmetis.is_file()
-            # Some filesystems report every file as executable to os.access
-            and bool(gpmetis.stat().st_mode & 0o111)
-            and os.access(gpmetis, os.X_OK)
+        return (self._metis_prefix / ".installed").is_file() and self._is_executable(
+            self._gpmetis
         )
 
     @property
     def _metis_prefix(self) -> Path:
         """Directory Metis is installed into."""
         return self.work_dir / "metis" / self.metis_version
+
+    @property
+    def _mpas_tools_prefix(self) -> Path:
+        """Directory the MPAS-Tools programs are installed into."""
+        return self.work_dir / "mpas-tools" / self.mpas_tools_version
+
+    @property
+    def _project_hexes_exe(self) -> Path:
+        """Path of the project_hexes executable."""
+        return self._mpas_tools_prefix / "bin" / "project_hexes"
+
+    @property
+    def _grid_rotate_exe(self) -> Path:
+        """Path of the grid_rotate executable."""
+        return self._mpas_tools_prefix / "bin" / "grid_rotate"
+
+    def _mpas_tools_usable(self) -> bool:
+        """Whether a finished MPAS-Tools install with runnable programs exists."""
+        return (self._mpas_tools_prefix / ".installed").is_file() and all(
+            self._is_executable(path)
+            for path in (self._project_hexes_exe, self._grid_rotate_exe)
+        )
 
     # -------------------------------------------------------------------------
     # Private bash tasks — Metis
@@ -439,6 +518,68 @@ class _MeshBehavior:
             cd /
             # Failing to remove the sources, for example from busy files on a
             # network filesystem, must not fail a finished build
+            rm -rf "$build" || true
+            # Mark the install complete. The agent only uses a marked install.
+            touch "$prefix/.installed"
+            echo "Completed build at $(date)"
+            """
+        )
+
+    # -------------------------------------------------------------------------
+    # Private bash tasks — MPAS-Tools
+    # -------------------------------------------------------------------------
+
+    @bash_task
+    def _download_mpas_tools(self) -> str:
+        """Download the MPAS-Tools source code for the requested tag from GitHub."""
+        import textwrap
+
+        build = f"{self.work_dir}/mpas-tools/build/{self.mpas_tools_version}"
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started download at $(date)"
+            echo "Executing on $(hostname)"
+            build={self._q(build)}
+            rm -rf "$build"
+            mkdir -p "$build"
+            cd "$build"
+            # Clone only the requested tag, giving up if the transfer stalls
+            git -c advice.detachedHead=false -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 clone --depth 1 --branch {self._q(self.mpas_tools_version)} https://github.com/MPAS-Dev/MPAS-Tools.git
+            echo "Completed download at $(date)"
+            """
+        )
+
+    @bash_task
+    def _build_mpas_tools(self) -> str:
+        """Build project_hexes and grid_rotate, and install them to the prefix."""
+        import textwrap
+
+        build = f"{self.work_dir}/mpas-tools/build/{self.mpas_tools_version}"
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started build at $(date)"
+            echo "Executing on $(hostname)"
+            build={self._q(build)}
+            prefix={self._q(self._mpas_tools_prefix)}
+            # The Makefiles find netCDF through these, so fail clearly without them
+            for tool in nf-config nc-config; do
+                if ! command -v "$tool" > /dev/null; then
+                    echo "$tool not found. Load netCDF-C and netCDF-Fortran in the environment of the compute resource." >&2
+                    exit 1
+                fi
+            done
+            # Start from an empty prefix so a failed earlier install leaves nothing
+            rm -rf "$prefix"
+            mkdir -p "$prefix/bin"
+            tools="$build/MPAS-Tools/mesh_tools"
+            make -C "$tools/hex_projection"
+            make -C "$tools/grid_rotate"
+            cp "$tools/hex_projection/project_hexes" "$tools/grid_rotate/grid_rotate" "$prefix/bin/"
+            # The sources are no longer needed. A failed build keeps them to debug.
+            cd /
+            # Failing to remove the sources must not fail a finished build
             rm -rf "$build" || true
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
@@ -547,35 +688,9 @@ class _MeshBehavior:
             if not self._metis_usable():
                 self.metis_built = False
                 self._require_resources("Installing Metis", "service", "compute")
-                download_future = self._download_metis(
-                    executor=["service"],
-                    stdout=str(self.log_dir / "metis_download.stdout"),
-                    stderr=str(self.log_dir / "metis_download.stderr"),
+                await self._run_install(
+                    "Metis", "metis", self._download_metis, self._build_metis
                 )
-                build_future = self._build_metis(
-                    executor=["compute"],
-                    stdout=str(self.log_dir / "metis_build.stdout"),
-                    stderr=str(self.log_dir / "metis_build.stderr"),
-                    inputs=[download_future],
-                )
-                try:
-                    await asyncio.wrap_future(download_future)
-                except BashExitFailure as e:
-                    raise RuntimeError(
-                        f"Metis download failed (exit {e.exitcode}), "
-                        f"see {self.log_dir}/metis_download.stderr"
-                    ) from e
-                except Exception as e:
-                    raise RuntimeError(f"Metis download failed: {e}") from e
-                try:
-                    await asyncio.wrap_future(build_future)
-                except BashExitFailure as e:
-                    raise RuntimeError(
-                        f"Metis build failed (exit {e.exitcode}), "
-                        f"see {self.log_dir}/metis_build.stderr"
-                    ) from e
-                except Exception as e:
-                    raise RuntimeError(f"Metis build failed: {e}") from e
                 if not self._metis_usable():
                     raise RuntimeError(
                         f"Metis build finished but {self._gpmetis} is not usable, "
@@ -678,6 +793,54 @@ class _MeshBehavior:
             return partition_paths[ranks[0]]
         return partition_paths
 
+    # -------------------------------------------------------------------------
+    # Public agent actions — MPAS-Tools
+    # -------------------------------------------------------------------------
+
+    @agent_action
+    async def install_mpas_tools(self) -> None:
+        """Download and build project_hexes and grid_rotate, unless installed.
+
+        The two programs from MPAS-Tools count as installed once a build has
+        finished in ``work_dir``, so a restarted agent reuses them. Requests that
+        need them while they are being installed wait for that install. If it
+        fails, each waiting request tries again in turn. Called automatically
+        when a request needs them, but can be called earlier to have them ready.
+        Building needs a Fortran compiler and the netCDF-C and netCDF-Fortran
+        libraries in the environment of the ``compute`` resource.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` or ``compute`` resource is not defined, or the
+            download or build fails. The message names the log file.
+        """
+        async with self._install_lock:
+            # Check the install on disk each time, so a removed or damaged
+            # install is rebuilt instead of failing every later request
+            if not self._mpas_tools_usable():
+                self.mpas_tools_built = False
+                self._require_resources("Installing MPAS-Tools", "service", "compute")
+                await self._run_install(
+                    "MPAS-Tools",
+                    "mpas_tools",
+                    self._download_mpas_tools,
+                    self._build_mpas_tools,
+                )
+                if not self._mpas_tools_usable():
+                    raise RuntimeError(
+                        "MPAS-Tools build finished but project_hexes and "
+                        f"grid_rotate are not usable in {self._mpas_tools_prefix}"
+                        f"/bin, see {self.log_dir}/mpas_tools_build.stderr"
+                    )
+            self.project_hexes_path = self._project_hexes_exe
+            self.grid_rotate_path = self._grid_rotate_exe
+            self.mpas_tools_built = True
+
+    # -------------------------------------------------------------------------
+    # Public agent actions — Tools
+    # -------------------------------------------------------------------------
+
     @agent_action
     async def ensure_tools_installed(self, mesh_config: Dict[str, Any]) -> None:
         """Install the tools a mesh request needs.
@@ -699,6 +862,8 @@ class _MeshBehavior:
         self._validate_mesh_config(mesh_config)
         if self._partition_ranks(mesh_config):
             await self.install_metis()
+        if "project_hexes" in (mesh_config.get("regional") or {}):
+            await self.install_mpas_tools()
 
     # -------------------------------------------------------------------------
     # Public agent actions — Mesh operations

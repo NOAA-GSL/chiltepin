@@ -6,6 +6,7 @@ import asyncio
 import io
 import pickle
 import shlex
+import shutil
 import subprocess
 import tarfile
 import urllib.request
@@ -438,8 +439,19 @@ def mark_metis_installed(behavior):
     return prefix / "bin" / "gpmetis"
 
 
-def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
-    """Replace the Metis download and build tasks with mocks."""
+def mark_mpas_tools_installed(behavior):
+    """Create what a finished MPAS-Tools build leaves in work_dir."""
+    prefix = behavior.work_dir / "mpas-tools" / behavior.mpas_tools_version
+    (prefix / "bin").mkdir(parents=True, exist_ok=True)
+    for name in ("project_hexes", "grid_rotate"):
+        (prefix / "bin" / name).write_text("#!/bin/sh\n")
+        (prefix / "bin" / name).chmod(0o755)
+    (prefix / ".installed").touch()
+    return prefix
+
+
+def mock_install_tasks(monkeypatch, behavior, tool, mark, download=None, build=None):
+    """Replace a tool's download and build tasks with mocks."""
 
     def run_build(**kwargs):
         # A successful build leaves a finished install behind
@@ -447,14 +459,28 @@ def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
             if dependency.done() and dependency.exception() is not None:
                 return done_future(error=dependency.exception())
         if build is None:
-            mark_metis_installed(behavior)
+            mark(behavior)
         return done_future(error=build)
 
     download_task = Mock(return_value=done_future(error=download))
     build_task = Mock(side_effect=run_build)
-    monkeypatch.setattr(behavior, "_download_metis", download_task)
-    monkeypatch.setattr(behavior, "_build_metis", build_task)
+    monkeypatch.setattr(behavior, f"_download_{tool}", download_task)
+    monkeypatch.setattr(behavior, f"_build_{tool}", build_task)
     return download_task, build_task
+
+
+def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
+    """Replace the Metis download and build tasks with mocks."""
+    return mock_install_tasks(
+        monkeypatch, behavior, "metis", mark_metis_installed, download, build
+    )
+
+
+def mock_mpas_tools_tasks(monkeypatch, behavior, download=None, build=None):
+    """Replace the MPAS-Tools download and build tasks with mocks."""
+    return mock_install_tasks(
+        monkeypatch, behavior, "mpas_tools", mark_mpas_tools_installed, download, build
+    )
 
 
 def fake_partition_task(fail_ranks=()):
@@ -498,6 +524,14 @@ PARTITIONED = {
 def test_invalid_metis_version(tmp_path, version):
     with pytest.raises(ValueError, match="Invalid metis_version"):
         _MeshBehavior(str(tmp_path / "work"), metis_version=version)
+
+
+@pytest.mark.parametrize(
+    "version", ["", "../x", "2.0.0; rm -rf /", "a2", None, 2, "2.0.0\n", "$(id)"]
+)
+def test_invalid_mpas_tools_version(tmp_path, version):
+    with pytest.raises(ValueError, match="Invalid mpas_tools_version"):
+        _MeshBehavior(str(tmp_path / "work"), mpas_tools_version=version)
 
 
 def test_work_dir_is_made_absolute(monkeypatch, tmp_path):
@@ -711,6 +745,52 @@ def test_metis_scripts(tmp_path):
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
 
 
+def test_mpas_tools_scripts(tmp_path):
+    behavior = _MeshBehavior(str(tmp_path / "work dir"), mpas_tools_version="2.1.0")
+    download = _MeshBehavior._download_mpas_tools.func(behavior)
+    build = _MeshBehavior._build_mpas_tools.func(behavior)
+    assert f"build='{behavior.work_dir}/mpas-tools/build/2.1.0'" in download
+    assert "--depth 1 --branch 2.1.0 https://github.com/MPAS-Dev/MPAS-Tools" in download
+    assert f"prefix='{behavior.work_dir}/mpas-tools/2.1.0'" in build
+    lines = [line.strip() for line in build.splitlines()]
+    # Missing netCDF tools fail before an existing install is touched
+    assert build.index("nf-config") < build.index('rm -rf "$prefix"')
+    # A failed earlier install is removed before the build, and the programs are
+    # copied out and the sources removed before the install is marked
+    assert build.index('rm -rf "$prefix"') < build.index("make -C")
+    last_make = max(i for i, line in enumerate(lines) if line.startswith("make -C"))
+    copy = next(i for i, line in enumerate(lines) if line.startswith("cp "))
+    sources = lines.index('rm -rf "$build" || true')
+    marker = lines.index('touch "$prefix/.installed"')
+    assert last_make < copy < sources < marker
+    assert "hex_projection/project_hexes" in lines[copy]
+    assert "grid_rotate/grid_rotate" in lines[copy]
+    # Only echo commands may follow the marker
+    assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
+
+
+def test_mpas_tools_build_without_netcdf_keeps_an_existing_install(tmp_path, behavior):
+    prefix = mark_mpas_tools_installed(behavior)
+    # A PATH holding only what the script uses before the netCDF check
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("date", "hostname"):
+        found = shutil.which(name)
+        if found is None:
+            pytest.skip(f"{name} is not available")
+        (tools / name).symlink_to(found)
+    script = _MeshBehavior._build_mpas_tools.func(behavior)
+    done = subprocess.run(
+        [shutil.which("bash"), "-c", script],
+        env={"PATH": str(tools)},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 1
+    assert "nf-config not found" in done.stderr
+    assert (prefix / ".installed").is_file()
+
+
 @pytest.mark.parametrize(
     "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME"]
 )
@@ -829,6 +909,129 @@ async def test_behavior_is_picklable_while_requests_wait(behavior):
     behavior._install_lock.release()
     await waiter
     behavior._install_lock.release()
+
+
+# Installing MPAS-Tools
+
+
+async def test_install_mpas_tools_reuses_a_finished_install(monkeypatch, behavior):
+    prefix = mark_mpas_tools_installed(behavior)
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    await behavior.install_mpas_tools()
+    assert behavior.mpas_tools_built
+    assert behavior.project_hexes_path == prefix / "bin" / "project_hexes"
+    assert behavior.grid_rotate_path == prefix / "bin" / "grid_rotate"
+    download.assert_not_called()
+    build.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "damage", ["marker", "project_hexes", "grid_rotate", "not_executable"]
+)
+async def test_install_mpas_tools_rebuilds_a_damaged_install(
+    monkeypatch, behavior, damage
+):
+    prefix = mark_mpas_tools_installed(behavior)
+    if damage == "marker":
+        (prefix / ".installed").unlink()
+    elif damage == "not_executable":
+        (prefix / "bin" / "grid_rotate").chmod(0o644)
+    else:
+        (prefix / "bin" / damage).unlink()
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    await behavior.install_mpas_tools()
+    download.assert_called_once()
+    build.assert_called_once()
+    assert behavior.mpas_tools_built
+
+
+async def test_install_mpas_tools_runs_the_download_on_service_and_build_on_compute(
+    monkeypatch, behavior
+):
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    await behavior.install_mpas_tools()
+    download.assert_called_once_with(
+        executor=["service"],
+        stdout=str(behavior.log_dir / "mpas_tools_download.stdout"),
+        stderr=str(behavior.log_dir / "mpas_tools_download.stderr"),
+    )
+    build.assert_called_once_with(
+        executor=["compute"],
+        stdout=str(behavior.log_dir / "mpas_tools_build.stdout"),
+        stderr=str(behavior.log_dir / "mpas_tools_build.stderr"),
+        inputs=[download.return_value],
+    )
+
+
+async def test_concurrent_mpas_tools_installs_run_once(monkeypatch, behavior):
+    # Keep the download unfinished while the other requests arrive
+    pending, build_pending = Future(), Future()
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    download.return_value = pending
+    build.side_effect = lambda **kwargs: build_pending
+    requests = [asyncio.create_task(behavior.install_mpas_tools()) for _ in range(3)]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert download.call_count == 1
+    pending.set_result(None)
+    mark_mpas_tools_installed(behavior)
+    build_pending.set_result(None)
+    await asyncio.gather(*requests)
+    assert download.call_count == 1
+    assert build.call_count == 1
+
+
+@pytest.mark.parametrize("stage", ["download", "build"])
+async def test_failed_mpas_tools_install_is_reported_and_retried(
+    monkeypatch, behavior, stage
+):
+    failure = BashExitFailure("task", 3)
+    download, build = mock_mpas_tools_tasks(
+        monkeypatch,
+        behavior,
+        download=failure if stage == "download" else None,
+        build=failure if stage == "build" else None,
+    )
+    with pytest.raises(RuntimeError, match=f"MPAS-Tools {stage} failed") as info:
+        await behavior.install_mpas_tools()
+    assert f"mpas_tools_{stage}.stderr" in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not behavior.mpas_tools_built
+
+    download.return_value = done_future()
+    build.side_effect = lambda **kwargs: (
+        mark_mpas_tools_installed(behavior),
+        done_future(),
+    )[1]
+    await behavior.install_mpas_tools()
+    assert behavior.mpas_tools_built
+
+
+async def test_mpas_tools_build_that_leaves_no_programs_is_an_error(
+    monkeypatch, behavior
+):
+    monkeypatch.setattr(
+        behavior, "_download_mpas_tools", Mock(return_value=done_future())
+    )
+    monkeypatch.setattr(behavior, "_build_mpas_tools", Mock(return_value=done_future()))
+    with pytest.raises(RuntimeError, match="not usable"):
+        await behavior.install_mpas_tools()
+    assert not behavior.mpas_tools_built
+
+
+@pytest.mark.parametrize(
+    ("defined", "missing"),
+    [(["compute"], "service"), (["service"], "compute"), ([], "service")],
+)
+async def test_install_mpas_tools_checks_resources_before_submitting(
+    monkeypatch, behavior, defined, missing
+):
+    define_resources(monkeypatch, "_parsl_internal", *defined)
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.install_mpas_tools()
+    download.assert_not_called()
+    build.assert_not_called()
 
 
 # Partitioning
@@ -1244,7 +1447,28 @@ async def test_ensure_tools_installed_validates_the_config(
 
 async def test_ensure_tools_installed(monkeypatch, behavior):
     download, _ = mock_metis_tasks(monkeypatch, behavior)
+    tools_download, _ = mock_mpas_tools_tasks(monkeypatch, behavior)
     await behavior.ensure_tools_installed({"resolution": "480km"})
     download.assert_not_called()
+    tools_download.assert_not_called()
     await behavior.ensure_tools_installed({"init_ranks": 2})
     download.assert_called_once()
+    tools_download.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("config", "metis", "mpas_tools"),
+    [
+        (regional_config(), False, True),
+        ({**regional_config(), "forecast_ranks": 4}, True, True),
+        ({"resolution": "480km", "forecast_ranks": 4}, True, False),
+    ],
+)
+async def test_ensure_tools_installed_for_regional_requests(
+    monkeypatch, behavior, config, metis, mpas_tools
+):
+    metis_download, _ = mock_metis_tasks(monkeypatch, behavior)
+    tools_download, _ = mock_mpas_tools_tasks(monkeypatch, behavior)
+    await behavior.ensure_tools_installed(config)
+    assert metis_download.called == metis
+    assert tools_download.called == mpas_tools
