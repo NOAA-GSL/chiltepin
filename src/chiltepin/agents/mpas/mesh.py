@@ -98,7 +98,6 @@ class _MeshBehavior:
         # Metis state
         self.metis_version = metis_version
         self.metis_built = False
-        self.gpmetis_path: Optional[Path] = None
 
         # MPAS-Tools state (the project_hexes and grid_rotate programs)
         self.mpas_tools_version = mpas_tools_version
@@ -532,12 +531,12 @@ class _MeshBehavior:
         return self.work_dir / "mpas-tools" / self.mpas_tools_version
 
     @property
-    def _project_hexes_exe(self) -> Path:
+    def _project_hexes(self) -> Path:
         """Path of the project_hexes executable."""
         return self._mpas_tools_prefix / "bin" / "project_hexes"
 
     @property
-    def _grid_rotate_exe(self) -> Path:
+    def _grid_rotate(self) -> Path:
         """Path of the grid_rotate executable."""
         return self._mpas_tools_prefix / "bin" / "grid_rotate"
 
@@ -545,7 +544,7 @@ class _MeshBehavior:
         """Whether a finished MPAS-Tools install with runnable programs exists."""
         return (self._mpas_tools_prefix / ".installed").is_file() and all(
             self._is_executable(path)
-            for path in (self._project_hexes_exe, self._grid_rotate_exe)
+            for path in (self._project_hexes, self._grid_rotate)
         )
 
     # -------------------------------------------------------------------------
@@ -681,7 +680,7 @@ class _MeshBehavior:
             echo "Started project_hexes at $(date)"
             echo "Executing on $(hostname)"
             cd {self._q(mesh_dir)}
-            {self._q(self._project_hexes_exe)}
+            {self._q(self._project_hexes)}
             echo "Completed project_hexes at $(date)"
             """
         )
@@ -697,7 +696,7 @@ class _MeshBehavior:
             echo "Started grid_rotate at $(date)"
             echo "Executing on $(hostname)"
             cd {self._q(mesh_dir)}
-            {self._q(self._grid_rotate_exe)} {self._q(input_file)} {self._q(output_file)}
+            {self._q(self._grid_rotate)} {self._q(input_file)} {self._q(output_file)}
             echo "Completed grid_rotate at $(date)"
             """
         )
@@ -713,7 +712,7 @@ class _MeshBehavior:
             echo "Started partition at $(date)"
             echo "Executing on $(hostname)"
             printf 'Partitioning %s into %s parts\\n' {self._q(mesh_path)} {int(num_ranks)}
-            {self._q(self.gpmetis_path)} -minconn -contig -niter=200 {self._q(mesh_path)} {int(num_ranks)}
+            {self._q(self._gpmetis)} -minconn -contig -niter=200 {self._q(mesh_path)} {int(num_ranks)}
             echo "Completed partition at $(date)"
             """
         )
@@ -811,7 +810,6 @@ class _MeshBehavior:
                         f"Metis build finished but {self._gpmetis} is not usable, "
                         f"see {self.log_dir}/metis_build.stderr"
                     )
-            self.gpmetis_path = self._gpmetis
             self.metis_built = True
 
     @agent_action

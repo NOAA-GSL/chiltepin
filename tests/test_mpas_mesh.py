@@ -830,12 +830,11 @@ def test_partition_script_does_not_expand_mesh_path(tmp_path, behavior, name):
     pwned = tmp_path / "PWNED"
     mesh_path = str(tmp_path / name.format(pwn=pwned)) + ".graph.info"
     record = tmp_path / "args"
-    fake = tmp_path / "gpmetis"
+    # The script runs gpmetis from the install, so put a fake one there
+    fake = mark_metis_installed(behavior)
     fake.write_text(
         f'#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done > {shlex.quote(str(record))}\n'
     )
-    fake.chmod(0o755)
-    behavior.gpmetis_path = fake
 
     script = _MeshBehavior._partition_mesh.func(behavior, mesh_path, 4)
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
@@ -849,11 +848,10 @@ def test_partition_script_does_not_expand_mesh_path(tmp_path, behavior, name):
 
 
 async def test_install_metis_reuses_a_finished_install(monkeypatch, behavior):
-    gpmetis = mark_metis_installed(behavior)
+    mark_metis_installed(behavior)
     download, build = mock_metis_tasks(monkeypatch, behavior)
     await behavior.install_metis()
     assert behavior.metis_built
-    assert behavior.gpmetis_path == gpmetis
     download.assert_not_called()
     build.assert_not_called()
 
@@ -893,7 +891,7 @@ async def test_concurrent_installs_run_once(monkeypatch, behavior):
         stderr=str(behavior.log_dir / "metis_build.stderr"),
         inputs=[download.return_value],
     )
-    assert behavior.gpmetis_path == (
+    assert behavior._gpmetis == (
         behavior.work_dir / "metis" / "5.2.1" / "bin" / "gpmetis"
     )
 
