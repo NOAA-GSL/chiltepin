@@ -134,6 +134,28 @@ class _MeshBehavior:
         return resolved_dir
 
     @staticmethod
+    def _remove_new_mesh_dir(mesh_dir: Path, created: List[Path]) -> None:
+        """Remove the files and directory a failed request created.
+
+        Only the given files are removed, and the shared downloaded mesh files
+        they link to are left alone. Failures are logged and never raised, so
+        cleanup cannot hide the error that caused it or stop partway.
+        """
+        for path in created:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove %s", path, exc_info=True)
+        try:
+            mesh_dir.rmdir()
+        except OSError:
+            logger.warning(
+                "Could not remove %s; remove it before requesting this mesh again",
+                mesh_dir,
+                exc_info=True,
+            )
+
+    @staticmethod
     def _partition_ranks(mesh_config: Dict[str, Any]) -> List[int]:
         """Return the distinct rank counts above 1 requested by a mesh config.
 
@@ -676,28 +698,6 @@ class _MeshBehavior:
             # Remove only files created by this call so a failed request can be retried.
             if not complete:
                 self._remove_new_mesh_dir(mesh_dir, created)
-
-    @staticmethod
-    def _remove_new_mesh_dir(mesh_dir: Path, created: List[Path]) -> None:
-        """Remove the files and directory a failed request created.
-
-        Only the given files are removed, and the shared downloaded mesh files
-        they link to are left alone. Failures are logged and never raised, so
-        cleanup cannot hide the error that caused it or stop partway.
-        """
-        for path in created:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("Could not remove %s", path, exc_info=True)
-        try:
-            mesh_dir.rmdir()
-        except OSError:
-            logger.warning(
-                "Could not remove %s; remove it before requesting this mesh again",
-                mesh_dir,
-                exc_info=True,
-            )
 
 
 @chiltepin_agent()
