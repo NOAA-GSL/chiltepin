@@ -550,6 +550,146 @@ def test_validate_mesh_config_accepts_valid(behavior):
     behavior._validate_mesh_config({"resolution": "480km", "init_ranks": 1})
 
 
+HEXES = {
+    "center_lat": 40.0,
+    "center_lon": -105.0,
+    "extent_x_km": 500,
+    "extent_y_km": 400,
+}
+
+
+def regional_config(**changes):
+    """Return a valid regional request, with the project_hexes block changed."""
+    block = {**HEXES, **changes}
+    return {
+        "resolution": "15km",
+        "name": "region",
+        "regional": {"project_hexes": {k: v for k, v in block.items() if v is not ...}},
+    }
+
+
+@pytest.mark.parametrize(
+    "resolution", ["15km", "7.5km", "2km", "0.5km", "100km", "12345km"]
+)
+def test_validate_mesh_config_accepts_any_regional_resolution(behavior, resolution):
+    config = regional_config()
+    config["resolution"] = resolution
+    behavior._validate_mesh_config(config)
+
+
+def test_validate_mesh_config_accepts_regional_defaults_and_rotation(behavior):
+    behavior._validate_mesh_config(
+        {"regional": {"project_hexes": {**HEXES, "rotation_degrees": -30.5}}}
+    )
+    behavior._validate_mesh_config(regional_config(center_lon=270, center_lat=-90))
+
+
+def test_global_resolutions_stay_limited_to_the_available_meshes(behavior):
+    with pytest.raises(ValueError, match="not supported"):
+        behavior._validate_mesh_config({"resolution": "2km"})
+
+
+@pytest.mark.parametrize(
+    "resolution",
+    [
+        "0km",
+        "0.0km",
+        "-5km",
+        "15",
+        "km",
+        "",
+        "1e3km",
+        "15 km",
+        "1.km",
+        None,
+        15,
+        ["1km"],
+    ]
+    + ["9" * 400 + "km"],
+)
+def test_validate_mesh_config_rejects_invalid_regional_resolution(behavior, resolution):
+    config = regional_config()
+    config["resolution"] = resolution
+    with pytest.raises(ValueError, match="is not valid"):
+        behavior._validate_mesh_config(config)
+
+
+@pytest.mark.parametrize(
+    ("regional", "message"),
+    [
+        ("project_hexes", "regional must be a dict"),
+        ([], "regional must be a dict"),
+        ({}, "exactly one of 'project_hexes' or 'create_region'"),
+        ({"create_region": {}}, "'create_region' is not supported yet"),
+        (
+            {"project_hexes": HEXES, "create_region": {}},
+            "exactly one of 'project_hexes' or 'create_region'",
+        ),
+        ({"project_hex": HEXES}, "Unknown regional keys: project_hex"),
+        ({"project_hexes": None}, "regional.project_hexes must be a dict"),
+        ({"project_hexes": []}, "regional.project_hexes must be a dict"),
+        ({"project_hexes": {}}, "missing required keys: center_lat, center_lon"),
+        (
+            {"project_hexes": {**HEXES, "extent": 5}},
+            "Unknown regional.project_hexes keys: extent",
+        ),
+    ],
+)
+def test_validate_mesh_config_rejects_invalid_regional(behavior, regional, message):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config({"resolution": "15km", "regional": regional})
+
+
+@pytest.mark.parametrize("key", list(HEXES) + ["rotation_degrees"])
+@pytest.mark.parametrize("value", [True, "40", "40,", None, float("nan"), float("inf")])
+def test_validate_mesh_config_rejects_non_numbers_in_project_hexes(
+    behavior, key, value
+):
+    with pytest.raises(ValueError, match=f"regional.project_hexes.{key} must be a"):
+        behavior._validate_mesh_config(regional_config(**{key: value}))
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("center_lat", 90.1, "between -90 and 90"),
+        ("center_lat", -91, "between -90 and 90"),
+        ("center_lon", -180.5, "between -180 and 360"),
+        ("center_lon", 360.5, "between -180 and 360"),
+        ("extent_x_km", 0, "greater than 0"),
+        ("extent_y_km", -1.5, "greater than 0"),
+    ],
+)
+def test_validate_mesh_config_rejects_out_of_range_project_hexes(
+    behavior, key, value, message
+):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(regional_config(**{key: value}))
+
+
+def test_validate_mesh_config_requires_every_project_hexes_key(behavior):
+    for key in HEXES:
+        with pytest.raises(ValueError, match=f"missing required keys: {key}"):
+            behavior._validate_mesh_config(regional_config(**{key: ...}))
+
+
+async def test_regional_mesh_is_rejected_before_anything_is_created(tmp_path, behavior):
+    # Temporary until regional meshes can be generated
+    output = tmp_path / "meshes"
+    with pytest.raises(RuntimeError, match="cannot be generated yet"):
+        await behavior.generate_mesh(regional_config(), str(output))
+    assert not output.exists()
+
+
+async def test_invalid_regional_mesh_creates_nothing(tmp_path, behavior):
+    output = tmp_path / "meshes"
+    with pytest.raises(ValueError, match="not supported yet"):
+        await behavior.generate_mesh(
+            {"regional": {"create_region": {"circle": {}}}}, str(output)
+        )
+    assert not output.exists()
+
+
 # Task scripts
 
 

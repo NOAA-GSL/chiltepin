@@ -4,6 +4,7 @@
 
 import asyncio
 import logging
+import math
 import os
 import re
 import shlex
@@ -31,8 +32,18 @@ _SHARED_MESH_FILE_RE = re.compile(r"x1\.[0-9]+\.(static\.nc|graph\.info)")
 # Most rank counts one partition_mesh call may request, since each one is a task
 _MAX_PARTITION_RANKS = 16
 
+# A resolution such as "7.5km", for meshes that are not downloaded
+_RESOLUTION_KM_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?km")
+
 # Keys a mesh request may contain
-_MESH_CONFIG_KEYS = frozenset({"resolution", "name", "init_ranks", "forecast_ranks"})
+_MESH_CONFIG_KEYS = frozenset(
+    {"resolution", "name", "init_ranks", "forecast_ranks", "regional"}
+)
+
+# Methods a regional request may name, and the keys of a project_hexes block
+_REGIONAL_METHODS = ("project_hexes", "create_region")
+_PROJECT_HEXES_REQUIRED = ("center_lat", "center_lon", "extent_x_km", "extent_y_km")
+_PROJECT_HEXES_KEYS = frozenset(_PROJECT_HEXES_REQUIRED + ("rotation_degrees",))
 
 
 class _MeshBehavior:
@@ -161,8 +172,9 @@ class _MeshBehavior:
         ------
         ValueError
             If ``mesh_config`` is not a dict, has an unknown key, or has an
-            invalid ``resolution``, ``name``, ``init_ranks`` or ``forecast_ranks``.
-            A name must not be that of a downloaded global mesh file.
+            invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``
+            or ``regional`` block. A name must not be that of a downloaded global
+            mesh file.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
@@ -174,12 +186,22 @@ class _MeshBehavior:
                 f"Unknown mesh_config keys: {', '.join(unknown)}. "
                 f"Allowed: {', '.join(sorted(_MESH_CONFIG_KEYS))}"
             )
+        regional = mesh_config.get("regional")
+        if regional is not None:
+            self._validate_regional(regional)
         resolution = mesh_config.get("resolution", "120km")
-        if not isinstance(resolution, str) or resolution not in self.resolution_cells:
-            raise ValueError(
-                f"Resolution {resolution!r} not supported. "
-                f"Available: {list(self.resolution_cells.keys())}"
-            )
+        if regional is None:
+            # A global mesh is downloaded, so only the available ones can be used
+            if (
+                not isinstance(resolution, str)
+                or resolution not in self.resolution_cells
+            ):
+                raise ValueError(
+                    f"Resolution {resolution!r} not supported. "
+                    f"Available: {list(self.resolution_cells.keys())}"
+                )
+        else:
+            self._parse_resolution_km(resolution)
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
         if (
             not isinstance(mesh_name, str)
@@ -197,6 +219,101 @@ class _MeshBehavior:
                 continue
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{key} must be a positive integer, got {value!r}")
+
+    @staticmethod
+    def _parse_resolution_km(resolution: Any) -> float:
+        """Return a resolution such as ``"7.5km"`` as a number of kilometers.
+
+        Raises
+        ------
+        ValueError
+            If it is not a positive, finite number of kilometers written as
+            digits followed by ``km``.
+        """
+        if isinstance(resolution, str) and _RESOLUTION_KM_RE.fullmatch(resolution):
+            kilometers = float(resolution[:-2])
+            if math.isfinite(kilometers) and kilometers > 0:
+                return kilometers
+        raise ValueError(
+            f"Resolution {resolution!r} is not valid. Use a positive number of "
+            f"kilometers such as '15km' or '7.5km'"
+        )
+
+    @staticmethod
+    def _number(config: Dict[str, Any], key: str, where: str) -> float:
+        """Return a required or optional value as a finite number.
+
+        Booleans and strings are rejected, since a mesh request must give real
+        numbers.
+        """
+        value = config[key]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(f"{where}.{key} must be a finite number, got {value!r}")
+        return float(value)
+
+    @classmethod
+    def _validate_regional(cls, regional: Any) -> None:
+        """Check the ``regional`` block of a mesh request.
+
+        Raises
+        ------
+        ValueError
+            If the block is not a dict holding exactly one known method, names
+            ``create_region``, which is not supported yet, or has an invalid
+            ``project_hexes`` block.
+        """
+        if not isinstance(regional, dict):
+            raise ValueError(f"regional must be a dict, got {type(regional).__name__}")
+        unknown = sorted(str(k) for k in regional if k not in _REGIONAL_METHODS)
+        if unknown:
+            raise ValueError(
+                f"Unknown regional keys: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(_REGIONAL_METHODS)}"
+            )
+        if len(regional) != 1:
+            raise ValueError(
+                "regional must contain exactly one of "
+                + " or ".join(repr(method) for method in _REGIONAL_METHODS)
+            )
+        if "create_region" in regional:
+            raise ValueError("regional 'create_region' is not supported yet")
+        cls._validate_project_hexes(regional["project_hexes"])
+
+    @classmethod
+    def _validate_project_hexes(cls, config: Any) -> None:
+        """Check a ``regional.project_hexes`` block.
+
+        Raises
+        ------
+        ValueError
+            If it is not a dict, is missing a required key, has an unknown key,
+            or has a value that is not a finite number in its allowed range.
+        """
+        where = "regional.project_hexes"
+        if not isinstance(config, dict):
+            raise ValueError(f"{where} must be a dict, got {type(config).__name__}")
+        unknown = sorted(str(k) for k in config if k not in _PROJECT_HEXES_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unknown {where} keys: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(sorted(_PROJECT_HEXES_KEYS))}"
+            )
+        missing = [key for key in _PROJECT_HEXES_REQUIRED if key not in config]
+        if missing:
+            raise ValueError(f"{where} is missing required keys: {', '.join(missing)}")
+        if not -90 <= cls._number(config, "center_lat", where) <= 90:
+            raise ValueError(f"{where}.center_lat must be between -90 and 90")
+        if not -180 <= cls._number(config, "center_lon", where) <= 360:
+            raise ValueError(f"{where}.center_lon must be between -180 and 360")
+        for key in ("extent_x_km", "extent_y_km"):
+            if cls._number(config, key, where) <= 0:
+                raise ValueError(f"{where}.{key} must be greater than 0")
+        if "rotation_degrees" in config:
+            cls._number(config, "rotation_degrees", where)
 
     @staticmethod
     def _partition_ranks(mesh_config: Dict[str, Any]) -> List[int]:
@@ -683,6 +800,9 @@ class _MeshBehavior:
             partition fails.
         """
         self._validate_mesh_config(mesh_config)
+        if mesh_config.get("regional") is not None:
+            # Removed once regional meshes are generated
+            raise RuntimeError("Regional meshes cannot be generated yet")
         ranks = self._partition_ranks(mesh_config)
         resolution = mesh_config.get("resolution", "120km")
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
