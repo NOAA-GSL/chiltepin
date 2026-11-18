@@ -17,6 +17,7 @@ mpi:
     - "module load stack-gcc"
     - "module load stack-openmpi"
     - "module load cmake"
+    - "module load netcdf-fortran"
     - "export CHILTEPIN_MPIF90=$MPIF90"
 service:
   mpi: False

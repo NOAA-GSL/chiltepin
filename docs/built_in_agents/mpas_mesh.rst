@@ -179,6 +179,11 @@ Actions
           },
       }
 
+   A region that covers only a few cells can make ``project_hexes`` crash or
+   write no mesh. The request then raises ``RuntimeError`` naming the log file,
+   and nothing is left behind, so give a region several cells across in each
+   direction.
+
    A ``create_region`` entry is recognized but not supported yet, and raises
    ``ValueError``. The mesh directory of a regional mesh also keeps the inputs
    the programs read, ``namelist.projections`` and, if rotated,
