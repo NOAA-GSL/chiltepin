@@ -98,8 +98,6 @@ class _MeshBehavior:
         # MPAS-Tools state (the project_hexes and grid_rotate programs)
         self.mpas_tools_version = mpas_tools_version
         self.mpas_tools_built = False
-        self.project_hexes_path: Optional[Path] = None
-        self.grid_rotate_path: Optional[Path] = None
 
         # Serializes tool installs, so concurrent requests that need a tool wait
         # for one install instead of each starting their own
@@ -326,6 +324,71 @@ class _MeshBehavior:
                 raise ValueError(f"{where}.{key} must be greater than 0")
         if "rotation_degrees" in config:
             cls._number(config, "rotation_degrees", where)
+
+    @staticmethod
+    def _real(value: float) -> str:
+        """Format a number for a Fortran namelist.
+
+        Raises
+        ------
+        ValueError
+            If the value is not finite, which the Fortran programs cannot read.
+        """
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"Cannot write {value!r} to a namelist")
+        return repr(value)
+
+    @classmethod
+    def _project_hexes_namelist(
+        cls,
+        cell_spacing_km: float,
+        extent_x_km: float,
+        extent_y_km: float,
+        center_lat: float,
+        center_lon: float,
+    ) -> str:
+        """Return the ``namelist.projections`` text that project_hexes reads."""
+        r = cls._real
+        return (
+            "&mesh\n"
+            f"  cell_spacing_km = {r(cell_spacing_km)}\n"
+            f"  mesh_length_x_km = {r(extent_x_km)}\n"
+            f"  mesh_length_y_km = {r(extent_y_km)}\n"
+            "  earth_radius_km = 6371.229\n"
+            "/\n"
+            "&projection\n"
+            '  projection_type = "lambert_conformal"\n'
+            "/\n"
+            "&lambert_conformal\n"
+            f"  reference_longitude_degrees = {r(center_lon)}\n"
+            f"  standard_longitude_degrees = {r(center_lon)}\n"
+            f"  reference_latitude_degrees = {r(center_lat)}\n"
+            f"  standard_parallel_1_degrees = {r(center_lat)}\n"
+            f"  standard_parallel_2_degrees = {r(center_lat)}\n"
+            "/\n"
+        )
+
+    @classmethod
+    def _rotate_namelist(
+        cls, center_lat: float, center_lon: float, rotation_degrees: float
+    ) -> str:
+        """Return the ``namelist.input`` text that grid_rotate reads.
+
+        The mesh is rotated counter-clockwise about its own center.
+        """
+        r = cls._real
+        return (
+            "&input\n"
+            f"   config_original_latitude_degrees = {r(center_lat)}\n"
+            f"   config_original_longitude_degrees = {r(center_lon)}\n"
+            "\n"
+            f"   config_new_latitude_degrees = {r(center_lat)}\n"
+            f"   config_new_longitude_degrees = {r(center_lon)}\n"
+            "   config_birdseye_rotation_counter_clockwise_degrees = "
+            f"{r(rotation_degrees)}\n"
+            "/\n"
+        )
 
     @staticmethod
     def _partition_ranks(mesh_config: Dict[str, Any]) -> List[int]:
@@ -588,6 +651,38 @@ class _MeshBehavior:
         )
 
     @bash_task
+    def _run_project_hexes(self, mesh_dir: str) -> str:
+        """Run project_hexes in a mesh directory holding ``namelist.projections``."""
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started project_hexes at $(date)"
+            echo "Executing on $(hostname)"
+            cd {self._q(mesh_dir)}
+            {self._q(self._project_hexes_exe)}
+            echo "Completed project_hexes at $(date)"
+            """
+        )
+
+    @bash_task
+    def _run_grid_rotate(self, mesh_dir: str, input_file: str, output_file: str) -> str:
+        """Run grid_rotate in a mesh directory holding ``namelist.input``."""
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started grid_rotate at $(date)"
+            echo "Executing on $(hostname)"
+            cd {self._q(mesh_dir)}
+            {self._q(self._grid_rotate_exe)} {self._q(input_file)} {self._q(output_file)}
+            echo "Completed grid_rotate at $(date)"
+            """
+        )
+
+    @bash_task
     def _partition_mesh(self, mesh_path: str, num_ranks: int) -> str:
         """Run gpmetis to partition a mesh graph file."""
         import textwrap
@@ -833,8 +928,6 @@ class _MeshBehavior:
                         f"grid_rotate are not usable in {self._mpas_tools_prefix}"
                         f"/bin, see {self.log_dir}/mpas_tools_build.stderr"
                     )
-            self.project_hexes_path = self._project_hexes_exe
-            self.grid_rotate_path = self._grid_rotate_exe
             self.mpas_tools_built = True
 
     # -------------------------------------------------------------------------
@@ -864,6 +957,120 @@ class _MeshBehavior:
             await self.install_metis()
         if "project_hexes" in (mesh_config.get("regional") or {}):
             await self.install_mpas_tools()
+
+    # -------------------------------------------------------------------------
+    # Private mesh generation
+    # -------------------------------------------------------------------------
+
+    async def _run_program(
+        self, task: Callable[..., Any], program: str, call_id: str, *args: str
+    ) -> None:
+        """Run a program on ``compute`` and report a failure with its log name.
+
+        Raises
+        ------
+        RuntimeError
+            If the program fails. The message names the log file.
+        """
+        log = self.log_dir / f"{program}.{call_id}"
+        future = task(
+            *args,
+            executor=["compute"],
+            stdout=f"{log}.stdout",
+            stderr=f"{log}.stderr",
+        )
+        try:
+            await asyncio.wrap_future(future)
+        except BashExitFailure as e:
+            raise RuntimeError(
+                f"{program} failed (exit {e.exitcode}), see {log}.stderr"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"{program} failed: {e}") from e
+
+    async def _generate_project_hexes_mesh(
+        self,
+        mesh_dir: Path,
+        mesh_name: str,
+        resolution: str,
+        config: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """Generate a regional mesh with project_hexes, rotated if requested.
+
+        Everything is written in ``mesh_dir``, which the caller created and
+        removes if this fails. The inputs the programs read stay there, and the
+        mesh and graph end up named after the mesh.
+
+        Parameters
+        ----------
+        mesh_dir : Path
+            Absolute path of the new mesh directory
+        mesh_name : str
+            Name of the mesh
+        resolution : str
+            Cell spacing such as ``"15km"``
+        config : dict
+            A validated ``regional.project_hexes`` block
+
+        Returns
+        -------
+        dict
+            ``{"static": path, "graph": path}``
+
+        Raises
+        ------
+        RuntimeError
+            If the programs cannot be installed or fail, or do not write the
+            files they should.
+        """
+        await self.install_mpas_tools()
+        call_id = uuid.uuid4().hex[:8]
+        center_lat = float(config["center_lat"])
+        center_lon = float(config["center_lon"])
+        rotation = float(config.get("rotation_degrees", 0.0))
+
+        (mesh_dir / "namelist.projections").write_text(
+            self._project_hexes_namelist(
+                self._parse_resolution_km(resolution),
+                config["extent_x_km"],
+                config["extent_y_km"],
+                center_lat,
+                center_lon,
+            )
+        )
+        await self._run_program(
+            self._run_project_hexes, "project_hexes", call_id, str(mesh_dir)
+        )
+        mesh_file = mesh_dir / "mpas_hex_mesh.nc"
+        graph_file = mesh_dir / "graph.info"
+
+        if rotation != 0.0:
+            (mesh_dir / "namelist.input").write_text(
+                self._rotate_namelist(center_lat, center_lon, rotation)
+            )
+            rotated_file = mesh_dir / "rotated_mesh.nc"
+            await self._run_program(
+                self._run_grid_rotate,
+                "grid_rotate",
+                call_id,
+                str(mesh_dir),
+                str(mesh_file),
+                str(rotated_file),
+            )
+            mesh_file.unlink(missing_ok=True)
+            mesh_file = rotated_file
+
+        for path in (mesh_file, graph_file):
+            if not path.is_file() or path.stat().st_size == 0:
+                raise RuntimeError(
+                    f"project_hexes did not write {path.name}, see "
+                    f"{self.log_dir}/project_hexes.{call_id}.stderr"
+                )
+        static = mesh_dir / f"{mesh_name}.static.nc"
+        graph = mesh_dir / f"{mesh_name}.graph.info"
+        mesh_file.replace(static)
+        graph_file.replace(graph)
+        return {"static": str(static), "graph": str(graph)}
 
     # -------------------------------------------------------------------------
     # Public agent actions — Mesh operations

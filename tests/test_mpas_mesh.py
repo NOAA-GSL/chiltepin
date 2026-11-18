@@ -915,12 +915,10 @@ async def test_behavior_is_picklable_while_requests_wait(behavior):
 
 
 async def test_install_mpas_tools_reuses_a_finished_install(monkeypatch, behavior):
-    prefix = mark_mpas_tools_installed(behavior)
+    mark_mpas_tools_installed(behavior)
     download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
     await behavior.install_mpas_tools()
     assert behavior.mpas_tools_built
-    assert behavior.project_hexes_path == prefix / "bin" / "project_hexes"
-    assert behavior.grid_rotate_path == prefix / "bin" / "grid_rotate"
     download.assert_not_called()
     build.assert_not_called()
 
@@ -1032,6 +1030,260 @@ async def test_install_mpas_tools_checks_resources_before_submitting(
         await behavior.install_mpas_tools()
     download.assert_not_called()
     build.assert_not_called()
+
+
+# Generating project_hexes meshes
+
+PROJECT_HEXES_NAMELIST = """\
+&mesh
+  cell_spacing_km = 15.0
+  mesh_length_x_km = 500.0
+  mesh_length_y_km = 400.0
+  earth_radius_km = 6371.229
+/
+&projection
+  projection_type = "lambert_conformal"
+/
+&lambert_conformal
+  reference_longitude_degrees = -105.0
+  standard_longitude_degrees = -105.0
+  reference_latitude_degrees = 40.0
+  standard_parallel_1_degrees = 40.0
+  standard_parallel_2_degrees = 40.0
+/
+"""
+
+ROTATE_NAMELIST = """\
+&input
+   config_original_latitude_degrees = 40.0
+   config_original_longitude_degrees = -105.0
+
+   config_new_latitude_degrees = 40.0
+   config_new_longitude_degrees = -105.0
+   config_birdseye_rotation_counter_clockwise_degrees = -30.5
+/
+"""
+
+
+def test_project_hexes_namelist():
+    assert (
+        _MeshBehavior._project_hexes_namelist(15.0, 500, 400, 40, -105)
+        == PROJECT_HEXES_NAMELIST
+    )
+
+
+def test_rotate_namelist():
+    assert _MeshBehavior._rotate_namelist(40, -105, -30.5) == ROTATE_NAMELIST
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_namelists_reject_non_finite_numbers(value):
+    with pytest.raises(ValueError, match="Cannot write"):
+        _MeshBehavior._project_hexes_namelist(15.0, value, 400, 40, -105)
+    with pytest.raises(ValueError, match="Cannot write"):
+        _MeshBehavior._rotate_namelist(40, -105, value)
+
+
+def test_namelist_numbers_keep_their_precision():
+    text = _MeshBehavior._project_hexes_namelist(0.0001, 1e22, 0.125, -33.3, 270.0)
+    assert "cell_spacing_km = 0.0001\n" in text
+    assert "mesh_length_x_km = 1e+22\n" in text
+    assert "reference_latitude_degrees = -33.3\n" in text
+
+
+@pytest.mark.parametrize(
+    "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME", "a b"]
+)
+def test_program_scripts_run_in_the_mesh_directory_without_expansion(
+    tmp_path, behavior, name
+):
+    pwned = tmp_path / "PWNED"
+    mesh_dir = tmp_path / name.format(pwn=pwned)
+    mesh_dir.mkdir(parents=True)
+    record = tmp_path / "record"
+    prefix = mark_mpas_tools_installed(behavior)
+    for program in ("project_hexes", "grid_rotate"):
+        fake = prefix / "bin" / program
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'{{ pwd; for a in "$@"; do printf "%s\\n" "$a"; done; }} '
+            f">> {shlex.quote(str(record))}\n"
+        )
+    inputs = [str(mesh_dir / "in.nc"), str(mesh_dir / "out.nc")]
+    scripts = [
+        _MeshBehavior._run_project_hexes.func(behavior, str(mesh_dir)),
+        _MeshBehavior._run_grid_rotate.func(behavior, str(mesh_dir), *inputs),
+    ]
+    for script in scripts:
+        done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+    assert not pwned.exists()
+    assert record.read_text().splitlines() == [str(mesh_dir)] + [str(mesh_dir)] + inputs
+
+
+def fake_program_tasks(behavior, monkeypatch, fail=None):
+    """Replace the project_hexes and grid_rotate tasks with fakes.
+
+    ``fail`` maps a program name to the exception its task fails with. Returns
+    the two mocks, which record what the fakes were called with.
+    """
+    fail = fail or {}
+
+    def project_hexes(mesh_dir, **kwargs):
+        if "project_hexes" in fail:
+            return done_future(error=fail["project_hexes"])
+        directory = Path(mesh_dir)
+        assert (directory / "namelist.projections").is_file()
+        (directory / "mpas_hex_mesh.nc").write_text("mesh")
+        (directory / "graph.info").write_text("graph")
+        return done_future()
+
+    def grid_rotate(mesh_dir, input_file, output_file, **kwargs):
+        if "grid_rotate" in fail:
+            return done_future(error=fail["grid_rotate"])
+        assert (Path(mesh_dir) / "namelist.input").is_file()
+        Path(output_file).write_text("rotated " + Path(input_file).read_text())
+        return done_future()
+
+    hexes, rotate = Mock(side_effect=project_hexes), Mock(side_effect=grid_rotate)
+    monkeypatch.setattr(behavior, "_run_project_hexes", hexes)
+    monkeypatch.setattr(behavior, "_run_grid_rotate", rotate)
+    return hexes, rotate
+
+
+@pytest.fixture
+def mesh_dir(tmp_path, behavior):
+    """Provide a new mesh directory and an installed set of MPAS-Tools."""
+    mark_mpas_tools_installed(behavior)
+    directory = tmp_path / "meshes" / "region"
+    directory.mkdir(parents=True)
+    return directory
+
+
+async def test_project_hexes_mesh_without_rotation(monkeypatch, behavior, mesh_dir):
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch)
+    result = await behavior._generate_project_hexes_mesh(
+        mesh_dir, "region", "15km", HEXES
+    )
+    assert result == {
+        "static": str(mesh_dir / "region.static.nc"),
+        "graph": str(mesh_dir / "region.graph.info"),
+    }
+    assert (mesh_dir / "region.static.nc").read_text() == "mesh"
+    assert (mesh_dir / "region.graph.info").read_text() == "graph"
+    # The inputs stay, and the intermediate names are gone
+    assert (mesh_dir / "namelist.projections").read_text() == PROJECT_HEXES_NAMELIST
+    assert {path.name for path in mesh_dir.iterdir()} == {
+        "namelist.projections",
+        "region.static.nc",
+        "region.graph.info",
+    }
+    rotate.assert_not_called()
+    hexes.assert_called_once()
+    assert hexes.call_args.args == (str(mesh_dir),)
+    assert hexes.call_args.kwargs["executor"] == ["compute"]
+    assert hexes.call_args.kwargs["stderr"].startswith(
+        str(behavior.log_dir / "project_hexes.")
+    )
+
+
+async def test_project_hexes_mesh_with_rotation(monkeypatch, behavior, mesh_dir):
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch)
+    result = await behavior._generate_project_hexes_mesh(
+        mesh_dir, "region", "15km", {**HEXES, "rotation_degrees": -30.5}
+    )
+    assert (mesh_dir / "region.static.nc").read_text() == "rotated mesh"
+    assert (mesh_dir / "region.graph.info").read_text() == "graph"
+    assert result["static"] == str(mesh_dir / "region.static.nc")
+    assert (mesh_dir / "namelist.input").read_text() == ROTATE_NAMELIST
+    assert {path.name for path in mesh_dir.iterdir()} == {
+        "namelist.projections",
+        "namelist.input",
+        "region.static.nc",
+        "region.graph.info",
+    }
+    rotate.assert_called_once()
+    assert rotate.call_args.args == (
+        str(mesh_dir),
+        str(mesh_dir / "mpas_hex_mesh.nc"),
+        str(mesh_dir / "rotated_mesh.nc"),
+    )
+    assert rotate.call_args.kwargs["executor"] == ["compute"]
+
+
+async def test_zero_rotation_does_not_run_grid_rotate(monkeypatch, behavior, mesh_dir):
+    _, rotate = fake_program_tasks(behavior, monkeypatch)
+    await behavior._generate_project_hexes_mesh(
+        mesh_dir, "region", "15km", {**HEXES, "rotation_degrees": 0}
+    )
+    rotate.assert_not_called()
+
+
+@pytest.mark.parametrize("program", ["project_hexes", "grid_rotate"])
+async def test_program_failure_names_its_log(monkeypatch, behavior, mesh_dir, program):
+    failure = BashExitFailure("task", 2)
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch, {program: failure})
+    with pytest.raises(RuntimeError, match=f"{program} failed \\(exit 2\\)") as info:
+        await behavior._generate_project_hexes_mesh(
+            mesh_dir, "region", "15km", {**HEXES, "rotation_degrees": 10}
+        )
+    task = hexes if program == "project_hexes" else rotate
+    assert str(task.call_args.kwargs["stderr"]) in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not (mesh_dir / "region.static.nc").exists()
+
+
+async def test_unexpected_program_error_becomes_a_runtime_error(
+    monkeypatch, behavior, mesh_dir
+):
+    failure = OSError("worker lost")
+    fake_program_tasks(behavior, monkeypatch, {"project_hexes": failure})
+    with pytest.raises(RuntimeError, match="project_hexes failed: worker lost") as info:
+        await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
+    assert info.value.__cause__ is failure
+
+
+@pytest.mark.parametrize("missing", ["mpas_hex_mesh.nc", "graph.info"])
+@pytest.mark.parametrize("empty", [False, True])
+async def test_missing_program_output_is_an_error(
+    monkeypatch, behavior, mesh_dir, missing, empty
+):
+    hexes, _ = fake_program_tasks(behavior, monkeypatch)
+    write = hexes.side_effect
+
+    def damaged(directory, **kwargs):
+        future = write(directory, **kwargs)
+        if empty:
+            (Path(directory) / missing).write_text("")
+        else:
+            (Path(directory) / missing).unlink()
+        return future
+
+    hexes.side_effect = damaged
+    with pytest.raises(RuntimeError, match=f"did not write {missing}"):
+        await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
+
+
+async def test_project_hexes_mesh_installs_the_programs_first(
+    monkeypatch, tmp_path, behavior
+):
+    mesh_dir = tmp_path / "region"
+    mesh_dir.mkdir()
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    fake_program_tasks(behavior, monkeypatch)
+    await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
+    download.assert_called_once()
+    build.assert_called_once()
+
+
+async def test_each_program_run_has_its_own_logs(monkeypatch, behavior, mesh_dir):
+    hexes, _ = fake_program_tasks(behavior, monkeypatch)
+    second = mesh_dir.parent / "second"
+    second.mkdir()
+    await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
+    await behavior._generate_project_hexes_mesh(second, "second", "15km", HEXES)
+    logs = [call.kwargs["stderr"] for call in hexes.call_args_list]
+    assert len(set(logs)) == 2
 
 
 # Partitioning
