@@ -13,16 +13,9 @@ at a time, and the mocked tests in ``test_mpas_mesh.py`` keep one loaded.
 """
 
 import asyncio
-import shutil
-import tempfile
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-
-import chiltepin.configure
-from chiltepin import AgentRuntime, Workflow
-from chiltepin.agents.mpas import MeshAgent
 
 # Versions the tests install, passed to the agent so the test and the agent agree
 METIS_VERSION = "5.2.1"
@@ -44,57 +37,6 @@ def regional(name, **changes):
         "name": name,
         "regional": {"project_hexes": {**HEXES, **changes}},
     }
-
-
-@pytest.fixture(scope="module")
-def directory(config_file, request):
-    """Provide a directory that the platform's compute nodes can also see.
-
-    It is removed afterwards unless a test in this module failed, so the install
-    and run logs remain available for debugging.
-    """
-    failed_before = request.session.testsfailed
-    output_dir = Path(__file__).parent.resolve() / "test_output"
-    output_dir.mkdir(exist_ok=True)
-    path = Path(tempfile.mkdtemp(prefix="mpas-regional-", dir=output_dir))
-    yield path
-    if request.session.testsfailed == failed_before:
-        shutil.rmtree(path, ignore_errors=True)
-
-
-@asynccontextmanager
-async def launch_agent(config_file, directory, tag):
-    """Launch a MeshAgent that runs its tasks on the platform's resources.
-
-    The agent runs locally and sends its install and run tasks to the platform's
-    ``service`` and ``compute`` resources. All launches share ``directory/work``
-    so a later one finds what an earlier one installed.
-    """
-    platform = chiltepin.configure.parse_file(config_file)
-    src = Path(__file__).parent.parent.resolve() / "src"
-    agent_config = {}
-    for name in ("service", "compute"):
-        resource = dict(platform[name])
-        resource["environment"] = list(resource.get("environment", [])) + [
-            f"export PYTHONPATH={src}${{PYTHONPATH:+:$PYTHONPATH}}"
-        ]
-        agent_config[name] = resource
-    controller_config = {"agent-executor": {"provider": "localhost"}}
-    workflow = Workflow(controller_config, run_dir=str(directory / f"runinfo-{tag}"))
-    with workflow:
-        runtime = AgentRuntime(workflow)
-        async with await runtime.manager() as manager:
-            yield await manager.launch(
-                MeshAgent,
-                executor="agent-executor",
-                kwargs={
-                    "work_dir": str(directory / "work"),
-                    "metis_version": METIS_VERSION,
-                    "mpas_tools_version": MPAS_TOOLS_VERSION,
-                },
-                agent_workflow_config=agent_config,
-                agent_workflow_run_dir=str(directory / f"agent-runinfo-{tag}"),
-            )
 
 
 def cell_count(graph):
@@ -129,15 +71,20 @@ def assert_valid_mesh(result, mesh_data_dir, name, partitions=()):
 
 
 @pytest.mark.asyncio
-async def test_real_regional_mesh(config_file, directory):
+async def test_real_regional_mesh(mesh_test_directory, launch_mesh_agent):
     """Build the MPAS-Tools programs and generate regional meshes with them."""
+    directory = mesh_test_directory
+    versions = {
+        "metis_version": METIS_VERSION,
+        "mpas_tools_version": MPAS_TOOLS_VERSION,
+    }
     mesh_data_dir = str(directory / "meshes")
     work = directory / "work"
     prefix = work / "mpas-tools" / MPAS_TOOLS_VERSION
     programs = [prefix / "bin" / "project_hexes", prefix / "bin" / "grid_rotate"]
     download_log = work / "logs" / "mpas_tools_download.stdout"
 
-    async with launch_agent(config_file, directory, "first") as agent:
+    async with launch_mesh_agent("first", **versions) as agent:
         # Concurrent requests that both need the programs, one of which also
         # needs Metis for partitioning
         plain, rotated = await asyncio.gather(
@@ -184,7 +131,7 @@ async def test_real_regional_mesh(config_file, directory):
         await agent.install_mpas_tools()
 
     # A new agent has no memory of the install, and finds the programs on disk
-    async with launch_agent(config_file, directory, "restart") as agent:
+    async with launch_mesh_agent("restart", **versions) as agent:
         again = await agent.generate_mesh(regional("again"), mesh_data_dir)
         assert assert_valid_mesh(again, mesh_data_dir, "again") == cell_count(
             plain["graph"]

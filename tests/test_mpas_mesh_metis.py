@@ -11,73 +11,15 @@ at a time, and the mocked tests in ``test_mpas_mesh.py`` keep one loaded.
 """
 
 import asyncio
-import shutil
-import tempfile
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-
-import chiltepin.configure
-from chiltepin import AgentRuntime, Workflow
-from chiltepin.agents.mpas import MeshAgent
 
 # Number of cells in the 480km global mesh
 CELLS_480KM = 2562
 
 # Metis version the tests install, passed to the agent so the test and the agent agree
 METIS_VERSION = "5.2.1"
-
-
-@pytest.fixture(scope="module")
-def directory(config_file, request):
-    """Provide a directory that the platform's compute nodes can also see.
-
-    It is removed afterwards unless a test in this module failed, so the install
-    and partition logs remain available for debugging.
-    """
-    failed_before = request.session.testsfailed
-    output_dir = Path(__file__).parent.resolve() / "test_output"
-    output_dir.mkdir(exist_ok=True)
-    path = Path(tempfile.mkdtemp(prefix="mpas-metis-", dir=output_dir))
-    yield path
-    if request.session.testsfailed == failed_before:
-        shutil.rmtree(path, ignore_errors=True)
-
-
-@asynccontextmanager
-async def launch_agent(config_file, directory, tag):
-    """Launch a MeshAgent that runs its tasks on the platform's resources.
-
-    The agent runs locally and sends its install and partition tasks to the
-    platform's ``service`` and ``compute`` resources. All launches share
-    ``directory/work`` so a later one finds what an earlier one installed.
-    """
-    platform = chiltepin.configure.parse_file(config_file)
-    src = Path(__file__).parent.parent.resolve() / "src"
-    agent_config = {}
-    for name in ("service", "compute"):
-        resource = dict(platform[name])
-        resource["environment"] = list(resource.get("environment", [])) + [
-            f"export PYTHONPATH={src}${{PYTHONPATH:+:$PYTHONPATH}}"
-        ]
-        agent_config[name] = resource
-
-    controller_config = {"agent-executor": {"provider": "localhost"}}
-    workflow = Workflow(controller_config, run_dir=str(directory / f"runinfo-{tag}"))
-    with workflow:
-        runtime = AgentRuntime(workflow)
-        async with await runtime.manager() as manager:
-            yield await manager.launch(
-                MeshAgent,
-                executor="agent-executor",
-                kwargs={
-                    "work_dir": str(directory / "work"),
-                    "metis_version": METIS_VERSION,
-                },
-                agent_workflow_config=agent_config,
-                agent_workflow_run_dir=str(directory / f"agent-runinfo-{tag}"),
-            )
 
 
 def assert_valid_partitions(result, ranks):
@@ -93,14 +35,15 @@ def assert_valid_partitions(result, ranks):
 
 
 @pytest.mark.asyncio
-async def test_real_metis_install_and_partition(config_file, directory):
+async def test_real_metis_install_and_partition(mesh_test_directory, launch_mesh_agent):
     """Install Metis, partition real meshes, and reuse it after a restart."""
+    directory = mesh_test_directory
     mesh_data_dir = str(directory / "meshes")
     work = directory / "work"
     gpmetis = work / "metis" / METIS_VERSION / "bin" / "gpmetis"
     download_log = work / "logs" / "metis_download.stdout"
 
-    async with launch_agent(config_file, directory, "first") as agent:
+    async with launch_mesh_agent("first", metis_version=METIS_VERSION) as agent:
         # Concurrent requests both get a working installation and use separate logs
         first, second = await asyncio.gather(
             agent.generate_mesh(
@@ -140,7 +83,7 @@ async def test_real_metis_install_and_partition(config_file, directory):
         ) == installed
 
     # A new agent has no memory of the install, and finds Metis on disk
-    async with launch_agent(config_file, directory, "restart") as agent:
+    async with launch_mesh_agent("restart", metis_version=METIS_VERSION) as agent:
         fourth = await agent.generate_mesh(
             {"resolution": "480km", "name": "p3", "forecast_ranks": 3}, mesh_data_dir
         )
