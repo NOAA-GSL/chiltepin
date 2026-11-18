@@ -138,7 +138,9 @@ Actions
      ``"120km"``), mesh ``name`` (default ``"mesh_<resolution>"``),
      ``init_ranks`` and ``forecast_ranks``, and ``regional``. The rank entries
      are positive integers giving MPI rank counts to partition the mesh graph
-     for. A count of 1 needs no partition. A name must not be that of a
+     for. A count of 1 needs no partition. A name can be at most 200
+     bytes long, which is 200 characters unless it has non-ASCII characters, and
+     must not be that of a
      downloaded global mesh file, such as ``x1.2562.graph.info``. Any other key
      raises ``ValueError``, so a misspelled key is not silently ignored.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.

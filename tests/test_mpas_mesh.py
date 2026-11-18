@@ -579,6 +579,42 @@ def test_validate_mesh_config_rejects_invalid(behavior, config, message):
         behavior._validate_mesh_config(config)
 
 
+@pytest.mark.parametrize("name", ["a" * 200, "\u00e9" * 100, "x" * 199 + "."])
+def test_validate_mesh_config_accepts_names_up_to_the_limit(behavior, name):
+    behavior._validate_mesh_config({"name": name})
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("a" * 201, "at most 200 bytes long, got 201"),
+        ("\u00e9" * 101, "at most 200 bytes long, got 202"),
+        ("\U0001f600" * 51, "at most 200 bytes long, got 204"),
+        ("bad\ud800", "valid file name"),
+    ],
+)
+def test_validate_mesh_config_rejects_long_or_unencodable_names(
+    behavior, name, message
+):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config({"name": name})
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config({**regional_config(), "name": name})
+
+
+async def test_longest_name_gets_every_file_it_needs(
+    monkeypatch, mesh_download, behavior, tmp_path
+):
+    """The longest allowed name must leave room for the longest file suffix."""
+    output, _ = mesh_download
+    mark_metis_installed(behavior)
+    monkeypatch.setattr(behavior, "_partition_mesh", fake_partition_task())
+    name = "n" * 200
+    config = {"resolution": "480km", "name": name, "forecast_ranks": 1048576}
+    result = await behavior.generate_mesh(config, str(output))
+    assert Path(result["partitions"][1048576]).is_file()
+
+
 def test_validate_mesh_config_accepts_valid(behavior):
     behavior._validate_mesh_config({})
     behavior._validate_mesh_config(PARTITIONED)

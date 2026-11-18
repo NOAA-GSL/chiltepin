@@ -35,6 +35,10 @@ _MAX_PARTITION_RANKS = 16
 # A resolution such as "7.5km", for meshes that are not downloaded
 _RESOLUTION_KM_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?km")
 
+# Longest mesh name in bytes. Files are named after the mesh, with a suffix such
+# as ".graph.info.part.<ranks>", and a file name can be at most 255 bytes long.
+_MAX_MESH_NAME_BYTES = 200
+
 # Keys a mesh request may contain
 _MESH_CONFIG_KEYS = frozenset(
     {"resolution", "name", "init_ranks", "forecast_ranks", "regional"}
@@ -184,8 +188,8 @@ class _MeshBehavior:
         ValueError
             If ``mesh_config`` is not a dict, has an unknown key, or has an
             invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``
-            or ``regional`` block. A name must not be that of a downloaded global
-            mesh file.
+            or ``regional`` block. A name must be at most 200 bytes long and
+            must not be that of a downloaded global mesh file.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
@@ -220,6 +224,15 @@ class _MeshBehavior:
             or Path(mesh_name).name != mesh_name
         ):
             raise ValueError("Mesh name must be a valid file name and not a path")
+        try:
+            name_bytes = len(os.fsencode(mesh_name))
+        except UnicodeEncodeError:
+            raise ValueError("Mesh name must be a valid file name") from None
+        if name_bytes > _MAX_MESH_NAME_BYTES:
+            raise ValueError(
+                f"Mesh name must be at most {_MAX_MESH_NAME_BYTES} bytes long, "
+                f"got {name_bytes}"
+            )
         if _SHARED_MESH_FILE_RE.fullmatch(mesh_name):
             raise ValueError(
                 f"Mesh name {mesh_name!r} is the name of a downloaded global mesh file"
