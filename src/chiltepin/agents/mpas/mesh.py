@@ -155,12 +155,19 @@ class _MeshBehavior:
                 exc_info=True,
             )
 
-    @staticmethod
-    def _partition_ranks(mesh_config: Dict[str, Any]) -> List[int]:
-        """Return the distinct rank counts above 1 requested by a mesh config.
+    def _validate_mesh_config(self, mesh_config: Dict[str, Any]) -> None:
+        """Check a mesh request configuration, as passed to ``generate_mesh()``.
 
-        A single rank needs no partition. Values that are not positive integers
-        are rejected, as are unknown keys and a ``mesh_config`` that is not a dict.
+        Every action that takes a mesh configuration calls this first, so
+        invalid requests fail before any resource check, install or download.
+        New keys and rules for them belong here.
+
+        Raises
+        ------
+        ValueError
+            If ``mesh_config`` is not a dict, has an unknown key, or has an
+            invalid ``resolution``, ``name``, ``init_ranks`` or ``forecast_ranks``.
+            A name must not be that of a downloaded global mesh file.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
@@ -172,14 +179,41 @@ class _MeshBehavior:
                 f"Unknown mesh_config keys: {', '.join(unknown)}. "
                 f"Allowed: {', '.join(sorted(_MESH_CONFIG_KEYS))}"
             )
-        ranks: List[int] = []
+        resolution = mesh_config.get("resolution", "120km")
+        if not isinstance(resolution, str) or resolution not in self.resolution_cells:
+            raise ValueError(
+                f"Resolution {resolution!r} not supported. "
+                f"Available: {list(self.resolution_cells.keys())}"
+            )
+        mesh_name = mesh_config.get("name", f"mesh_{resolution}")
+        if (
+            not isinstance(mesh_name, str)
+            or mesh_name in ("", ".", "..")
+            or Path(mesh_name).name != mesh_name
+        ):
+            raise ValueError("Mesh name must be a valid file name and not a path")
+        if _SHARED_MESH_FILE_RE.fullmatch(mesh_name):
+            raise ValueError(
+                f"Mesh name {mesh_name!r} is the name of a downloaded global mesh file"
+            )
         for key in ("init_ranks", "forecast_ranks"):
             value = mesh_config.get(key)
             if value is None:
                 continue
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{key} must be a positive integer, got {value!r}")
-            if value > 1 and value not in ranks:
+
+    @staticmethod
+    def _partition_ranks(mesh_config: Dict[str, Any]) -> List[int]:
+        """Return the distinct rank counts above 1 requested by a mesh config.
+
+        A single rank needs no partition. The config must already have been
+        checked by ``_validate_mesh_config()``.
+        """
+        ranks: List[int] = []
+        for key in ("init_ranks", "forecast_ranks"):
+            value = mesh_config.get(key)
+            if value is not None and value > 1 and value not in ranks:
                 ranks.append(value)
         return ranks
 
@@ -544,7 +578,13 @@ class _MeshBehavior:
         ----------
         mesh_config : dict
             Mesh request configuration, as passed to ``generate_mesh()``.
+
+        Raises
+        ------
+        ValueError
+            If the configuration is invalid.
         """
+        self._validate_mesh_config(mesh_config)
         if self._partition_ranks(mesh_config):
             await self.install_metis()
 
@@ -647,28 +687,14 @@ class _MeshBehavior:
             partitioning) is not defined, or a download, tool install, or
             partition fails.
         """
+        self._validate_mesh_config(mesh_config)
         ranks = self._partition_ranks(mesh_config)
         resolution = mesh_config.get("resolution", "120km")
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
-        if (
-            not isinstance(mesh_name, str)
-            or mesh_name in ("", ".", "..")
-            or Path(mesh_name).name != mesh_name
-        ):
-            raise ValueError("Mesh name must be a valid file name and not a path")
-        if _SHARED_MESH_FILE_RE.fullmatch(mesh_name):
-            raise ValueError(
-                f"Mesh name {mesh_name!r} is the name of a downloaded global mesh file"
-            )
 
         result: Dict[str, Any] = {}
 
         # Global mesh — download precomputed from UCAR
-        if not isinstance(resolution, str) or resolution not in self.resolution_cells:
-            raise ValueError(
-                f"Resolution {resolution!r} not supported. "
-                f"Available: {list(self.resolution_cells.keys())}"
-            )
         # Check resources before creating anything, so a request that cannot
         # finish downloads nothing and leaves nothing behind
         needed = ["service"] + (["compute"] if ranks else [])

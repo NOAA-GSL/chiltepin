@@ -518,9 +518,35 @@ def test_partition_ranks(config, expected):
 
 
 @pytest.mark.parametrize("value", [0, -2, 2.5, "4", True])
-def test_partition_ranks_rejects_invalid(value):
-    with pytest.raises(ValueError, match="init_ranks must be a positive integer"):
-        _MeshBehavior._partition_ranks({"init_ranks": value})
+@pytest.mark.parametrize("key", ["init_ranks", "forecast_ranks"])
+def test_validate_mesh_config_rejects_invalid_ranks(behavior, key, value):
+    with pytest.raises(ValueError, match=f"{key} must be a positive integer"):
+        behavior._validate_mesh_config({key: value})
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        (None, "must be a dict"),
+        ([], "must be a dict"),
+        ({"forecast_rank": 4}, "Unknown mesh_config keys: forecast_rank"),
+        ({"resolution": "1km"}, "not supported"),
+        ({"resolution": ["480km"]}, "not supported"),
+        ({"name": ""}, "valid file name"),
+        ({"name": "a/b"}, "valid file name"),
+        ({"name": 5}, "valid file name"),
+        ({"name": "x1.2562.graph.info"}, "downloaded global mesh file"),
+    ],
+)
+def test_validate_mesh_config_rejects_invalid(behavior, config, message):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(config)
+
+
+def test_validate_mesh_config_accepts_valid(behavior):
+    behavior._validate_mesh_config({})
+    behavior._validate_mesh_config(PARTITIONED)
+    behavior._validate_mesh_config({"resolution": "480km", "init_ranks": 1})
 
 
 # Task scripts
@@ -1030,6 +1056,18 @@ async def test_unexpected_task_errors_become_runtime_errors(
 def test_build_script_survives_a_failed_source_cleanup():
     build = _MeshBehavior._build_metis.func(_MeshBehavior("/tmp/w"))
     assert 'rm -rf "$build" || true' in build
+
+
+@pytest.mark.parametrize(
+    "config", [{"name": "a/b", "forecast_ranks": 4}, {"resolution": "1km"}]
+)
+async def test_ensure_tools_installed_validates_the_config(
+    monkeypatch, behavior, config
+):
+    download, _ = mock_metis_tasks(monkeypatch, behavior)
+    with pytest.raises(ValueError):
+        await behavior.ensure_tools_installed(config)
+    download.assert_not_called()
 
 
 async def test_ensure_tools_installed(monkeypatch, behavior):

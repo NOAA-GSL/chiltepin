@@ -157,7 +157,9 @@ Actions
 
 ``ensure_tools_installed(mesh_config)``
    Installs the tools that a ``generate_mesh`` request with this configuration
-   needs, so installation can overlap with other work.
+   needs, so installation can overlap with other work. It checks the
+   configuration first, exactly as ``generate_mesh`` does, and raises
+   ``ValueError`` if it is invalid.
 
 The download and generate actions return absolute paths and reuse mesh files
 already downloaded to ``mesh_data_dir``.
