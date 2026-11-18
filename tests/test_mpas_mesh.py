@@ -440,6 +440,7 @@ def mark_metis_installed(behavior):
 
 def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
     """Replace the Metis download and build tasks with mocks."""
+
     def run_build(**kwargs):
         # A successful build leaves a finished install behind
         for dependency in kwargs.get("inputs", []):
