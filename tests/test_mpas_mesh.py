@@ -747,6 +747,21 @@ async def test_partition_failure_names_its_log(monkeypatch, tmp_path, behavior):
         await behavior.partition_mesh(str(tmp_path / "graph.info"), [4, 8])
 
 
+async def test_unexpected_partition_error_becomes_a_runtime_error(
+    monkeypatch, tmp_path, behavior
+):
+    mark_metis_installed(behavior)
+    failure = OSError("worker lost")
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", Mock(return_value=done_future(error=failure))
+    )
+    with pytest.raises(
+        RuntimeError, match="Metis partition failed for 4 ranks: worker lost"
+    ) as info:
+        await behavior.partition_mesh(str(tmp_path / "graph.info"), 4)
+    assert info.value.__cause__ is failure
+
+
 async def test_concurrent_partitions_use_separate_logs(monkeypatch, tmp_path, behavior):
     mark_metis_installed(behavior)
     task = fake_partition_task()
