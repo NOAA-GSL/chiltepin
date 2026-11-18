@@ -49,10 +49,11 @@ _PROJECT_HEXES_KEYS = frozenset(_PROJECT_HEXES_REQUIRED + ("rotation_degrees",))
 class _MeshBehavior:
     """Mesh behavior for generating MPAS meshes.
 
-    Provides a top-level ``generate_mesh()`` action that downloads the requested
-    global mesh, creates named links to its files, and optionally partitions its
-    graph for MPI execution. Tools a request needs, such as Metis for
-    partitioning, are installed on demand.
+    Provides a top-level ``generate_mesh()`` action that either downloads the
+    requested global mesh and creates named links to its files, or generates a
+    regional mesh with the MPAS-Tools ``project_hexes`` program. It can also
+    partition the mesh graph for MPI execution. Tools a request needs, such as
+    Metis for partitioning, are installed on demand.
     """
 
     def __init__(
@@ -1137,16 +1138,25 @@ class _MeshBehavior:
     ) -> Dict[str, Any]:
         """Generate requested mesh.
 
-        Tools the request needs, such as Metis for partitioning, are installed
-        first if they are not already installed.
+        Without a ``regional`` block the request is for a global mesh, which is
+        downloaded. With one, a regional mesh is generated. Tools the request
+        needs, such as Metis for partitioning or the MPAS-Tools programs for a
+        regional mesh, are installed first if they are not already installed.
 
         Parameters
         ----------
         mesh_config : dict
             Optional ``resolution`` (default ``"120km"``) and ``name``
-            (default ``"mesh_<resolution>"``). Optional ``init_ranks`` and
+            (default ``"mesh_<resolution>"``). A global mesh must use one of the
+            supported global resolutions. A regional mesh may use any positive
+            number of kilometers, such as ``"2km"``. Optional ``init_ranks`` and
             ``forecast_ranks`` are positive integers giving MPI rank counts to
             partition the mesh graph for. A count of 1 needs no partition.
+            An optional ``regional`` dict holds exactly one method.
+            ``{"project_hexes": {...}}`` needs ``center_lat``, ``center_lon``,
+            ``extent_x_km`` and ``extent_y_km`` as numbers, and may have
+            ``rotation_degrees`` to rotate the mesh counter-clockwise about its
+            center. ``create_region`` is not supported yet.
         mesh_data_dir : str
             Directory where this request's mesh files are written
 
@@ -1163,28 +1173,28 @@ class _MeshBehavior:
         FileExistsError
             If the named mesh directory already exists.
         ValueError
-            If ``mesh_config`` is not a dict, or the name, resolution, or a rank
-            count is invalid. A name must not be that of a downloaded global mesh
-            file such as ``x1.2562.graph.info``.
+            If ``mesh_config`` is not a dict, or the name, resolution, a rank
+            count or the ``regional`` block is invalid. A name must not be that
+            of a downloaded global mesh file such as ``x1.2562.graph.info``.
         RuntimeError
-            If a resource the request needs (``service``, plus ``compute`` for
-            partitioning) is not defined, or a download, tool install, or
-            partition fails.
+            If a resource the request needs is not defined (``service`` for a
+            global mesh, ``compute`` for a regional mesh or partitioning), or a
+            download, tool install, program run or partition fails.
         """
         self._validate_mesh_config(mesh_config)
-        if mesh_config.get("regional") is not None:
-            # Removed once regional meshes are generated
-            raise RuntimeError("Regional meshes cannot be generated yet")
         ranks = self._partition_ranks(mesh_config)
+        regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
 
         result: Dict[str, Any] = {}
 
-        # Global mesh — download precomputed from UCAR
         # Check resources before creating anything, so a request that cannot
-        # finish downloads nothing and leaves nothing behind
-        needed = ["service"] + (["compute"] if ranks else [])
+        # finish downloads nothing and leaves nothing behind. Installing a tool
+        # that is missing checks that it has the resources it needs.
+        needed = ["service"] if regional is None else []
+        if regional is not None or ranks:
+            needed.append("compute")
         self._require_resources("This mesh request", *needed)
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
         mesh_dir = request_mesh_data_dir / mesh_name
@@ -1193,13 +1203,20 @@ class _MeshBehavior:
         try:
             # Install tools before downloading so a failure wastes no download
             await self.ensure_tools_installed(mesh_config)
-            paths = await self.download_global_mesh(
-                resolution, str(request_mesh_data_dir)
-            )
-            for key, suffix in (("static", "static.nc"), ("graph", "graph.info")):
-                link = mesh_dir / f"{mesh_name}.{suffix}"
-                link.symlink_to(Path(paths[key]).resolve())
-                result[key] = str(link)
+            if regional is None:
+                # Global mesh, downloaded precomputed from UCAR
+                paths = await self.download_global_mesh(
+                    resolution, str(request_mesh_data_dir)
+                )
+                for key, suffix in (("static", "static.nc"), ("graph", "graph.info")):
+                    link = mesh_dir / f"{mesh_name}.{suffix}"
+                    link.symlink_to(Path(paths[key]).resolve())
+                    result[key] = str(link)
+            else:
+                # The validator allows only project_hexes so far
+                result = await self._generate_project_hexes_mesh(
+                    mesh_dir, mesh_name, resolution, regional["project_hexes"]
+                )
             if ranks:
                 result["partitions"] = await self.partition_mesh(result["graph"], ranks)
             complete = True
@@ -1212,7 +1229,7 @@ class _MeshBehavior:
 
 @chiltepin_agent()
 class MeshAgent(_MeshBehavior):
-    """Deployable agent for downloading, naming and partitioning MPAS meshes.
+    """Deployable agent for downloading, generating and partitioning MPAS meshes.
 
     Parameters
     ----------
@@ -1220,4 +1237,6 @@ class MeshAgent(_MeshBehavior):
         Directory where mesh tools will be installed and agent logs will be written
     metis_version : str, optional
         Metis version to install for partitioning, by default "5.2.1"
+    mpas_tools_version : str, optional
+        MPAS-Tools tag to install for regional meshes, by default "2.0.0"
     """

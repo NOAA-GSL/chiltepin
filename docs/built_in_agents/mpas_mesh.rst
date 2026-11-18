@@ -1,10 +1,11 @@
-MPAS Global Mesh Agent
-======================
+MPAS Mesh Agent
+===============
 
 ``chiltepin.agents.mpas.MeshAgent`` Generates MPAS meshes for use in NWP
-workflows. The current implementation downloads precomputed global MPAS
-meshes from UCAR and can partition their graphs for MPI with Metis. Regional
-meshes are not yet supported.
+workflows. It downloads precomputed global MPAS meshes from UCAR, generates
+regional meshes with the MPAS-Tools ``project_hexes`` program, and can
+partition mesh graphs for MPI with Metis. Regional meshes made with
+``create_region`` are not yet supported.
 
 For the API reference, see :doc:`../api/agents/mpas_mesh`.
 
@@ -19,6 +20,13 @@ Requirements
 * For partitioning, ``git``, ``wget``, and ``tar`` on the ``service``
   resource, and ``cmake``, ``make``, and a C compiler on the ``compute``
   resource, to download and build Metis.
+* For regional meshes, ``git`` on the ``service`` resource, and ``make``, a
+  Fortran compiler, and the netCDF-C and netCDF-Fortran libraries on the
+  ``compute`` resource, to download and build the ``project_hexes`` and
+  ``grid_rotate`` programs from MPAS-Tools. The build finds netCDF through
+  ``nf-config`` and ``nc-config``, so these must be on the ``PATH`` of the
+  ``compute`` resource, for example by loading the netCDF-Fortran module in its
+  ``environment`` setting.
 
 Launch Arguments
 ----------------
@@ -37,6 +45,10 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
    Optional agent argument. The Metis version to install for partitioning, as
    it appears in the release tag without the leading ``v``, such as ``5.2.1``.
    Defaults to ``5.2.1``. Anything else raises ``ValueError``.
+``kwargs={"mpas_tools_version": "2.0.0"}``
+   Optional agent argument. The MPAS-Tools tag to install for regional meshes,
+   such as ``2.0.0``, written without a ``v`` prefix, since the MPAS-Tools tags
+   have none. Defaults to ``2.0.0``. Anything else raises ``ValueError``.
 
 ``executor``
    Resource in the launching workflow on which to deploy the agent.
@@ -44,12 +56,13 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
 ``agent_workflow_config``
    Configuration dictionary defining the resources the agent will use to run
    its tasks. Must define a ``service`` resource having internet access, and a
-   ``compute`` resource if meshes will be partitioned, as described below.
+   ``compute`` resource if meshes will be partitioned or regional, as described
+   below.
 
 ``agent_workflow_include``
    Optional resource-label list restricting which configured resources are
    loaded. If supplied, it must include ``"service"``, and ``"compute"`` if
-   meshes will be partitioned.
+   meshes will be partitioned or regional.
 
 ``agent_workflow_run_dir``
    Optional directory for the agent's workflow runtime files. Use a unique
@@ -61,14 +74,17 @@ Agent Configuration
 The agent workflow configuration must contain these resources:
 
 ``service``
-   Runs agent tasks that require internet access, such as downloading meshes
-   and Metis. It must have write access to the mesh output directory and to
+   Runs agent tasks that require internet access, such as downloading meshes,
+   Metis, and MPAS-Tools. It must have write access to the mesh output directory and to
    ``work_dir``. The agent and this resource must share these directories at
    the same absolute paths.
 
 ``compute``
    Runs tasks that do not need the internet, such as building Metis and
-   partitioning meshes. It needs ``cmake``, ``make`` and a C compiler, and it must have
+   MPAS-Tools, running ``project_hexes`` and ``grid_rotate``, and partitioning
+   meshes. It needs ``cmake``, ``make`` and a C compiler to build Metis, and
+   ``make``, a Fortran compiler and netCDF-C and netCDF-Fortran to build and run
+   the MPAS-Tools programs. It must have
    write access to ``work_dir`` and the mesh output directory at the same
    absolute paths as the agent. Requests that only download global meshes
    without partitioning do not use it.
@@ -82,6 +98,25 @@ For local execution:
        "compute": {"provider": "localhost"},
    }
 
+The ``environment`` setting of a resource lists the commands that run before its
+tasks, which is where to load modules. For regional meshes, the ``compute``
+resource must provide ``nf-config`` and ``nc-config``. For example, with
+spack-stack modules:
+
+.. code-block:: python
+
+   "compute": {
+       "provider": "localhost",
+       "environment": [
+           "source /usr/lmod/lmod/init/bash",
+           "module use /opt/spack-stack/envs/unified-env/modules/Core",
+           "module load stack-gcc",
+           "module load stack-openmpi",
+           "module load netcdf-fortran",
+           "module load cmake",
+       ],
+   },
+
 Actions
 -------
 
@@ -93,25 +128,74 @@ Actions
    * ``mesh_data_dir``: Where the agent will write the mesh files
 
 ``generate_mesh(mesh_config, mesh_data_dir)``
-   Generates the requested mesh and creates named symlinks in a subdirectory of
-   ``mesh_data_dir``. Returns ``"static"`` and ``"graph"`` paths to those links.
+   Generates the requested mesh in a subdirectory of ``mesh_data_dir`` named
+   after the mesh. Returns ``"static"`` and ``"graph"`` paths to the mesh files,
+   named ``<name>.static.nc`` and ``<name>.graph.info``. For a global mesh these
+   are symlinks to the downloaded files, and for a regional mesh they are the
+   files the programs wrote.
 
    * ``mesh_config``: Dictionary with optional ``resolution`` (default
-     ``"120km"``), mesh ``name`` (default ``"mesh_<resolution>"``), and
-     ``init_ranks`` and ``forecast_ranks``. The rank entries are positive
-     integers giving MPI rank counts to partition the mesh graph for. A count
-     of 1 needs no partition. A name must not be that of a downloaded global
-     mesh file, such as ``x1.2562.graph.info``. Any other key raises
-     ``ValueError``, so a misspelled key is not silently ignored.
+     ``"120km"``), mesh ``name`` (default ``"mesh_<resolution>"``),
+     ``init_ranks`` and ``forecast_ranks``, and ``regional``. The rank entries
+     are positive integers giving MPI rank counts to partition the mesh graph
+     for. A count of 1 needs no partition. A name must not be that of a
+     downloaded global mesh file, such as ``x1.2562.graph.info``. Any other key
+     raises ``ValueError``, so a misspelled key is not silently ignored.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
+
+   Without ``regional``, the request is for a global mesh, which is downloaded.
+   Its ``resolution`` must be one of the supported global resolutions listed
+   below.
+
+   With ``regional``, a regional mesh is generated, and ``resolution`` can be
+   any positive number of kilometers written as digits followed by ``km``, such
+   as ``"2km"`` or ``"7.5km"``. No limit is placed on the size of the mesh, so
+   a fine resolution over a large extent can ask for a very large mesh.
+   ``regional`` must be a dictionary with exactly one key, ``project_hexes``,
+   whose value is a dictionary with these numbers. They must be real numbers,
+   not strings, and finite:
+
+   * ``center_lat``: Latitude of the center, from -90 to 90 degrees.
+   * ``center_lon``: Longitude of the center, from -180 to 360 degrees.
+   * ``extent_x_km`` and ``extent_y_km``: Width and height of the region in
+     kilometers, each greater than 0.
+   * ``rotation_degrees``: Optional. Counter-clockwise rotation of the mesh
+     about its center. If it is not 0, ``grid_rotate`` is run.
+
+   For example:
+
+   .. code-block:: python
+
+      {
+          "resolution": "15km",
+          "name": "conus",
+          "regional": {
+              "project_hexes": {
+                  "center_lat": 39.0,
+                  "center_lon": -98.0,
+                  "extent_x_km": 5000,
+                  "extent_y_km": 3000,
+              }
+          },
+      }
+
+   A ``create_region`` entry is recognized but not supported yet, and raises
+   ``ValueError``. The mesh directory of a regional mesh also keeps the inputs
+   the programs read, ``namelist.projections`` and, if rotated,
+   ``namelist.input``. The MPAS-Tools programs are installed first if they are
+   not already installed. Each run writes its own logs,
+   ``project_hexes.<id>.*`` and ``grid_rotate.<id>.*`` in ``work_dir/logs``, and
+   a failure names its ``.stderr`` file.
 
    If partitions are requested, the result also has ``"partitions"``, a
    dictionary mapping each rank count to its partition file in the mesh
    subdirectory. Metis is installed first if it is not already installed.
    Before it creates anything or downloads anything, the action checks that the
-   workflow defines the resources the request needs, ``service`` and, if
-   partitions are requested, ``compute``. If one is missing it raises
-   ``RuntimeError`` naming it.
+   workflow defines the resources the request needs: ``service`` for a global
+   mesh, and ``compute`` for a regional mesh or if partitions are requested. If
+   one is missing it raises ``RuntimeError`` naming it. Installing a tool that
+   is missing also needs both ``service`` and ``compute``, and checks for them
+   when it runs.
 
    A mesh with the ``mesh_config``'s name must not already exist in the specified
    ``mesh_data_dir``. An existing mesh raises ``FileExistsError`` without
@@ -143,6 +227,25 @@ Actions
    ``metis_download.*`` and ``metis_build.*`` in ``work_dir/logs``. Installing
    needs both the ``service`` and ``compute`` resources. If one is missing, the
    action raises ``RuntimeError`` naming it, before it starts any download.
+``install_mpas_tools()``
+   Downloads and builds the ``project_hexes`` and ``grid_rotate`` programs from
+   MPAS-Tools in ``work_dir``, unless a finished install is already there. The
+   tag named by ``mpas_tools_version`` is cloned on the ``service`` resource and
+   built on the ``compute`` resource, which needs a Fortran compiler and netCDF
+   as described above. The programs are installed in
+   ``work_dir/mpas-tools/<mpas_tools_version>/bin``. Like ``install_metis()``,
+   a finished build leaves a ``.installed`` marker, an install counts only if the
+   marker and both executable programs exist, and this is checked on every
+   call, so a damaged install is rebuilt. A build starts from an empty install
+   directory, the sources in ``work_dir/mpas-tools/build`` are removed after a
+   successful build, and requests that need the programs while they are being
+   installed wait for that install. The logs are ``mpas_tools_download.*`` and
+   ``mpas_tools_build.*`` in ``work_dir/logs``. If ``nf-config`` or
+   ``nc-config`` is missing on the ``compute`` resource, the build stops with a
+   message saying so and leaves an existing install alone. Installing needs both
+   the ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming
+   a missing one before it starts any download. This runs automatically when a
+   regional request needs it, so calling it is optional.
 ``partition_mesh(mesh_path, num_ranks)``
    Partitions a graph file with Metis, installing Metis first if needed.
    ``mesh_path`` must be a non-empty string. A relative path or one starting
@@ -172,7 +275,7 @@ default, which preserves them. If you configure the exchange to use JSON,
 integer keys arrive as strings, a tuple sent as ``num_ranks`` arrives as a
 list, and a set cannot be sent. Use a list of integers to be safe.
 
-Supported global resolutions are ``480km``, ``384km``, ``240km``, ``120km``, ``60km``,
+Supported global resolutions, for meshes without ``regional``, are ``480km``, ``384km``, ``240km``, ``120km``, ``60km``,
 ``48km``, ``30km``, ``24km``, ``15km``, ``12km``, ``10km``, ``7.5km``, ``5km``,
 ``4km``, ``3.75km``, and ``3km``.
 

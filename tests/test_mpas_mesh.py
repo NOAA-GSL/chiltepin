@@ -12,6 +12,7 @@ import tarfile
 import urllib.request
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.error import URLError
 
@@ -707,14 +708,6 @@ def test_validate_mesh_config_requires_every_project_hexes_key(behavior):
             behavior._validate_mesh_config(regional_config(**{key: ...}))
 
 
-async def test_regional_mesh_is_rejected_before_anything_is_created(tmp_path, behavior):
-    # Temporary until regional meshes can be generated
-    output = tmp_path / "meshes"
-    with pytest.raises(RuntimeError, match="cannot be generated yet"):
-        await behavior.generate_mesh(regional_config(), str(output))
-    assert not output.exists()
-
-
 async def test_invalid_regional_mesh_creates_nothing(tmp_path, behavior):
     output = tmp_path / "meshes"
     with pytest.raises(ValueError, match="not supported yet"):
@@ -1284,6 +1277,177 @@ async def test_each_program_run_has_its_own_logs(monkeypatch, behavior, mesh_dir
     await behavior._generate_project_hexes_mesh(second, "second", "15km", HEXES)
     logs = [call.kwargs["stderr"] for call in hexes.call_args_list]
     assert len(set(logs)) == 2
+
+
+# Generating regional meshes through generate_mesh
+
+
+@pytest.fixture
+def regional(monkeypatch, tmp_path, behavior):
+    """Provide an output directory, installed tools, and fake programs."""
+    mark_mpas_tools_installed(behavior)
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch)
+    download = Mock(return_value=done_future())
+    monkeypatch.setattr(behavior, "_download_global_mesh", download)
+    return SimpleNamespace(
+        output=tmp_path / "meshes", hexes=hexes, rotate=rotate, download=download
+    )
+
+
+async def test_generate_regional_mesh(regional, behavior):
+    result = await behavior.generate_mesh(regional_config(), str(regional.output))
+    mesh_dir = regional.output / "region"
+    assert result == {
+        "static": str(mesh_dir / "region.static.nc"),
+        "graph": str(mesh_dir / "region.graph.info"),
+    }
+    assert (mesh_dir / "region.static.nc").read_text() == "mesh"
+    # No global mesh is downloaded for a regional one
+    regional.download.assert_not_called()
+    assert {path.name for path in regional.output.iterdir()} == {"region"}
+    regional.rotate.assert_not_called()
+
+
+@pytest.mark.parametrize("resolution", ["2km", "7.5km", "0.5km", "480km"])
+async def test_generate_regional_mesh_uses_the_requested_resolution(
+    regional, behavior, resolution
+):
+    config = regional_config()
+    config["resolution"] = resolution
+    await behavior.generate_mesh(config, str(regional.output))
+    text = (regional.output / "region" / "namelist.projections").read_text()
+    assert f"cell_spacing_km = {float(resolution[:-2])!r}\n" in text
+
+
+async def test_generate_regional_mesh_with_rotation(regional, behavior):
+    config = regional_config(rotation_degrees=45)
+    result = await behavior.generate_mesh(config, str(regional.output))
+    assert (regional.output / "region" / "region.static.nc").read_text() == (
+        "rotated mesh"
+    )
+    assert result["static"].endswith("region.static.nc")
+    regional.rotate.assert_called_once()
+
+
+async def test_generate_regional_mesh_with_default_name(regional, behavior):
+    config = regional_config()
+    del config["name"]
+    result = await behavior.generate_mesh(config, str(regional.output))
+    assert result["static"] == str(
+        regional.output / "mesh_15km" / "mesh_15km.static.nc"
+    )
+
+
+async def test_generate_regional_mesh_with_partitions(monkeypatch, regional, behavior):
+    mark_metis_installed(behavior)
+    task = fake_partition_task()
+    monkeypatch.setattr(behavior, "_partition_mesh", task)
+    config = {**regional_config(), "init_ranks": 4, "forecast_ranks": 8}
+    result = await behavior.generate_mesh(config, str(regional.output))
+    graph = result["graph"]
+    assert result["partitions"] == {4: f"{graph}.part.4", 8: f"{graph}.part.8"}
+    # The partitions are written next to the graph, in the mesh directory
+    assert Path(f"{graph}.part.8").is_file()
+    assert {call.args[0] for call in task.call_args_list} == {graph}
+
+
+async def test_explicit_empty_regional_block_means_a_global_mesh(
+    monkeypatch, mesh_download, behavior
+):
+    output, download = mesh_download
+    result = await behavior.generate_mesh(
+        {"resolution": "480km", "name": "global", "regional": None}, str(output)
+    )
+    download.assert_called_once()
+    assert result["static"] == str(output / "global" / "global.static.nc")
+
+
+@pytest.mark.parametrize("fail", ["project_hexes", "grid_rotate"])
+async def test_failed_regional_mesh_is_removed_and_can_be_retried(
+    monkeypatch, regional, behavior, fail
+):
+    failure = BashExitFailure("task", 1)
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch, {fail: failure})
+    config = regional_config(rotation_degrees=45)
+    with pytest.raises(RuntimeError, match=f"{fail} failed"):
+        await behavior.generate_mesh(config, str(regional.output))
+    # Nothing is left behind, including the namelists and intermediate meshes
+    assert list(regional.output.iterdir()) == []
+
+    fake_program_tasks(behavior, monkeypatch)
+    result = await behavior.generate_mesh(config, str(regional.output))
+    assert Path(result["static"]).is_file()
+
+
+async def test_failed_regional_partition_removes_the_whole_mesh(
+    monkeypatch, regional, behavior
+):
+    mark_metis_installed(behavior)
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    config = {**regional_config(), "init_ranks": 4, "forecast_ranks": 8}
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh(config, str(regional.output))
+    assert list(regional.output.iterdir()) == []
+
+
+async def test_existing_regional_mesh_name_fails_before_anything_runs(
+    regional, behavior
+):
+    (regional.output / "region").mkdir(parents=True)
+    with pytest.raises(FileExistsError):
+        await behavior.generate_mesh(regional_config(), str(regional.output))
+    regional.hexes.assert_not_called()
+    assert list((regional.output / "region").iterdir()) == []
+
+
+async def test_regional_mesh_installs_the_programs_before_running(
+    monkeypatch, tmp_path, behavior
+):
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    hexes, _ = fake_program_tasks(behavior, monkeypatch)
+    await behavior.generate_mesh(regional_config(), str(tmp_path / "meshes"))
+    download.assert_called_once()
+    build.assert_called_once()
+    hexes.assert_called_once()
+
+
+async def test_failed_install_leaves_no_regional_mesh(monkeypatch, tmp_path, behavior):
+    failure = BashExitFailure("task", 3)
+    mock_mpas_tools_tasks(monkeypatch, behavior, build=failure)
+    hexes, _ = fake_program_tasks(behavior, monkeypatch)
+    output = tmp_path / "meshes"
+    with pytest.raises(RuntimeError, match="MPAS-Tools build failed"):
+        await behavior.generate_mesh(regional_config(), str(output))
+    hexes.assert_not_called()
+    assert list(output.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("config", "defined", "missing"),
+    [
+        (regional_config(), ["service"], "compute"),
+        (regional_config(), [], "compute"),
+        ({**regional_config(), "forecast_ranks": 4}, ["service"], "compute"),
+    ],
+)
+async def test_regional_mesh_checks_resources_before_any_work(
+    monkeypatch, regional, behavior, config, defined, missing
+):
+    define_resources(monkeypatch, *defined)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.generate_mesh(config, str(regional.output))
+    regional.hexes.assert_not_called()
+    assert not regional.output.exists()
+
+
+async def test_installed_regional_mesh_needs_only_compute(
+    monkeypatch, regional, behavior
+):
+    define_resources(monkeypatch, "compute")
+    result = await behavior.generate_mesh(regional_config(), str(regional.output))
+    assert Path(result["static"]).is_file()
 
 
 # Partitioning
