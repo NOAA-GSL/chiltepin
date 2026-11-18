@@ -676,7 +676,10 @@ def test_validate_mesh_config_rejects_invalid_regional(behavior, regional, messa
 
 
 @pytest.mark.parametrize("key", list(HEXES) + ["rotation_degrees"])
-@pytest.mark.parametrize("value", [True, "40", "40,", None, float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "value",
+    [True, "40", "40,", None, float("nan"), float("inf"), 10**400, -(2**1024)],
+)
 def test_validate_mesh_config_rejects_non_numbers_in_project_hexes(
     behavior, key, value
 ):
@@ -1069,7 +1072,7 @@ def test_rotate_namelist():
     assert _MeshBehavior._rotate_namelist(40, -105, -30.5) == ROTATE_NAMELIST
 
 
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 10**400])
 def test_namelists_reject_non_finite_numbers(value):
     with pytest.raises(ValueError, match="Cannot write"):
         _MeshBehavior._project_hexes_namelist(15.0, value, 400, 40, -105)
@@ -1257,6 +1260,38 @@ async def test_missing_program_output_is_an_error(
         await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
 
 
+async def test_missing_project_hexes_output_blames_it_and_skips_the_rotation(
+    monkeypatch, behavior, mesh_dir
+):
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch)
+    hexes.side_effect = lambda directory, **kwargs: done_future()
+    config = {**HEXES, "rotation_degrees": 30}
+    with pytest.raises(RuntimeError, match="project_hexes did not write") as info:
+        await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", config)
+    assert str(hexes.call_args.kwargs["stderr"]) in str(info.value)
+    rotate.assert_not_called()
+
+
+@pytest.mark.parametrize("empty", [False, True])
+async def test_missing_grid_rotate_output_blames_it(
+    monkeypatch, behavior, mesh_dir, empty
+):
+    _, rotate = fake_program_tasks(behavior, monkeypatch)
+
+    def writes_nothing(mesh_dir, input_file, output_file, **kwargs):
+        if empty:
+            Path(output_file).write_text("")
+        return done_future()
+
+    rotate.side_effect = writes_nothing
+    config = {**HEXES, "rotation_degrees": 30}
+    with pytest.raises(
+        RuntimeError, match="grid_rotate did not write rotated_mesh.nc"
+    ) as info:
+        await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", config)
+    assert str(rotate.call_args.kwargs["stderr"]) in str(info.value)
+
+
 async def test_project_hexes_mesh_installs_the_programs_first(
     monkeypatch, tmp_path, behavior
 ):
@@ -1351,7 +1386,7 @@ async def test_generate_regional_mesh_with_partitions(monkeypatch, regional, beh
     assert {call.args[0] for call in task.call_args_list} == {graph}
 
 
-async def test_explicit_empty_regional_block_means_a_global_mesh(
+async def test_none_regional_block_means_a_global_mesh(
     monkeypatch, mesh_download, behavior
 ):
     output, download = mesh_download

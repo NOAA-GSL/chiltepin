@@ -258,13 +258,16 @@ class _MeshBehavior:
         numbers.
         """
         value = config[key]
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-        ):
+        number = math.nan
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                number = float(value)
+            except OverflowError:
+                # An integer too large for a float is not a usable number
+                pass
+        if not math.isfinite(number):
             raise ValueError(f"{where}.{key} must be a finite number, got {value!r}")
-        return float(value)
+        return number
 
     @classmethod
     def _validate_regional(cls, regional: Any) -> None:
@@ -335,10 +338,13 @@ class _MeshBehavior:
         ValueError
             If the value is not finite, which the Fortran programs cannot read.
         """
-        value = float(value)
-        if not math.isfinite(value):
+        try:
+            number = float(value)
+        except OverflowError:
+            number = math.inf
+        if not math.isfinite(number):
             raise ValueError(f"Cannot write {value!r} to a namelist")
-        return repr(value)
+        return repr(number)
 
     @classmethod
     def _project_hexes_namelist(
@@ -989,6 +995,20 @@ class _MeshBehavior:
         except Exception as e:
             raise RuntimeError(f"{program} failed: {e}") from e
 
+    def _require_output(self, path: Path, program: str, call_id: str) -> None:
+        """Check that a program wrote a non-empty file.
+
+        Raises
+        ------
+        RuntimeError
+            If it did not. The message names the log file of that program.
+        """
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(
+                f"{program} did not write {path.name}, "
+                f"see {self.log_dir}/{program}.{call_id}.stderr"
+            )
+
     async def _generate_project_hexes_mesh(
         self,
         mesh_dir: Path,
@@ -1044,6 +1064,8 @@ class _MeshBehavior:
         )
         mesh_file = mesh_dir / "mpas_hex_mesh.nc"
         graph_file = mesh_dir / "graph.info"
+        for path in (mesh_file, graph_file):
+            self._require_output(path, "project_hexes", call_id)
 
         if rotation != 0.0:
             (mesh_dir / "namelist.input").write_text(
@@ -1058,15 +1080,10 @@ class _MeshBehavior:
                 str(mesh_file),
                 str(rotated_file),
             )
+            self._require_output(rotated_file, "grid_rotate", call_id)
             mesh_file.unlink(missing_ok=True)
             mesh_file = rotated_file
 
-        for path in (mesh_file, graph_file):
-            if not path.is_file() or path.stat().st_size == 0:
-                raise RuntimeError(
-                    f"project_hexes did not write {path.name}, see "
-                    f"{self.log_dir}/project_hexes.{call_id}.stderr"
-                )
         static = mesh_dir / f"{mesh_name}.static.nc"
         graph = mesh_dir / f"{mesh_name}.graph.info"
         mesh_file.replace(static)
