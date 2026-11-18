@@ -843,18 +843,34 @@ async def test_cleanup_failures_do_not_hide_the_error(
     )
     warning = Mock()
     monkeypatch.setattr(mesh_module.logger, "warning", warning)
-    real_rmdir = Path.rmdir
-
-    def failing_rmdir(path):
-        if path.name == "forecast":
-            raise OSError("directory busy")
-        real_rmdir(path)
-
-    monkeypatch.setattr(Path, "rmdir", failing_rmdir)
+    # Removing the directory fails and leaves it behind
+    monkeypatch.setattr(mesh_module.shutil, "rmtree", lambda *a, **k: None)
     with pytest.raises(RuntimeError, match="Metis partition failed for 8 ranks"):
         await behavior.generate_mesh(PARTITIONED, str(output))
     warning.assert_called_once()
     assert "remove it before requesting this mesh again" in warning.call_args.args[0]
+
+
+async def test_failed_request_removes_the_whole_mesh_directory(
+    monkeypatch, mesh_download, behavior
+):
+    output, _ = mesh_download
+    mark_metis_installed(behavior)
+
+    def partition_then_fail(mesh_path, rank, **kwargs):
+        # A partial file and an unexpected file left by the failed tool
+        Path(f"{mesh_path}.part.{rank}").write_text("partial")
+        Path(mesh_path).with_name("gpmetis.log").write_text("log")
+        return done_future(error=BashExitFailure("partition", 1))
+
+    task = Mock(side_effect=partition_then_fail)
+    monkeypatch.setattr(behavior, "_partition_mesh", task)
+    with pytest.raises(RuntimeError, match="partition failed"):
+        await behavior.generate_mesh(PARTITIONED, str(output))
+    assert not (output / "forecast").exists()
+    # The shared downloaded files are untouched
+    assert {path.name for path in output.iterdir()} == set(mesh_files())
+    assert all((output / name).stat().st_size > 0 for name in mesh_files())
 
 
 @pytest.mark.parametrize(

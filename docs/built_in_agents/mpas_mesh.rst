@@ -115,9 +115,9 @@ Actions
 
    A mesh with the ``mesh_config``'s name must not already exist in the specified
    ``mesh_data_dir``. An existing mesh raises ``FileExistsError`` without
-   overwriting it. Choose a new name for another mesh. If a request fails, the
-   links and partition files it created and its mesh subdirectory are removed
-   so the name can be used again. Global mesh files already downloaded to
+   overwriting it. Choose a new name for another mesh. If a request fails, its
+   mesh subdirectory and everything in it are removed so the name can be used
+   again. Global mesh files already downloaded to
    ``mesh_data_dir`` are kept for reuse. If cleanup itself fails, for example
    because the request was interrupted while a partition was still running, the
    agent logs a warning naming the leftover directory, which must be removed

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -134,25 +135,19 @@ class _MeshBehavior:
         return resolved_dir
 
     @staticmethod
-    def _remove_new_mesh_dir(mesh_dir: Path, created: List[Path]) -> None:
-        """Remove the files and directory a failed request created.
+    def _remove_mesh_dir(mesh_dir: Path) -> None:
+        """Remove a mesh directory and everything in it after a failed request.
 
-        Only the given files are removed, and the shared downloaded mesh files
-        they link to are left alone. Failures are logged and never raised, so
-        cleanup cannot hide the error that caused it or stop partway.
+        The request created the directory, so everything in it is its own. The
+        links inside are removed without following them, so the shared downloaded
+        mesh files they point to are left alone. A failure is logged and never
+        raised, so cleanup cannot hide the error that caused it.
         """
-        for path in created:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("Could not remove %s", path, exc_info=True)
-        try:
-            mesh_dir.rmdir()
-        except OSError:
+        shutil.rmtree(mesh_dir, ignore_errors=True)
+        if mesh_dir.exists() or mesh_dir.is_symlink():
             logger.warning(
                 "Could not remove %s; remove it before requesting this mesh again",
                 mesh_dir,
-                exc_info=True,
             )
 
     def _validate_mesh_config(self, mesh_config: Dict[str, Any]) -> None:
@@ -702,7 +697,6 @@ class _MeshBehavior:
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
         mesh_dir = request_mesh_data_dir / mesh_name
         mesh_dir.mkdir()
-        created: List[Path] = []
         complete = False
         try:
             # Install tools before downloading so a failure wastes no download
@@ -713,17 +707,15 @@ class _MeshBehavior:
             for key, suffix in (("static", "static.nc"), ("graph", "graph.info")):
                 link = mesh_dir / f"{mesh_name}.{suffix}"
                 link.symlink_to(Path(paths[key]).resolve())
-                created.append(link)
                 result[key] = str(link)
             if ranks:
-                created += [Path(f"{result['graph']}.part.{rank}") for rank in ranks]
                 result["partitions"] = await self.partition_mesh(result["graph"], ranks)
             complete = True
             return result
         finally:
-            # Remove only files created by this call so a failed request can be retried.
+            # Remove the failed mesh completely so the name can be used again
             if not complete:
-                self._remove_new_mesh_dir(mesh_dir, created)
+                self._remove_mesh_dir(mesh_dir)
 
 
 @chiltepin_agent()
