@@ -17,6 +17,7 @@ from urllib.error import URLError
 import pytest
 import pytest_asyncio
 from parsl.app.errors import BashExitFailure
+from parsl.errors import NoDataFlowKernelError
 
 from chiltepin import AgentRuntime, Workflow
 from chiltepin.agents import mpas
@@ -72,6 +73,10 @@ def run_download(behavior, directory, resolution="480km"):
     _MeshBehavior._download_global_mesh.func(behavior, resolution, str(directory))
 
 
+# The real lookup, which the autouse fixture below replaces
+real_configured_resources = _MeshBehavior._configured_resources
+
+
 @pytest.fixture(autouse=True)
 def no_resource_check(monkeypatch):
     """Skip the resource check, since the workflow loaded by a fixture is partial.
@@ -80,6 +85,12 @@ def no_resource_check(monkeypatch):
     """
     monkeypatch.setattr(
         _MeshBehavior, "_configured_resources", staticmethod(lambda: None)
+    )
+
+
+def use_real_resource_lookup(monkeypatch):
+    monkeypatch.setattr(
+        _MeshBehavior, "_configured_resources", staticmethod(real_configured_resources)
     )
 
 
@@ -962,6 +973,63 @@ async def test_generate_mesh_without_partitions_needs_only_service(
     define_resources(monkeypatch, "service")
     result = await behavior.generate_mesh({"resolution": "480km"}, str(output))
     assert "partitions" not in result
+
+
+async def test_resource_check_uses_the_loaded_workflow(
+    monkeypatch, mesh_agent, behavior
+):
+    # mesh_agent keeps a workflow with "agent-executor" and "service" loaded
+    use_real_resource_lookup(monkeypatch)
+    assert {"agent-executor", "service"} <= _MeshBehavior._configured_resources()
+    behavior._require_resources("Testing", "service")
+    with pytest.raises(RuntimeError, match="'compute'"):
+        behavior._require_resources("Testing", "service", "compute")
+
+
+async def test_missing_workflow_skips_the_check_with_a_warning(monkeypatch, behavior):
+    use_real_resource_lookup(monkeypatch)
+
+    def no_workflow():
+        raise NoDataFlowKernelError("none")
+
+    monkeypatch.setattr(mesh_module.parsl, "dfk", no_workflow)
+    warning = Mock()
+    monkeypatch.setattr(mesh_module.logger, "warning", warning)
+    behavior._require_resources("Testing", "compute")
+    warning.assert_called_once()
+    assert "resources are not checked" in warning.call_args.args[0]
+
+
+async def test_unexpected_lookup_errors_are_not_hidden(monkeypatch, behavior):
+    use_real_resource_lookup(monkeypatch)
+
+    def broken():
+        raise AttributeError("renamed")
+
+    monkeypatch.setattr(mesh_module.parsl, "dfk", broken)
+    with pytest.raises(AttributeError):
+        behavior._require_resources("Testing", "compute")
+
+
+@pytest.mark.parametrize("stage", ["download", "build"])
+async def test_unexpected_task_errors_become_runtime_errors(
+    monkeypatch, behavior, stage
+):
+    failure = OSError("worker lost")
+    mock_metis_tasks(
+        monkeypatch,
+        behavior,
+        download=failure if stage == "download" else None,
+        build=failure if stage == "build" else None,
+    )
+    with pytest.raises(RuntimeError, match=f"Metis {stage} failed: ") as info:
+        await behavior.install_metis()
+    assert info.value.__cause__ is failure
+
+
+def test_build_script_survives_a_failed_source_cleanup():
+    build = _MeshBehavior._build_metis.func(_MeshBehavior("/tmp/w"))
+    assert 'rm -rf "$build" || true' in build
 
 
 async def test_ensure_tools_installed(monkeypatch, behavior):

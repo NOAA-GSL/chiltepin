@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import parsl
 from parsl.app.errors import BashExitFailure
+from parsl.errors import NoDataFlowKernelError
 
 from chiltepin.agents import agent_action, chiltepin_agent
 from chiltepin.tasks import bash_task, python_task
@@ -165,11 +166,12 @@ class _MeshBehavior:
         """Return the names of the resources the workflow defines.
 
         Returns None if no workflow is loaded in this process, in which case
-        the resources cannot be checked.
+        the resources cannot be checked and the check is skipped.
         """
         try:
             return set(parsl.dfk().executors)
-        except Exception:
+        except NoDataFlowKernelError:
+            logger.warning("No workflow is loaded, so resources are not checked")
             return None
 
     def _require_resources(self, action: str, *needed: str) -> None:
@@ -267,7 +269,9 @@ class _MeshBehavior:
             make install
             # The sources are no longer needed. A failed build keeps them to debug.
             cd /
-            rm -rf "$build"
+            # Failing to remove the sources, for example from busy files on a
+            # network filesystem, must not fail a finished build
+            rm -rf "$build" || true
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
             echo "Completed build at $(date)"
@@ -393,6 +397,8 @@ class _MeshBehavior:
                         f"Metis download failed (exit {e.exitcode}), "
                         f"see {self.log_dir}/metis_download.stderr"
                     ) from e
+                except Exception as e:
+                    raise RuntimeError(f"Metis download failed: {e}") from e
                 try:
                     await asyncio.wrap_future(build_future)
                 except BashExitFailure as e:
@@ -400,6 +406,8 @@ class _MeshBehavior:
                         f"Metis build failed (exit {e.exitcode}), "
                         f"see {self.log_dir}/metis_build.stderr"
                     ) from e
+                except Exception as e:
+                    raise RuntimeError(f"Metis build failed: {e}") from e
                 if not self._metis_usable():
                     raise RuntimeError(
                         f"Metis build finished but {self._gpmetis} is not usable, "
