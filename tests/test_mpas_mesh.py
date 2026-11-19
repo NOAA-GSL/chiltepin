@@ -629,6 +629,37 @@ HEXES = {
 }
 
 
+# One valid block for each create_region shape
+SHAPES = {
+    "circle": {"center_lat": 39.0, "center_lon": -105.5, "radius_km": 1500},
+    "ellipse": {
+        "center_lat": 39.0,
+        "center_lon": -105.5,
+        "semi_major_axis_km": 2000,
+        "semi_minor_axis_km": 1000,
+        "orientation_degrees": 30,
+    },
+    "polygon": {
+        "vertices": [[30, -120], [30, -90], [48, -90], [48, -120]],
+        "inside_lat": 39.0,
+        "inside_lon": -105.0,
+    },
+    "channel": {"upper_lat": 23.5, "lower_lat": -23.5},
+}
+
+
+def create_region_config(shape="circle", name="cut", **changes):
+    """Return a valid create_region request, with the shape's block changed."""
+    block = {**SHAPES[shape], **changes}
+    return {
+        "resolution": "480km",
+        "name": name,
+        "regional": {
+            "create_region": {shape: {k: v for k, v in block.items() if v is not ...}}
+        },
+    }
+
+
 def regional_config(**changes):
     """Return a valid regional request, with the project_hexes block changed."""
     block = {**HEXES, **changes}
@@ -691,7 +722,7 @@ def test_validate_mesh_config_rejects_invalid_regional_resolution(behavior, reso
         ("project_hexes", "regional must be a dict"),
         ([], "regional must be a dict"),
         ({}, "exactly one of 'project_hexes' or 'create_region'"),
-        ({"create_region": {}}, "'create_region' is not supported yet"),
+        ({"create_region": {}}, "must contain exactly one of circle, ellipse"),
         (
             {"project_hexes": HEXES, "create_region": {}},
             "exactly one of 'project_hexes' or 'create_region'",
@@ -747,9 +778,152 @@ def test_validate_mesh_config_requires_every_project_hexes_key(behavior):
             behavior._validate_mesh_config(regional_config(**{key: ...}))
 
 
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_validate_mesh_config_accepts_each_create_region_shape(behavior, shape):
+    behavior._validate_mesh_config(create_region_config(shape))
+
+
+def test_validate_mesh_config_accepts_create_region_edge_values(behavior):
+    behavior._validate_mesh_config(
+        create_region_config("ellipse", orientation_degrees=...)
+    )
+    behavior._validate_mesh_config(
+        create_region_config("ellipse", semi_minor_axis_km=2000)
+    )
+    behavior._validate_mesh_config(
+        create_region_config("circle", center_lat=-90, center_lon=360)
+    )
+    behavior._validate_mesh_config(
+        create_region_config("polygon", vertices=((1, 2), (3, 4), (5, 6)))
+    )
+    behavior._validate_mesh_config(
+        create_region_config("channel", upper_lat=90, lower_lat=-90)
+    )
+
+
+@pytest.mark.parametrize("resolution", ["2km", "50km", "0.5km"])
+def test_create_region_needs_a_downloadable_resolution(behavior, resolution):
+    config = create_region_config()
+    config["resolution"] = resolution
+    with pytest.raises(ValueError, match="not supported. Available"):
+        behavior._validate_mesh_config(config)
+
+
+@pytest.mark.parametrize(
+    ("create_region", "message"),
+    [
+        (None, "regional.create_region must be a dict"),
+        ([], "regional.create_region must be a dict"),
+        ({}, "must contain exactly one of circle, ellipse, polygon, channel"),
+        (
+            {"circle": SHAPES["circle"], "channel": SHAPES["channel"]},
+            "must contain exactly one of",
+        ),
+        ({"square": {}}, "Unknown regional.create_region keys: square"),
+        ({"circle": None}, "regional.create_region.circle must be a dict"),
+        (
+            {"circle": {**SHAPES["circle"], "radius": 5}},
+            "Unknown regional.create_region.circle keys: radius",
+        ),
+        (
+            {"circle": {"center_lat": 1}},
+            "circle is missing required keys: center_lon, radius_km",
+        ),
+    ],
+)
+def test_validate_mesh_config_rejects_invalid_create_region(
+    behavior, create_region, message
+):
+    config = {"resolution": "480km", "regional": {"create_region": create_region}}
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(config)
+
+
+@pytest.mark.parametrize(
+    ("shape", "key"),
+    [(shape, key) for shape, block in SHAPES.items() for key in block],
+)
+@pytest.mark.parametrize("value", [True, "40", None, float("nan"), 10**400])
+def test_validate_mesh_config_rejects_non_numbers_in_create_region(
+    behavior, shape, key, value
+):
+    with pytest.raises(ValueError, match=f"create_region.{shape}.{key}"):
+        behavior._validate_mesh_config(create_region_config(shape, **{key: value}))
+
+
+@pytest.mark.parametrize(
+    ("shape", "changes", "message"),
+    [
+        ("circle", {"center_lat": 90.5}, "center_lat must be between -90 and 90"),
+        ("circle", {"center_lon": -181}, "center_lon must be between -180 and 360"),
+        ("circle", {"radius_km": 0}, "radius_km must be greater than 0"),
+        ("ellipse", {"semi_major_axis_km": -1}, "semi_major_axis_km must be greater"),
+        ("ellipse", {"semi_minor_axis_km": 0}, "semi_minor_axis_km must be greater"),
+        (
+            "ellipse",
+            {"semi_minor_axis_km": 2001},
+            "semi_minor_axis_km must not be greater than semi_major_axis_km",
+        ),
+        ("polygon", {"inside_lat": -91}, "inside_lat must be between -90 and 90"),
+        ("polygon", {"inside_lon": 400}, "inside_lon must be between -180 and 360"),
+        ("channel", {"upper_lat": 95}, "upper_lat must be between -90 and 90"),
+        ("channel", {"lower_lat": 23.5}, "upper_lat must be greater than lower_lat"),
+        ("channel", {"lower_lat": 30}, "upper_lat must be greater than lower_lat"),
+    ],
+)
+def test_validate_mesh_config_rejects_out_of_range_create_region(
+    behavior, shape, changes, message
+):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(create_region_config(shape, **changes))
+
+
+@pytest.mark.parametrize(
+    ("vertices", "message"),
+    [
+        ("30,-120 30,-90 48,-90", "vertices must be a list of at least 3"),
+        ([[30, -120], [30, -90]], "vertices must be a list of at least 3"),
+        (None, "vertices must be a list of at least 3"),
+        ([[30, -120], [30, -90], [48]], r"vertices\[2\] must be a \[lat, lon\] pair"),
+        ([[30, -120], [30, -90], "48,-90"], r"vertices\[2\] must be a \[lat, lon\]"),
+        ([[30, -120], [30, -90], [48, -90, 0]], r"vertices\[2\] must be a \[lat"),
+        ([[30, -120], [True, -90], [48, -90]], r"vertices\[1\] latitude must be a fin"),
+        ([[30, -120], [30, "x"], [48, -90]], r"vertices\[1\] longitude must be a fin"),
+        ([[30, -120], [91, -90], [48, -90]], r"vertices\[1\] latitude must be betw"),
+        ([[30, -120], [30, 361], [48, -90]], r"vertices\[1\] longitude must be betw"),
+    ],
+)
+def test_validate_mesh_config_rejects_invalid_polygon_vertices(
+    behavior, vertices, message
+):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(
+            create_region_config("polygon", vertices=vertices)
+        )
+
+
+@pytest.mark.parametrize("name", ["a\nb", "tab\there", "nul\x00", "del\x7f", "c1\x85"])
+@pytest.mark.parametrize("config", [{}, regional_config(), create_region_config()])
+def test_validate_mesh_config_rejects_control_characters_in_names(
+    behavior, name, config
+):
+    with pytest.raises(ValueError, match="must not contain control characters"):
+        behavior._validate_mesh_config({**config, "name": name})
+
+
+async def test_create_region_mesh_is_rejected_before_anything_is_created(
+    tmp_path, behavior
+):
+    # Temporary until create_region meshes can be generated
+    output = tmp_path / "meshes"
+    with pytest.raises(RuntimeError, match="cannot be generated yet"):
+        await behavior.generate_mesh(create_region_config(), str(output))
+    assert not output.exists()
+
+
 async def test_invalid_regional_mesh_creates_nothing(tmp_path, behavior):
     output = tmp_path / "meshes"
-    with pytest.raises(ValueError, match="not supported yet"):
+    with pytest.raises(ValueError, match="missing required keys"):
         await behavior.generate_mesh(
             {"regional": {"create_region": {"circle": {}}}}, str(output)
         )

@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import shutil
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -48,6 +49,17 @@ _MESH_CONFIG_KEYS = frozenset(
 _REGIONAL_METHODS = ("project_hexes", "create_region")
 _PROJECT_HEXES_REQUIRED = ("center_lat", "center_lon", "extent_x_km", "extent_y_km")
 _PROJECT_HEXES_KEYS = frozenset(_PROJECT_HEXES_REQUIRED + ("rotation_degrees",))
+
+# Shapes a create_region block may hold, with their required and optional keys
+_CREATE_REGION_SHAPES = {
+    "circle": (("center_lat", "center_lon", "radius_km"), ()),
+    "ellipse": (
+        ("center_lat", "center_lon", "semi_major_axis_km", "semi_minor_axis_km"),
+        ("orientation_degrees",),
+    ),
+    "polygon": (("vertices", "inside_lat", "inside_lon"), ()),
+    "channel": (("upper_lat", "lower_lat"), ()),
+}
 
 
 class _MeshBehavior:
@@ -187,8 +199,9 @@ class _MeshBehavior:
         ValueError
             If ``mesh_config`` is not a dict, has an unknown key, or has an
             invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``
-            or ``regional`` block. A name must be at most 200 bytes long and
-            must not be that of a downloaded global mesh file.
+            or ``regional`` block. A name must be at most 200 bytes long, must
+            not contain control characters, and must not be that of a downloaded
+            global mesh file.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
@@ -204,8 +217,9 @@ class _MeshBehavior:
         if regional is not None:
             self._validate_regional(regional)
         resolution = mesh_config.get("resolution", "120km")
-        if regional is None:
-            # A global mesh is downloaded, so only the available ones can be used
+        if regional is None or "create_region" in regional:
+            # A global mesh is downloaded, and create_region cuts a region from
+            # one, so only the available resolutions can be used
             if (
                 not isinstance(resolution, str)
                 or resolution not in self.resolution_cells
@@ -223,6 +237,8 @@ class _MeshBehavior:
             or Path(mesh_name).name != mesh_name
         ):
             raise ValueError("Mesh name must be a valid file name and not a path")
+        if any(unicodedata.category(char) == "Cc" for char in mesh_name):
+            raise ValueError("Mesh name must not contain control characters")
         try:
             name_bytes = len(os.fsencode(mesh_name))
         except UnicodeEncodeError:
@@ -262,14 +278,18 @@ class _MeshBehavior:
             f"kilometers such as '15km' or '7.5km'"
         )
 
-    @staticmethod
-    def _number(config: Dict[str, Any], key: str, where: str) -> float:
+    @classmethod
+    def _number(cls, config: Dict[str, Any], key: str, where: str) -> float:
         """Return a required or optional value as a finite number.
 
         Booleans and strings are rejected, since a mesh request must give real
         numbers.
         """
-        value = config[key]
+        return cls._finite(config[key], f"{where}.{key}")
+
+    @staticmethod
+    def _finite(value: Any, label: str) -> float:
+        """Return a value as a finite number, naming it ``label`` if it is not."""
         number = math.nan
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             try:
@@ -278,7 +298,7 @@ class _MeshBehavior:
                 # An integer too large for a float is not a usable number
                 pass
         if not math.isfinite(number):
-            raise ValueError(f"{where}.{key} must be a finite number, got {value!r}")
+            raise ValueError(f"{label} must be a finite number, got {value!r}")
         return number
 
     @classmethod
@@ -288,9 +308,8 @@ class _MeshBehavior:
         Raises
         ------
         ValueError
-            If the block is not a dict holding exactly one known method, names
-            ``create_region``, which is not supported yet, or has an invalid
-            ``project_hexes`` block.
+            If the block is not a dict holding exactly one known method, or
+            that method's block is invalid.
         """
         if not isinstance(regional, dict):
             raise ValueError(f"regional must be a dict, got {type(regional).__name__}")
@@ -306,8 +325,9 @@ class _MeshBehavior:
                 + " or ".join(repr(method) for method in _REGIONAL_METHODS)
             )
         if "create_region" in regional:
-            raise ValueError("regional 'create_region' is not supported yet")
-        cls._validate_project_hexes(regional["project_hexes"])
+            cls._validate_create_region(regional["create_region"])
+        else:
+            cls._validate_project_hexes(regional["project_hexes"])
 
     @classmethod
     def _validate_project_hexes(cls, config: Any) -> None:
@@ -331,15 +351,115 @@ class _MeshBehavior:
         missing = [key for key in _PROJECT_HEXES_REQUIRED if key not in config]
         if missing:
             raise ValueError(f"{where} is missing required keys: {', '.join(missing)}")
-        if not -90 <= cls._number(config, "center_lat", where) <= 90:
-            raise ValueError(f"{where}.center_lat must be between -90 and 90")
-        if not -180 <= cls._number(config, "center_lon", where) <= 360:
-            raise ValueError(f"{where}.center_lon must be between -180 and 360")
+        cls._latitude(config["center_lat"], f"{where}.center_lat")
+        cls._longitude(config["center_lon"], f"{where}.center_lon")
         for key in ("extent_x_km", "extent_y_km"):
-            if cls._number(config, key, where) <= 0:
-                raise ValueError(f"{where}.{key} must be greater than 0")
+            cls._positive(config[key], f"{where}.{key}")
         if "rotation_degrees" in config:
             cls._number(config, "rotation_degrees", where)
+
+    @classmethod
+    def _latitude(cls, value: Any, label: str) -> float:
+        """Return a latitude, which must be from -90 to 90 degrees."""
+        number = cls._finite(value, label)
+        if not -90 <= number <= 90:
+            raise ValueError(f"{label} must be between -90 and 90")
+        return number
+
+    @classmethod
+    def _longitude(cls, value: Any, label: str) -> float:
+        """Return a longitude, which must be from -180 to 360 degrees."""
+        number = cls._finite(value, label)
+        if not -180 <= number <= 360:
+            raise ValueError(f"{label} must be between -180 and 360")
+        return number
+
+    @classmethod
+    def _positive(cls, value: Any, label: str) -> float:
+        """Return a size, which must be greater than 0."""
+        number = cls._finite(value, label)
+        if number <= 0:
+            raise ValueError(f"{label} must be greater than 0")
+        return number
+
+    @classmethod
+    def _validate_create_region(cls, config: Any) -> None:
+        """Check a ``regional.create_region`` block.
+
+        It must hold exactly one shape: ``circle``, ``ellipse``, ``polygon`` or
+        ``channel``, each with its own keys.
+
+        Raises
+        ------
+        ValueError
+            If it is not a dict holding exactly one known shape, or the shape is
+            missing a key, has an unknown key, or has a value out of range.
+        """
+        where = "regional.create_region"
+        if not isinstance(config, dict):
+            raise ValueError(f"{where} must be a dict, got {type(config).__name__}")
+        shapes = ", ".join(_CREATE_REGION_SHAPES)
+        unknown = sorted(str(k) for k in config if k not in _CREATE_REGION_SHAPES)
+        if unknown:
+            raise ValueError(
+                f"Unknown {where} keys: {', '.join(unknown)}. Allowed: {shapes}"
+            )
+        if len(config) != 1:
+            raise ValueError(f"{where} must contain exactly one of {shapes}")
+        ((shape, block),) = config.items()
+        where = f"{where}.{shape}"
+        if not isinstance(block, dict):
+            raise ValueError(f"{where} must be a dict, got {type(block).__name__}")
+        required, optional = _CREATE_REGION_SHAPES[shape]
+        allowed = set(required) | set(optional)
+        unknown = sorted(str(k) for k in block if k not in allowed)
+        if unknown:
+            raise ValueError(
+                f"Unknown {where} keys: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(sorted(allowed))}"
+            )
+        missing = [key for key in required if key not in block]
+        if missing:
+            raise ValueError(f"{where} is missing required keys: {', '.join(missing)}")
+
+        if shape in ("circle", "ellipse"):
+            cls._latitude(block["center_lat"], f"{where}.center_lat")
+            cls._longitude(block["center_lon"], f"{where}.center_lon")
+        if shape == "circle":
+            cls._positive(block["radius_km"], f"{where}.radius_km")
+        elif shape == "ellipse":
+            major = cls._positive(
+                block["semi_major_axis_km"], f"{where}.semi_major_axis_km"
+            )
+            minor = cls._positive(
+                block["semi_minor_axis_km"], f"{where}.semi_minor_axis_km"
+            )
+            if minor > major:
+                raise ValueError(
+                    f"{where}.semi_minor_axis_km must not be greater than "
+                    "semi_major_axis_km"
+                )
+            if "orientation_degrees" in block:
+                cls._number(block, "orientation_degrees", where)
+        elif shape == "polygon":
+            cls._latitude(block["inside_lat"], f"{where}.inside_lat")
+            cls._longitude(block["inside_lon"], f"{where}.inside_lon")
+            vertices = block["vertices"]
+            if not isinstance(vertices, (list, tuple)) or len(vertices) < 3:
+                raise ValueError(
+                    f"{where}.vertices must be a list of at least 3 [lat, lon] pairs"
+                )
+            for index, vertex in enumerate(vertices):
+                label = f"{where}.vertices[{index}]"
+                if not isinstance(vertex, (list, tuple)) or len(vertex) != 2:
+                    raise ValueError(f"{label} must be a [lat, lon] pair")
+                cls._latitude(vertex[0], f"{label} latitude")
+                cls._longitude(vertex[1], f"{label} longitude")
+        else:
+            upper = cls._latitude(block["upper_lat"], f"{where}.upper_lat")
+            lower = cls._latitude(block["lower_lat"], f"{where}.lower_lat")
+            if upper <= lower:
+                raise ValueError(f"{where}.upper_lat must be greater than lower_lat")
 
     @staticmethod
     def _real(value: float) -> str:
@@ -1212,6 +1332,9 @@ class _MeshBehavior:
         self._validate_mesh_config(mesh_config)
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
+        if regional is not None and "create_region" in regional:
+            # Removed once create_region meshes are generated
+            raise RuntimeError("create_region meshes cannot be generated yet")
         resolution = mesh_config.get("resolution", "120km")
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
 
