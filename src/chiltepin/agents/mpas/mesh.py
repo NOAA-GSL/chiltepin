@@ -50,6 +50,21 @@ _REGIONAL_METHODS = ("project_hexes", "create_region")
 _PROJECT_HEXES_REQUIRED = ("center_lat", "center_lon", "extent_x_km", "extent_y_km")
 _PROJECT_HEXES_KEYS = frozenset(_PROJECT_HEXES_REQUIRED + ("rotation_degrees",))
 
+# Python packages of the plotting environment. The two uxarray extras bring in
+# cartopy, geoviews, holoviews and matplotlib, and uxarray cannot plot without
+# them.
+_PLOT_PACKAGES = ("uxarray[viz,geo]", "Pillow")
+
+# Natural Earth map layers the plots draw, as (resolution, category, name). The
+# 10m layers are for flat maps of regional meshes, and the 110m coastline is for
+# global meshes on the sphere.
+_MAP_LAYERS = (
+    ("10m", "physical", "coastline"),
+    ("10m", "cultural", "admin_0_boundary_lines_land"),
+    ("10m", "cultural", "admin_1_states_provinces_lines"),
+    ("110m", "physical", "coastline"),
+)
+
 # Fixed names in a create_region mesh directory. The points file always names
 # the region "region", so the mesh name never reaches the tool's parser, and the
 # parent is linked under a name that tells the tool it is a static file.
@@ -137,6 +152,9 @@ class _MeshBehavior:
         # MPAS-Limited-Area state (the create_region program and its Python)
         self.limited_area_version = limited_area_version
         self.limited_area_built = False
+
+        # Plotting state (the Python environment and map layers plots use)
+        self.plotting_built = False
 
         # Serializes tool installs, so concurrent requests that need a tool wait
         # for one install instead of each starting their own
@@ -802,6 +820,38 @@ class _MeshBehavior:
             and self._create_region.is_file()
         )
 
+    @property
+    def _plot_prefix(self) -> Path:
+        """Directory the plotting environment and map layers are installed in."""
+        return self.work_dir / "plot"
+
+    @property
+    def _plot_python(self) -> Path:
+        """Python of the environment that draws plots."""
+        return self._plot_prefix / "venv" / "bin" / "python"
+
+    @property
+    def _map_data_dir(self) -> Path:
+        """Directory cartopy reads the Natural Earth map layers from."""
+        return self._plot_prefix / "natural_earth"
+
+    def _map_layer_paths(self) -> List[Path]:
+        """Paths of the map layer files, where cartopy stores and finds them."""
+        return [
+            self._map_data_dir
+            / "shapefiles"
+            / "natural_earth"
+            / category
+            / f"ne_{resolution}_{name}.shp"
+            for resolution, category, name in _MAP_LAYERS
+        ]
+
+    def _plotting_usable(self) -> bool:
+        """Whether a finished plotting install exists."""
+        return (self._plot_prefix / ".installed").is_file() and self._is_executable(
+            self._plot_python
+        )
+
     def _mpas_tools_usable(self) -> bool:
         """Whether a finished MPAS-Tools install with runnable programs exists."""
         return (self._mpas_tools_prefix / ".installed").is_file() and all(
@@ -960,7 +1010,7 @@ class _MeshBehavior:
             # Clone only the requested tag, giving up if the transfer stalls
             git -c advice.detachedHead=false -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 clone --depth 1 --branch {self._q("v" + self.limited_area_version)} https://github.com/MPAS-Dev/MPAS-Limited-Area.git src
             {self._q(sys.executable)} -m venv "$prefix/venv"
-            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 60 --retries 5 numpy netCDF4
+            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --no-input --timeout 60 --retries 5 numpy netCDF4
             echo "Completed install at $(date)"
             """
         )
@@ -982,6 +1032,78 @@ class _MeshBehavior:
                 exit 1
             fi
             "$python" "$prefix/src/create_region" --help > /dev/null
+            # Mark the install complete. The agent only uses a marked install.
+            touch "$prefix/.installed"
+            echo "Completed check at $(date)"
+            """
+        )
+
+    # -------------------------------------------------------------------------
+    # Private bash tasks — Plotting
+    # -------------------------------------------------------------------------
+
+    @bash_task
+    def _install_plotting(self) -> str:
+        """Create the plotting environment and download the map layers.
+
+        Runs on ``service``, which can reach PyPI and Natural Earth. Only wheels
+        are installed, so a missing one fails here instead of starting a build
+        that needs system libraries. The map layers are fetched through cartopy
+        itself, so they are stored where it looks for them when it draws. The
+        check on ``compute`` confirms that the environment runs there too.
+        """
+        import sys
+        import textwrap
+
+        fetch = textwrap.dedent(
+            f"""\
+            import cartopy
+            import cartopy.io.shapereader as shpreader
+            cartopy.config["data_dir"] = {str(self._map_data_dir)!r}
+            for resolution, category, name in {_MAP_LAYERS!r}:
+                print(shpreader.natural_earth(resolution, category, name), flush=True)
+            """
+        )
+        packages = " ".join(self._q(package) for package in _PLOT_PACKAGES)
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started install at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._plot_prefix)}
+            # Start from an empty prefix so a failed earlier install leaves nothing
+            rm -rf "$prefix"
+            mkdir -p "$prefix"
+            {self._q(sys.executable)} -m venv "$prefix/venv"
+            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --no-input --timeout 60 --retries 5 --only-binary=:all: {packages}
+            MPLBACKEND=Agg "$prefix/venv/bin/python" -c {self._q(fetch)}
+            echo "Completed install at $(date)"
+            """
+        )
+
+    @bash_task
+    def _check_plotting(self) -> str:
+        """Check that the plotting environment runs on ``compute``, and mark it."""
+        import textwrap
+
+        layers = " ".join(self._q(path) for path in self._map_layer_paths())
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started check at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._plot_prefix)}
+            python="$prefix/venv/bin/python"
+            if ! MPLBACKEND=Agg "$python" -c "import cartopy, geoviews, holoviews, matplotlib, netCDF4, PIL, uxarray"; then
+                echo "The Python environment in $prefix/venv cannot import the plotting packages on this resource. It was created from the Python of the service resource, which must also run on the compute resource." >&2
+                exit 1
+            fi
+            for layer in {layers}; do
+                if [ ! -s "$layer" ]; then
+                    echo "Map layer $layer is missing" >&2
+                    exit 1
+                fi
+            done
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
             echo "Completed check at $(date)"
@@ -1331,6 +1453,53 @@ class _MeshBehavior:
             self.limited_area_built = True
 
     # -------------------------------------------------------------------------
+    # Public agent actions — Plotting
+    # -------------------------------------------------------------------------
+
+    @agent_action
+    async def install_plotting(self) -> None:
+        """Install the Python environment and map layers plots need, unless installed.
+
+        Plots are drawn with uxarray, geoviews, holoviews, matplotlib and
+        cartopy, which are not chiltepin dependencies. On the ``service``
+        resource, a virtual environment with them is created in
+        ``work_dir/plot/venv``, and the Natural Earth map layers the plots draw
+        are downloaded to ``work_dir/plot/natural_earth``. A check on the
+        ``compute`` resource confirms that the environment runs there and the
+        layers are in place. It counts as installed once that check has passed,
+        so a restarted agent reuses it. Requests that need it while it is being
+        installed wait for that install. If it fails, each waiting request tries
+        again in turn. Called automatically when a plot is requested, but can be
+        called earlier to have it ready.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` or ``compute`` resource is not defined, or the
+            install or check fails. The message names the log file.
+        """
+        async with self._install_lock:
+            # Check the install on disk each time, so a removed or damaged
+            # install is replaced instead of failing every later plot
+            if not self._plotting_usable():
+                self.plotting_built = False
+                self._require_resources("Installing plotting", "service", "compute")
+                await self._run_install(
+                    "Plotting",
+                    "plot",
+                    self._install_plotting,
+                    self._check_plotting,
+                    stages=("install", "check"),
+                )
+                if not self._plotting_usable():
+                    raise RuntimeError(
+                        "Plotting check finished but the install in "
+                        f"{self._plot_prefix} is not usable, see "
+                        f"{self.log_dir}/plot_check.stderr"
+                    )
+            self.plotting_built = True
+
+    # -------------------------------------------------------------------------
     # Public agent actions — Tools
     # -------------------------------------------------------------------------
 
@@ -1338,9 +1507,11 @@ class _MeshBehavior:
     async def ensure_tools_installed(self, mesh_config: Dict[str, Any]) -> None:
         """Install the tools a mesh request needs.
 
-        Can be called early to overlap tool installation with other work. Also
-        called by ``generate_mesh()`` before it downloads the mesh, so a failed
-        install does not waste a download.
+        Can be called early to overlap tool installation with other work.
+        ``generate_mesh()`` installs the same tools before it downloads the
+        mesh, so a failed install does not waste a download, except that it
+        installs plotting only when it plots, so a failed plotting install
+        cannot fail the request.
 
         Parameters
         ----------
@@ -1353,6 +1524,15 @@ class _MeshBehavior:
             If the configuration is invalid.
         """
         self._validate_mesh_config(mesh_config)
+        await self._install_tools(mesh_config, plotting=True)
+
+    async def _install_tools(self, mesh_config: Dict[str, Any], plotting: bool) -> None:
+        """Install the tools a validated mesh request needs.
+
+        ``generate_mesh()`` passes ``plotting=False`` and installs plotting only
+        when it plots, so that a plotting install that fails cannot fail the
+        request.
+        """
         if self._partition_ranks(mesh_config):
             await self.install_metis()
         regional = mesh_config.get("regional") or {}
@@ -1360,6 +1540,8 @@ class _MeshBehavior:
             await self.install_mpas_tools()
         if "create_region" in regional:
             await self.install_limited_area()
+        if plotting and mesh_config.get("plot"):
+            await self.install_plotting()
 
     # -------------------------------------------------------------------------
     # Private mesh generation
@@ -1702,7 +1884,7 @@ class _MeshBehavior:
         complete = False
         try:
             # Install tools before downloading so a failure wastes no download
-            await self.ensure_tools_installed(mesh_config)
+            await self._install_tools(mesh_config, plotting=False)
             if regional is None:
                 # Global mesh, downloaded precomputed from UCAR
                 paths = await self.download_global_mesh(
