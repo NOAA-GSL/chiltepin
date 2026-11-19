@@ -50,6 +50,14 @@ _REGIONAL_METHODS = ("project_hexes", "create_region")
 _PROJECT_HEXES_REQUIRED = ("center_lat", "center_lon", "extent_x_km", "extent_y_km")
 _PROJECT_HEXES_KEYS = frozenset(_PROJECT_HEXES_REQUIRED + ("rotation_degrees",))
 
+# Fixed names in a create_region mesh directory. The points file always names
+# the region "region", so the mesh name never reaches the tool's parser, and the
+# parent is linked under a name that tells the tool it is a static file.
+_REGION_POINTS = "region.pts"
+_REGION_PARENT = "parent.static.nc"
+_REGION_STATIC = "region.static.nc"
+_REGION_GRAPH = "region.graph.info"
+
 # Shapes a create_region block may hold, with their required and optional keys
 _CREATE_REGION_SHAPES = {
     "circle": (("center_lat", "center_lon", "radius_km"), ()),
@@ -538,6 +546,45 @@ class _MeshBehavior:
             "/\n"
         )
 
+    @classmethod
+    def _create_region_points(cls, config: Dict[str, Any]) -> str:
+        """Return the points file that create_region reads for a region.
+
+        ``config`` is a validated ``regional.create_region`` block. Sizes are
+        given in kilometers and written in meters, which the tool expects. The
+        region is always named ``region``.
+        """
+        r = cls._real
+        ((shape, block),) = config.items()
+        lines = ["Name: region"]
+        if shape == "circle":
+            lines += [
+                "Type: circle",
+                f"Point: {r(block['center_lat'])}, {r(block['center_lon'])}",
+                f"Radius: {r(block['radius_km'] * 1000)}",
+            ]
+        elif shape == "ellipse":
+            lines += [
+                "Type: ellipse",
+                f"Point: {r(block['center_lat'])}, {r(block['center_lon'])}",
+                f"Semi-major-axis: {r(block['semi_major_axis_km'] * 1000)}",
+                f"Semi-minor-axis: {r(block['semi_minor_axis_km'] * 1000)}",
+                f"Orientation-angle: {r(block.get('orientation_degrees', 0))}",
+            ]
+        elif shape == "polygon":
+            lines += [
+                "Type: custom",
+                f"Point: {r(block['inside_lat'])}, {r(block['inside_lon'])}",
+            ]
+            lines += [f"{r(lat)}, {r(lon)}" for lat, lon in block["vertices"]]
+        else:
+            lines += [
+                "Type: channel",
+                f"Upper-lat: {r(block['upper_lat'])}",
+                f"Lower-lat: {r(block['lower_lat'])}",
+            ]
+        return "\n".join(lines) + "\n"
+
     @staticmethod
     def _partition_ranks(mesh_config: Dict[str, Any]) -> List[int]:
         """Return the distinct rank counts above 1 requested by a mesh config.
@@ -879,6 +926,22 @@ class _MeshBehavior:
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
             echo "Completed check at $(date)"
+            """
+        )
+
+    @bash_task
+    def _run_create_region(self, mesh_dir: str) -> str:
+        """Run create_region in a mesh directory holding the points and parent."""
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started create_region at $(date)"
+            echo "Executing on $(hostname)"
+            cd {self._q(mesh_dir)}
+            {self._q(self._limited_area_python)} {self._q(self._create_region)} {self._q(_REGION_POINTS)} {self._q(_REGION_PARENT)}
+            echo "Completed create_region at $(date)"
             """
         )
 
@@ -1357,6 +1420,70 @@ class _MeshBehavior:
             self._require_output(rotated_file, "grid_rotate", call_id)
             mesh_file.unlink(missing_ok=True)
             mesh_file = rotated_file
+
+        static = mesh_dir / f"{mesh_name}.static.nc"
+        graph = mesh_dir / f"{mesh_name}.graph.info"
+        mesh_file.replace(static)
+        graph_file.replace(graph)
+        return {"static": str(static), "graph": str(graph)}
+
+    async def _generate_create_region_mesh(
+        self,
+        mesh_dir: Path,
+        mesh_name: str,
+        resolution: str,
+        config: Dict[str, Any],
+        mesh_data_dir: Path,
+    ) -> Dict[str, str]:
+        """Cut a regional mesh from a global mesh with create_region.
+
+        The global mesh of ``resolution`` is downloaded to ``mesh_data_dir``
+        unless it is already there, and is linked into ``mesh_dir`` while the
+        tool runs. Everything else is written in ``mesh_dir``, which the caller
+        created and removes if this fails. The points file stays there, and the
+        mesh and graph end up named after the mesh.
+
+        Parameters
+        ----------
+        mesh_dir : Path
+            Absolute path of the new mesh directory
+        mesh_name : str
+            Name of the mesh
+        resolution : str
+            Resolution of the global mesh to cut from, such as ``"120km"``
+        config : dict
+            A validated ``regional.create_region`` block
+        mesh_data_dir : Path
+            Absolute path of the directory holding the downloaded global meshes
+
+        Returns
+        -------
+        dict
+            ``{"static": path, "graph": path}``
+
+        Raises
+        ------
+        RuntimeError
+            If MPAS-Limited-Area cannot be installed, the global mesh cannot be
+            downloaded, or create_region fails or does not write its files.
+        """
+        await self.install_limited_area()
+        parent = await self.download_global_mesh(resolution, str(mesh_data_dir))
+        call_id = uuid.uuid4().hex[:8]
+
+        (mesh_dir / _REGION_POINTS).write_text(self._create_region_points(config))
+        link = mesh_dir / _REGION_PARENT
+        link.symlink_to(Path(parent["static"]).resolve())
+        try:
+            await self._run_program(
+                self._run_create_region, "create_region", call_id, str(mesh_dir)
+            )
+        finally:
+            link.unlink(missing_ok=True)
+        mesh_file = mesh_dir / _REGION_STATIC
+        graph_file = mesh_dir / _REGION_GRAPH
+        for path in (mesh_file, graph_file):
+            self._require_output(path, "create_region", call_id)
 
         static = mesh_dir / f"{mesh_name}.static.nc"
         graph = mesh_dir / f"{mesh_name}.graph.info"

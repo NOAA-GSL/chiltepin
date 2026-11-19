@@ -1755,6 +1755,259 @@ async def test_each_program_run_has_its_own_logs(monkeypatch, behavior, mesh_dir
     assert len(set(logs)) == 2
 
 
+# Cutting create_region meshes
+
+POINTS = {
+    "circle": "Name: region\nType: circle\nPoint: 39.0, -105.5\nRadius: 1500000.0\n",
+    "ellipse": (
+        "Name: region\nType: ellipse\nPoint: 39.0, -105.5\n"
+        "Semi-major-axis: 2000000.0\nSemi-minor-axis: 1000000.0\n"
+        "Orientation-angle: 30.0\n"
+    ),
+    "polygon": (
+        "Name: region\nType: custom\nPoint: 39.0, -105.0\n"
+        "30.0, -120.0\n30.0, -90.0\n48.0, -90.0\n48.0, -120.0\n"
+    ),
+    "channel": "Name: region\nType: channel\nUpper-lat: 23.5\nLower-lat: -23.5\n",
+}
+
+
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_create_region_points(shape):
+    config = create_region_config(shape)["regional"]["create_region"]
+    assert _MeshBehavior._create_region_points(config) == POINTS[shape]
+
+
+def test_create_region_points_default_orientation_and_precision():
+    block = {**SHAPES["ellipse"], "semi_major_axis_km": 0.0015}
+    del block["orientation_degrees"]
+    text = _MeshBehavior._create_region_points({"ellipse": block})
+    assert "Orientation-angle: 0.0\n" in text
+    assert "Semi-major-axis: 1.5\n" in text
+    tuples = {**SHAPES["polygon"], "vertices": ((1, 2), (3.25, -4), (5, 359.5))}
+    text = _MeshBehavior._create_region_points({"polygon": tuples})
+    assert text.endswith("1.0, 2.0\n3.25, -4.0\n5.0, 359.5\n")
+
+
+@pytest.mark.parametrize(
+    "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME", "a b"]
+)
+def test_create_region_script_runs_in_the_mesh_directory_without_expansion(
+    tmp_path, behavior, name
+):
+    pwned = tmp_path / "PWNED"
+    mesh_dir = tmp_path / name.format(pwn=pwned)
+    mesh_dir.mkdir(parents=True)
+    record = tmp_path / "record"
+    prefix = mark_limited_area_installed(behavior)
+    (prefix / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\n"
+        f'{{ pwd; for a in "$@"; do printf "%s\\n" "$a"; done; }} '
+        f"> {shlex.quote(str(record))}\n"
+    )
+    script = _MeshBehavior._run_create_region.func(behavior, str(mesh_dir))
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert not pwned.exists()
+    assert record.read_text().splitlines() == [
+        str(mesh_dir),
+        str(prefix / "src" / "create_region"),
+        "region.pts",
+        "parent.static.nc",
+    ]
+
+
+def fake_create_region_task(behavior, monkeypatch, fail=None, writes=None):
+    """Replace the create_region task with a fake that writes the region files.
+
+    The fake checks that the points file and the parent link are in place while
+    it runs. ``fail`` is an exception for it to fail with, and ``writes`` the
+    file names it writes, by default both outputs.
+    """
+    seen = {}
+
+    def run(mesh_dir, **kwargs):
+        directory = Path(mesh_dir)
+        seen["points"] = (directory / "region.pts").read_text()
+        link = directory / "parent.static.nc"
+        seen["parent"] = link.resolve() if link.is_symlink() else None
+        if fail is not None:
+            (directory / "region.static.nc").write_text("partial")
+            return done_future(error=fail)
+        for name in (
+            writes if writes is not None else ("region.static.nc", "region.graph.info")
+        ):
+            (directory / name).write_text(f"cut {name}")
+        return done_future()
+
+    task = Mock(side_effect=run)
+    monkeypatch.setattr(behavior, "_run_create_region", task)
+    return task, seen
+
+
+@pytest.fixture
+def region(monkeypatch, tmp_path, behavior, mesh_download):
+    """Provide a new mesh directory, cached global meshes, and installed tools."""
+    output, download = mesh_download
+    mark_limited_area_installed(behavior)
+    directory = output / "cut"
+    directory.mkdir()
+    return SimpleNamespace(output=output, mesh_dir=directory, download=download)
+
+
+async def test_create_region_mesh(monkeypatch, behavior, region):
+    task, seen = fake_create_region_task(behavior, monkeypatch)
+    config = create_region_config("ellipse")["regional"]["create_region"]
+    result = await behavior._generate_create_region_mesh(
+        region.mesh_dir, "cut", "480km", config, region.output
+    )
+    assert result == {
+        "static": str(region.mesh_dir / "cut.static.nc"),
+        "graph": str(region.mesh_dir / "cut.graph.info"),
+    }
+    assert (region.mesh_dir / "cut.static.nc").read_text() == "cut region.static.nc"
+    assert (region.mesh_dir / "cut.graph.info").read_text() == "cut region.graph.info"
+    # The tool saw the points and the shared parent mesh, and only the points
+    # file stays
+    assert seen["points"] == POINTS["ellipse"]
+    assert seen["parent"] == (region.output / "x1.2562.static.nc").resolve()
+    assert {path.name for path in region.mesh_dir.iterdir()} == {
+        "region.pts",
+        "cut.static.nc",
+        "cut.graph.info",
+    }
+    # The parent mesh is the global mesh of the requested resolution
+    region.download.assert_called_once()
+    assert region.download.call_args.args == ("480km", str(region.output))
+    assert (region.output / "x1.2562.static.nc").read_bytes().startswith(b"CDF")
+    task.assert_called_once()
+    assert task.call_args.args == (str(region.mesh_dir),)
+    assert task.call_args.kwargs["executor"] == ["compute"]
+    assert task.call_args.kwargs["stderr"].startswith(
+        str(behavior.log_dir / "create_region.")
+    )
+
+
+@pytest.mark.parametrize("name", ["parent", "region"])
+async def test_create_region_mesh_named_like_its_working_files(
+    monkeypatch, behavior, region, name
+):
+    fake_create_region_task(behavior, monkeypatch)
+    config = create_region_config()["regional"]["create_region"]
+    result = await behavior._generate_create_region_mesh(
+        region.mesh_dir, name, "480km", config, region.output
+    )
+    assert Path(result["static"]).read_text() == "cut region.static.nc"
+    assert Path(result["graph"]).read_text() == "cut region.graph.info"
+    assert {path.name for path in region.mesh_dir.iterdir()} == {
+        "region.pts",
+        f"{name}.static.nc",
+        f"{name}.graph.info",
+    }
+
+
+async def test_create_region_failure_names_its_log_and_removes_the_link(
+    monkeypatch, behavior, region
+):
+    failure = BashExitFailure("task", 255)
+    task, _ = fake_create_region_task(behavior, monkeypatch, fail=failure)
+    config = create_region_config()["regional"]["create_region"]
+    with pytest.raises(
+        RuntimeError, match="create_region failed \\(exit 255\\)"
+    ) as info:
+        await behavior._generate_create_region_mesh(
+            region.mesh_dir, "cut", "480km", config, region.output
+        )
+    assert str(task.call_args.kwargs["stderr"]) in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not (region.mesh_dir / "parent.static.nc").is_symlink()
+    assert (region.output / "x1.2562.static.nc").is_file()
+
+
+async def test_unexpected_create_region_error_becomes_a_runtime_error(
+    monkeypatch, behavior, region
+):
+    failure = OSError("worker lost")
+    fake_create_region_task(behavior, monkeypatch, fail=failure)
+    config = create_region_config()["regional"]["create_region"]
+    with pytest.raises(RuntimeError, match="create_region failed: worker lost"):
+        await behavior._generate_create_region_mesh(
+            region.mesh_dir, "cut", "480km", config, region.output
+        )
+
+
+@pytest.mark.parametrize(
+    ("writes", "missing"),
+    [
+        ((), "region.static.nc"),
+        (("region.static.nc",), "region.graph.info"),
+        (("region.graph.info",), "region.static.nc"),
+    ],
+)
+async def test_missing_create_region_output_is_an_error(
+    monkeypatch, behavior, region, writes, missing
+):
+    task, _ = fake_create_region_task(behavior, monkeypatch, writes=writes)
+    config = create_region_config()["regional"]["create_region"]
+    with pytest.raises(RuntimeError, match=f"create_region did not write {missing}"):
+        await behavior._generate_create_region_mesh(
+            region.mesh_dir, "cut", "480km", config, region.output
+        )
+
+
+async def test_empty_create_region_output_is_an_error(monkeypatch, behavior, region):
+    task, _ = fake_create_region_task(behavior, monkeypatch)
+    write = task.side_effect
+
+    def empty(directory, **kwargs):
+        future = write(directory, **kwargs)
+        (Path(directory) / "region.graph.info").write_text("")
+        return future
+
+    task.side_effect = empty
+    config = create_region_config()["regional"]["create_region"]
+    with pytest.raises(RuntimeError, match="did not write region.graph.info"):
+        await behavior._generate_create_region_mesh(
+            region.mesh_dir, "cut", "480km", config, region.output
+        )
+
+
+async def test_create_region_mesh_installs_and_downloads_first(
+    monkeypatch, tmp_path, behavior
+):
+    output = tmp_path / "meshes"
+    mesh_dir = output / "cut"
+    mesh_dir.mkdir(parents=True)
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+
+    def download(resolution, directory, **kwargs):
+        for name, content in mesh_files().items():
+            (Path(directory) / name).write_bytes(content)
+        return done_future()
+
+    monkeypatch.setattr(behavior, "_download_global_mesh", Mock(side_effect=download))
+    fake_create_region_task(behavior, monkeypatch)
+    config = create_region_config()["regional"]["create_region"]
+    await behavior._generate_create_region_mesh(
+        mesh_dir, "cut", "480km", config, output
+    )
+    install.assert_called_once()
+    check.assert_called_once()
+    assert (output / "x1.2562.static.nc").is_file()
+
+
+async def test_each_create_region_run_has_its_own_logs(monkeypatch, behavior, region):
+    task, _ = fake_create_region_task(behavior, monkeypatch)
+    second = region.output / "second"
+    second.mkdir()
+    config = create_region_config()["regional"]["create_region"]
+    for directory in (region.mesh_dir, second):
+        await behavior._generate_create_region_mesh(
+            directory, directory.name, "480km", config, region.output
+        )
+    assert len({call.kwargs["stderr"] for call in task.call_args_list}) == 2
+
+
 # Generating regional meshes through generate_mesh
 
 
