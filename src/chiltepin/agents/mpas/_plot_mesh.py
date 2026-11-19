@@ -26,9 +26,6 @@ Exit codes:
 - 3: a zoom or view center was given for a regional mesh, and nothing was
   written
 - anything else: the plot failed
-
-The drawing functions run only in the plotting environment, so the unit tests
-cannot run them, and the integration test exercises them instead.
 """
 
 import argparse
@@ -216,7 +213,7 @@ def wrap_longitude(lon, center: float):
     return (lon - center + 180) % 360 - 180
 
 
-def main(argv: Sequence[str]) -> int:  # pragma: no cover
+def main(argv: Sequence[str]) -> int:
     """Draw the image, and return the exit code."""
     args = parse_args(argv)
     title = args.title if args.title is not None else default_title(args.mesh)
@@ -245,7 +242,7 @@ def main(argv: Sequence[str]) -> int:  # pragma: no cover
     return 0
 
 
-def is_regional(mesh: Path) -> bool:  # pragma: no cover
+def is_regional(mesh: Path) -> bool:
     """Whether any cell of the mesh is in a boundary layer."""
     import numpy as np
     from netCDF4 import Dataset
@@ -263,7 +260,7 @@ def is_regional(mesh: Path) -> bool:  # pragma: no cover
 
 def map_layer(
     map_data: Path, layer: Tuple[str, str, str], missing: List[Path]
-) -> Optional[Path]:  # pragma: no cover
+) -> Optional[Path]:
     """Return a map layer's path, or record it as missing and return None."""
     path = layer_path(map_data, layer)
     if path.is_file() and path.stat().st_size > 0:
@@ -272,9 +269,7 @@ def map_layer(
     return None
 
 
-def draw_flat(
-    mesh: Path, output: Path, title: str, map_data: Path
-) -> List[Path]:  # pragma: no cover
+def draw_flat(mesh: Path, output: Path, title: str, map_data: Path) -> List[Path]:
     """Draw a regional mesh on a flat map, and return the missing map layers."""
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
@@ -405,7 +400,7 @@ def draw_sphere(
     map_data: Path,
     zoom: float,
     center: Tuple[float, float],
-) -> List[Path]:  # pragma: no cover
+) -> List[Path]:
     """Draw a global mesh on a sphere, and return the missing map layers."""
     import cartopy.io.shapereader as shpreader
     import matplotlib
