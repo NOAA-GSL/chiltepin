@@ -4,6 +4,7 @@
 
 import asyncio
 import io
+import math
 import pickle
 import shlex
 import shutil
@@ -847,6 +848,46 @@ def test_validate_mesh_config_accepts_create_region_edge_values(behavior):
     )
 
 
+@pytest.mark.parametrize(
+    ("shape", "key"),
+    [
+        ("circle", "radius_km"),
+        ("ellipse", "semi_major_axis_km"),
+        ("ellipse", "semi_minor_axis_km"),
+    ],
+)
+def test_create_region_sizes_must_stay_within_half_the_globe(behavior, shape, key):
+    limit = math.pi * 6371.229
+    # The major axis must be valid when the minor one is the one tested
+    major = {"semi_major_axis_km": limit - 0.1} if key == "semi_minor_axis_km" else {}
+    for value in (limit, 1e306):
+        with pytest.raises(ValueError, match=f"{key} must be less than half the circ"):
+            behavior._validate_mesh_config(
+                create_region_config(shape, **major, **{key: value})
+            )
+    # Just under the limit is allowed
+    changes = {"semi_major_axis_km": limit - 0.1} if shape == "ellipse" else {}
+    changes[key] = limit - 0.1
+    behavior._validate_mesh_config(create_region_config(shape, **changes))
+
+
+@pytest.mark.parametrize(
+    ("angle", "written"),
+    [(390, "30.0"), (-330, "30.0"), (720, "0.0"), (-0.0, "0.0"), (359.5, "359.5")],
+)
+def test_create_region_orientation_is_written_as_one_turn(angle, written):
+    block = {**SHAPES["ellipse"], "orientation_degrees": angle}
+    text = _MeshBehavior._create_region_points({"ellipse": block})
+    assert f"Orientation-angle: {written}\n" in text
+
+
+def test_huge_create_region_orientation_is_still_a_finite_angle():
+    block = {**SHAPES["ellipse"], "orientation_degrees": 1e300}
+    text = _MeshBehavior._create_region_points({"ellipse": block})
+    angle = float(text.split("Orientation-angle: ")[1])
+    assert 0 <= angle < 360
+
+
 @pytest.mark.parametrize("resolution", ["2km", "50km", "0.5km"])
 def test_create_region_needs_a_downloadable_resolution(behavior, resolution):
     config = create_region_config()
@@ -1013,6 +1054,19 @@ def test_limited_area_scripts(tmp_path):
     runs = next(i for i, line in enumerate(lines) if 'create_region" --help' in line)
     assert imports < runs < marker
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
+
+
+def test_limited_area_check_fails_if_create_region_does_not_run(tmp_path, behavior):
+    prefix = mark_limited_area_installed(behavior)
+    (prefix / ".installed").unlink()
+    # Imports work, and running the script fails
+    (prefix / "venv" / "bin" / "python").write_text(
+        '#!/bin/sh\n[ "$1" = "-c" ] && exit 0\nexit 3\n'
+    )
+    script = _MeshBehavior._check_limited_area.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 3
+    assert not (prefix / ".installed").exists()
 
 
 @pytest.mark.parametrize("works", [True, False])
@@ -1186,13 +1240,22 @@ async def test_behavior_is_picklable_while_requests_wait(behavior):
     waiter = asyncio.create_task(behavior._install_lock.acquire())
     await asyncio.sleep(0.05)
 
+    download_lock = behavior._download_locks.setdefault("key", asyncio.Lock())
+    await download_lock.acquire()
+    download_waiter = asyncio.create_task(download_lock.acquire())
+    await asyncio.sleep(0.05)
+
     restored = pickle.loads(pickle.dumps(behavior))
     assert restored.work_dir == behavior.work_dir
     assert not restored._install_lock.locked()
+    assert restored._download_locks == {}
 
     behavior._install_lock.release()
     await waiter
     behavior._install_lock.release()
+    download_lock.release()
+    await download_waiter
+    download_lock.release()
 
 
 # Installing MPAS-Tools
@@ -1909,6 +1972,7 @@ async def test_create_region_failure_names_its_log_and_removes_the_link(
             region.mesh_dir, "cut", "480km", config, region.output
         )
     assert str(task.call_args.kwargs["stderr"]) in str(info.value)
+    assert str(task.call_args.kwargs["stdout"]) in str(info.value)
     assert info.value.__cause__ is failure
     assert not (region.mesh_dir / "parent.static.nc").is_symlink()
     assert (region.output / "x1.2562.static.nc").is_file()
@@ -1996,6 +2060,47 @@ async def test_each_create_region_run_has_its_own_logs(monkeypatch, behavior, re
             directory, directory.name, "480km", config, region.output
         )
     assert len({call.kwargs["stderr"] for call in task.call_args_list}) == 2
+
+
+async def test_downloads_of_the_same_mesh_do_not_overlap(
+    monkeypatch, tmp_path, behavior
+):
+    pending = Future()
+    download = Mock(side_effect=[pending, done_future(), done_future()])
+    monkeypatch.setattr(behavior, "_download_global_mesh", download)
+    output = tmp_path / "meshes"
+    first = asyncio.create_task(behavior.download_global_mesh("480km", str(output)))
+    second = asyncio.create_task(behavior.download_global_mesh("480km", str(output)))
+    # Another directory, or another mesh, does not wait
+    other = asyncio.create_task(
+        behavior.download_global_mesh("480km", str(tmp_path / "other"))
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert download.call_count == 2
+    assert {call.args[1] for call in download.call_args_list} == {
+        str(output),
+        str(tmp_path / "other"),
+    }
+    pending.set_result(None)
+    await asyncio.gather(first, second, other)
+    assert download.call_count == 3
+
+
+async def test_failed_global_download_leaves_no_create_region_mesh(
+    monkeypatch, tmp_path, behavior
+):
+    mark_limited_area_installed(behavior)
+    failure = URLError("unreachable")
+    monkeypatch.setattr(
+        behavior, "_download_global_mesh", Mock(return_value=done_future(error=failure))
+    )
+    task, _ = fake_create_region_task(behavior, monkeypatch)
+    output = tmp_path / "meshes"
+    with pytest.raises(RuntimeError, match="Global mesh download failed"):
+        await behavior.generate_mesh(create_region_config(), str(output))
+    task.assert_not_called()
+    assert list(output.iterdir()) == []
 
 
 # Generating create_region meshes through generate_mesh

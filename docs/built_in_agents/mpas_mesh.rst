@@ -34,7 +34,10 @@ Requirements
   on the ``service`` resource from the Python that runs chiltepin's tasks there,
   and is then used on the ``compute`` resource, so that Python must also run on
   the ``compute`` resource at the same path. This holds when both resources use
-  the same chiltepin installation on a shared filesystem.
+  the same chiltepin installation on a shared filesystem. That Python must also
+  be able to create virtual environments with ``python -m venv``. Some Linux
+  distributions leave this out of their Python package, so it may need a
+  separate package such as ``python3-venv``.
 
 Launch Arguments
 ----------------
@@ -207,29 +210,37 @@ Actions
    programs read, ``namelist.projections`` and, if rotated, ``namelist.input``.
    The MPAS-Tools programs are installed first if they are not already
    installed. Each run writes its own logs, ``project_hexes.<id>.*`` and
-   ``grid_rotate.<id>.*`` in ``work_dir/logs``, and a failure names its
-   ``.stderr`` file.
+   ``grid_rotate.<id>.*`` in ``work_dir/logs``, and a failure names both of
+   its log files.
 
    ``create_region`` cuts a region out of a global mesh, which is downloaded to
-   ``mesh_data_dir`` unless it is already there and is kept for reuse. The
+   ``mesh_data_dir`` unless it is already there and is kept for reuse.
+   Requests that need the same global mesh in the same ``mesh_data_dir`` at the
+   same time wait for one download, so none replaces a file another is reading.
+   The
    region keeps the global mesh's cells, so its ``resolution`` must be one of
    the supported global resolutions listed below. Its value is a dictionary
    with exactly one shape, whose value holds that shape's numbers. Sizes are in
    kilometers, latitudes from -90 to 90 degrees, and longitudes from -180 to 360
    degrees:
 
-   * ``circle``: ``center_lat``, ``center_lon``, and ``radius_km``, greater
-     than 0.
+   * ``circle``: ``center_lat``, ``center_lon``, and ``radius_km``.
    * ``ellipse``: ``center_lat``, ``center_lon``, ``semi_major_axis_km`` and
-     ``semi_minor_axis_km``, each greater than 0 and the minor axis not longer
-     than the major one, and optionally ``orientation_degrees``, the clockwise
-     rotation of the major axis from due north, by default 0.
+     ``semi_minor_axis_km``, with the minor axis not longer than the major one,
+     and optionally ``orientation_degrees``, the clockwise rotation of the major
+     axis from due north, by default 0. Any angle can be given, and it is
+     written as the same direction within one turn.
+
    * ``polygon``: ``vertices``, a list of at least 3 ``[lat, lon]`` pairs in
      order around the boundary, and ``inside_lat`` and ``inside_lon``, a point
      inside the region. MPAS-Limited-Area warns that a concave polygon can give
      wrong results when MPAS interpolates static fields, so keep it convex.
    * ``channel``: ``upper_lat`` and ``lower_lat``, the latitudes of a band
      around the globe, with ``upper_lat`` greater than ``lower_lat``.
+
+   A radius or semi-axis must be greater than 0 and less than half the
+   circumference of the Earth, 20015.8 km, since a larger one reaches past the
+   opposite side of the globe.
 
    For example:
 
@@ -251,8 +262,12 @@ Actions
 
    The mesh holds the cells of the region and also 8 layers of cells around
    it, which limited-area MPAS uses for its boundary, so it extends about 8
-   cells beyond the shape. A shape smaller than a cell makes ``create_region``
-   fail, and the request then raises ``RuntimeError`` naming the log file. The
+   cells beyond the shape. ``create_region`` fails if it cannot find a region
+   smaller than the whole globe, for example for a shape smaller than a cell, a
+   polygon whose inside point is outside it or whose edges cross, a channel too
+   narrow to hold a cell, or a shape that covers nearly the whole globe. The
+   request then raises ``RuntimeError`` naming both log files. The program
+   prints its errors to the ``.stdout`` log, not the ``.stderr`` one. The
    mesh directory also keeps ``region.pts``, the points file the program read.
    MPAS-Limited-Area is installed first if it is not already installed. Each
    run writes its own logs, ``create_region.<id>.*`` in ``work_dir/logs``.

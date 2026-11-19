@@ -58,6 +58,11 @@ _REGION_PARENT = "parent.static.nc"
 _REGION_STATIC = "region.static.nc"
 _REGION_GRAPH = "region.graph.info"
 
+# Largest radius or semi-axis create_region can use: half the circumference of
+# the sphere it measures on, whose radius is 6371229 m. A larger one reaches
+# past the opposite side of the globe.
+_MAX_REGION_SIZE_KM = math.pi * 6371.229
+
 # Shapes a create_region block may hold, with their required and optional keys
 _CREATE_REGION_SHAPES = {
     "circle": (("center_lat", "center_lon", "radius_km"), ()),
@@ -137,6 +142,10 @@ class _MeshBehavior:
         # for one install instead of each starting their own
         self._install_lock = asyncio.Lock()
 
+        # Serializes downloads of each global mesh to each directory, so a
+        # request never replaces a mesh file another one is reading
+        self._download_locks: Dict[Any, asyncio.Lock] = {}
+
         # Mesh data
         self.mesh_data_url = "https://www2.mmm.ucar.edu/projects/mpas/atmosphere_meshes"
         # Precomputed resolutions available for download from UCAR
@@ -163,16 +172,18 @@ class _MeshBehavior:
         """Return picklable state for task submission.
 
         Task methods send ``self`` to workers. A lock with waiting requests cannot
-        be pickled, and workers do not need it.
+        be pickled, and workers do not need the locks.
         """
         state = self.__dict__.copy()
         del state["_install_lock"]
+        del state["_download_locks"]
         return state
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Restore state on a worker, with a fresh lock."""
+        """Restore state on a worker, with fresh locks."""
         self.__dict__.update(state)
         self._install_lock = asyncio.Lock()
+        self._download_locks = {}
 
     # -------------------------------------------------------------------------
     # Helpers
@@ -401,6 +412,17 @@ class _MeshBehavior:
         return number
 
     @classmethod
+    def _region_size(cls, value: Any, label: str) -> float:
+        """Return a radius or semi-axis, from 0 to half the globe's circumference."""
+        number = cls._positive(value, label)
+        if number >= _MAX_REGION_SIZE_KM:
+            raise ValueError(
+                f"{label} must be less than half the circumference of the Earth, "
+                f"{_MAX_REGION_SIZE_KM:.1f} km"
+            )
+        return number
+
+    @classmethod
     def _validate_create_region(cls, config: Any) -> None:
         """Check a ``regional.create_region`` block.
 
@@ -444,12 +466,12 @@ class _MeshBehavior:
             cls._latitude(block["center_lat"], f"{where}.center_lat")
             cls._longitude(block["center_lon"], f"{where}.center_lon")
         if shape == "circle":
-            cls._positive(block["radius_km"], f"{where}.radius_km")
+            cls._region_size(block["radius_km"], f"{where}.radius_km")
         elif shape == "ellipse":
-            major = cls._positive(
+            major = cls._region_size(
                 block["semi_major_axis_km"], f"{where}.semi_major_axis_km"
             )
-            minor = cls._positive(
+            minor = cls._region_size(
                 block["semi_minor_axis_km"], f"{where}.semi_minor_axis_km"
             )
             if minor > major:
@@ -570,7 +592,7 @@ class _MeshBehavior:
                 f"Point: {r(block['center_lat'])}, {r(block['center_lon'])}",
                 f"Semi-major-axis: {r(block['semi_major_axis_km'] * 1000)}",
                 f"Semi-minor-axis: {r(block['semi_minor_axis_km'] * 1000)}",
-                f"Orientation-angle: {r(block.get('orientation_degrees', 0))}",
+                f"Orientation-angle: {r(block.get('orientation_degrees', 0) % 360)}",
             ]
         elif shape == "polygon":
             lines += [
@@ -1310,12 +1332,15 @@ class _MeshBehavior:
     async def _run_program(
         self, task: Callable[..., Any], program: str, call_id: str, *args: str
     ) -> None:
-        """Run a program on ``compute`` and report a failure with its log name.
+        """Run a program on ``compute`` and report a failure with its log names.
+
+        Both logs are named, since some programs, such as create_region, print
+        their errors to standard output.
 
         Raises
         ------
         RuntimeError
-            If the program fails. The message names the log file.
+            If the program fails. The message names the log files.
         """
         log = self.log_dir / f"{program}.{call_id}"
         future = task(
@@ -1328,7 +1353,8 @@ class _MeshBehavior:
             await asyncio.wrap_future(future)
         except BashExitFailure as e:
             raise RuntimeError(
-                f"{program} failed (exit {e.exitcode}), see {log}.stderr"
+                f"{program} failed (exit {e.exitcode}), "
+                f"see {log}.stdout and {log}.stderr"
             ) from e
         except Exception as e:
             raise RuntimeError(f"{program} failed: {e}") from e
@@ -1342,9 +1368,10 @@ class _MeshBehavior:
             If it did not. The message names the log file of that program.
         """
         if not path.is_file() or path.stat().st_size == 0:
+            log = self.log_dir / f"{program}.{call_id}"
             raise RuntimeError(
                 f"{program} did not write {path.name}, "
-                f"see {self.log_dir}/{program}.{call_id}.stderr"
+                f"see {log}.stdout and {log}.stderr"
             )
 
     async def _generate_project_hexes_mesh(
@@ -1468,11 +1495,13 @@ class _MeshBehavior:
             If MPAS-Limited-Area cannot be installed, the global mesh cannot be
             downloaded, or create_region fails or does not write its files.
         """
+        # Write the points first, so a value the tool cannot take fails at once
+        points = self._create_region_points(config)
+        (mesh_dir / _REGION_POINTS).write_text(points)
         await self.install_limited_area()
         parent = await self.download_global_mesh(resolution, str(mesh_data_dir))
         call_id = uuid.uuid4().hex[:8]
 
-        (mesh_dir / _REGION_POINTS).write_text(self._create_region_points(config))
         link = mesh_dir / _REGION_PARENT
         link.symlink_to(Path(parent["static"]).resolve())
         try:
@@ -1533,15 +1562,19 @@ class _MeshBehavior:
 
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
 
-        future = self._download_global_mesh(
-            resolution,
-            str(request_mesh_data_dir),
-            executor=["service"],
-        )
-        try:
-            await asyncio.wrap_future(future)
-        except Exception as e:
-            raise RuntimeError("Global mesh download failed") from e
+        # A second request for the same mesh waits, then finds the files there
+        key = (str(request_mesh_data_dir), resolution)
+        lock = self._download_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            future = self._download_global_mesh(
+                resolution,
+                str(request_mesh_data_dir),
+                executor=["service"],
+            )
+            try:
+                await asyncio.wrap_future(future)
+            except Exception as e:
+                raise RuntimeError("Global mesh download failed") from e
 
         cells = self.resolution_cells[resolution]
         return {
