@@ -12,7 +12,7 @@ import shutil
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import parsl
 from parsl.app.errors import BashExitFailure
@@ -77,6 +77,7 @@ class _MeshBehavior:
         work_dir: str,
         metis_version: str = "5.2.1",
         mpas_tools_version: str = "2.0.0",
+        limited_area_version: str = "2.2",
     ):
         """Initialize the mesh behavior.
 
@@ -88,16 +89,20 @@ class _MeshBehavior:
             Metis version to install, by default "5.2.1"
         mpas_tools_version : str, optional
             MPAS-Tools tag to install, by default "2.0.0"
+        limited_area_version : str, optional
+            MPAS-Limited-Area version to install, by default "2.2". The tag is
+            this version with a ``v`` added, such as ``v2.2``.
 
         Raises
         ------
         ValueError
-            If ``metis_version`` or ``mpas_tools_version`` is not a plain
-            version string.
+            If ``metis_version``, ``mpas_tools_version`` or
+            ``limited_area_version`` is not a plain version string.
         """
         for name, version in (
             ("metis_version", metis_version),
             ("mpas_tools_version", mpas_tools_version),
+            ("limited_area_version", limited_area_version),
         ):
             if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
                 raise ValueError(f"Invalid {name}: {version!r}")
@@ -114,6 +119,10 @@ class _MeshBehavior:
         # MPAS-Tools state (the project_hexes and grid_rotate programs)
         self.mpas_tools_version = mpas_tools_version
         self.mpas_tools_built = False
+
+        # MPAS-Limited-Area state (the create_region program and its Python)
+        self.limited_area_version = limited_area_version
+        self.limited_area_built = False
 
         # Serializes tool installs, so concurrent requests that need a tool wait
         # for one install instead of each starting their own
@@ -595,30 +604,34 @@ class _MeshBehavior:
         log_name: str,
         download_task: Callable[..., Any],
         build_task: Callable[..., Any],
+        stages: Tuple[str, str] = ("download", "build"),
     ) -> None:
         """Download and build a tool, and report the first failure.
 
-        The download runs on ``service`` and the build on ``compute``. Logs are
-        ``<log_name>_download.*`` and ``<log_name>_build.*`` in ``log_dir``. The
-        caller holds the install lock and has checked that the resources exist.
+        The download runs on ``service`` and the build on ``compute``. ``stages``
+        names the two steps in logs and messages. Logs are
+        ``<log_name>_<stage>.*`` in ``log_dir``, such as
+        ``metis_download.stderr``. The caller holds the install lock and has
+        checked that the resources exist.
 
         Raises
         ------
         RuntimeError
-            If the download or build fails. The message names the log file.
+            If either step fails. The message names the log file.
         """
+        first, second = stages
         download_future = download_task(
             executor=["service"],
-            stdout=str(self.log_dir / f"{log_name}_download.stdout"),
-            stderr=str(self.log_dir / f"{log_name}_download.stderr"),
+            stdout=str(self.log_dir / f"{log_name}_{first}.stdout"),
+            stderr=str(self.log_dir / f"{log_name}_{first}.stderr"),
         )
         build_future = build_task(
             executor=["compute"],
-            stdout=str(self.log_dir / f"{log_name}_build.stdout"),
-            stderr=str(self.log_dir / f"{log_name}_build.stderr"),
+            stdout=str(self.log_dir / f"{log_name}_{second}.stdout"),
+            stderr=str(self.log_dir / f"{log_name}_{second}.stderr"),
             inputs=[download_future],
         )
-        for stage, future in (("download", download_future), ("build", build_future)):
+        for stage, future in ((first, download_future), (second, build_future)):
             try:
                 await asyncio.wrap_future(future)
             except BashExitFailure as e:
@@ -659,6 +672,29 @@ class _MeshBehavior:
     def _grid_rotate(self) -> Path:
         """Path of the grid_rotate executable."""
         return self._mpas_tools_prefix / "bin" / "grid_rotate"
+
+    @property
+    def _limited_area_prefix(self) -> Path:
+        """Directory MPAS-Limited-Area and its Python environment are installed in."""
+        return self.work_dir / "limited-area" / self.limited_area_version
+
+    @property
+    def _limited_area_python(self) -> Path:
+        """Python of the environment that runs create_region."""
+        return self._limited_area_prefix / "venv" / "bin" / "python"
+
+    @property
+    def _create_region(self) -> Path:
+        """Path of the create_region script."""
+        return self._limited_area_prefix / "src" / "create_region"
+
+    def _limited_area_usable(self) -> bool:
+        """Whether a finished MPAS-Limited-Area install exists."""
+        return (
+            (self._limited_area_prefix / ".installed").is_file()
+            and self._is_executable(self._limited_area_python)
+            and self._create_region.is_file()
+        )
 
     def _mpas_tools_usable(self) -> bool:
         """Whether a finished MPAS-Tools install with runnable programs exists."""
@@ -786,6 +822,63 @@ class _MeshBehavior:
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
             echo "Completed build at $(date)"
+            """
+        )
+
+    # -------------------------------------------------------------------------
+    # Private bash tasks — MPAS-Limited-Area
+    # -------------------------------------------------------------------------
+
+    @bash_task
+    def _install_limited_area(self) -> str:
+        """Clone MPAS-Limited-Area and create its Python environment.
+
+        Runs on ``service``, which can reach GitHub and PyPI. A virtual
+        environment only works at the path it was created at, so it is created
+        in its final place. It is built from the Python running this task, and
+        the check on ``compute`` confirms that it runs there too.
+        """
+        import sys
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started install at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._limited_area_prefix)}
+            # Start from an empty prefix so a failed earlier install leaves nothing
+            rm -rf "$prefix"
+            mkdir -p "$prefix"
+            cd "$prefix"
+            # Clone only the requested tag, giving up if the transfer stalls
+            git -c advice.detachedHead=false -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 clone --depth 1 --branch {self._q("v" + self.limited_area_version)} https://github.com/MPAS-Dev/MPAS-Limited-Area.git src
+            {self._q(sys.executable)} -m venv "$prefix/venv"
+            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 60 --retries 5 numpy netCDF4
+            echo "Completed install at $(date)"
+            """
+        )
+
+    @bash_task
+    def _check_limited_area(self) -> str:
+        """Check that create_region runs on ``compute``, and mark the install."""
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started check at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._limited_area_prefix)}
+            python="$prefix/venv/bin/python"
+            if ! "$python" -c "import numpy, netCDF4"; then
+                echo "The Python environment in $prefix/venv cannot import numpy and netCDF4 on this resource. It was created from the Python of the service resource, which must also run on the compute resource." >&2
+                exit 1
+            fi
+            "$python" "$prefix/src/create_region" --help > /dev/null
+            # Mark the install complete. The agent only uses a marked install.
+            touch "$prefix/.installed"
+            echo "Completed check at $(date)"
             """
         )
 
@@ -1069,6 +1162,53 @@ class _MeshBehavior:
             self.mpas_tools_built = True
 
     # -------------------------------------------------------------------------
+    # Public agent actions — MPAS-Limited-Area
+    # -------------------------------------------------------------------------
+
+    @agent_action
+    async def install_limited_area(self) -> None:
+        """Install MPAS-Limited-Area and the Python it needs, unless installed.
+
+        The ``create_region`` program of MPAS-Limited-Area is a Python script
+        that needs numpy and netCDF4. The tag is cloned and a virtual
+        environment with those two packages is created in ``work_dir`` on the
+        ``service`` resource, and a check on the ``compute`` resource confirms
+        that it runs there. It counts as installed once that check has passed,
+        so a restarted agent reuses it. Requests that need it while it is being
+        installed wait for that install. If it fails, each waiting request tries
+        again in turn. Called automatically when a request needs it, but can be
+        called earlier to have it ready.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` or ``compute`` resource is not defined, or the
+            install or check fails. The message names the log file.
+        """
+        async with self._install_lock:
+            # Check the install on disk each time, so a removed or damaged
+            # install is replaced instead of failing every later request
+            if not self._limited_area_usable():
+                self.limited_area_built = False
+                self._require_resources(
+                    "Installing MPAS-Limited-Area", "service", "compute"
+                )
+                await self._run_install(
+                    "MPAS-Limited-Area",
+                    "limited_area",
+                    self._install_limited_area,
+                    self._check_limited_area,
+                    stages=("install", "check"),
+                )
+                if not self._limited_area_usable():
+                    raise RuntimeError(
+                        "MPAS-Limited-Area check finished but the install in "
+                        f"{self._limited_area_prefix} is not usable, see "
+                        f"{self.log_dir}/limited_area_check.stderr"
+                    )
+            self.limited_area_built = True
+
+    # -------------------------------------------------------------------------
     # Public agent actions — Tools
     # -------------------------------------------------------------------------
 
@@ -1093,8 +1233,11 @@ class _MeshBehavior:
         self._validate_mesh_config(mesh_config)
         if self._partition_ranks(mesh_config):
             await self.install_metis()
-        if "project_hexes" in (mesh_config.get("regional") or {}):
+        regional = mesh_config.get("regional") or {}
+        if "project_hexes" in regional:
             await self.install_mpas_tools()
+        if "create_region" in regional:
+            await self.install_limited_area()
 
     # -------------------------------------------------------------------------
     # Private mesh generation

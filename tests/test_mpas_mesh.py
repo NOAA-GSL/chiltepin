@@ -8,6 +8,7 @@ import pickle
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.request
 from concurrent.futures import Future
@@ -451,8 +452,19 @@ def mark_mpas_tools_installed(behavior):
     return prefix
 
 
-def mock_install_tasks(monkeypatch, behavior, tool, mark, download=None, build=None):
-    """Replace a tool's download and build tasks with mocks."""
+def mock_install_tasks(
+    monkeypatch,
+    behavior,
+    tool,
+    mark,
+    download=None,
+    build=None,
+    names=("_download_{}", "_build_{}"),
+):
+    """Replace a tool's download and build tasks with mocks.
+
+    ``names`` gives the two task names, with ``{}`` standing for ``tool``.
+    """
 
     def run_build(**kwargs):
         # A successful build leaves a finished install behind
@@ -465,9 +477,35 @@ def mock_install_tasks(monkeypatch, behavior, tool, mark, download=None, build=N
 
     download_task = Mock(return_value=done_future(error=download))
     build_task = Mock(side_effect=run_build)
-    monkeypatch.setattr(behavior, f"_download_{tool}", download_task)
-    monkeypatch.setattr(behavior, f"_build_{tool}", build_task)
+    monkeypatch.setattr(behavior, names[0].format(tool), download_task)
+    monkeypatch.setattr(behavior, names[1].format(tool), build_task)
     return download_task, build_task
+
+
+def mark_limited_area_installed(behavior):
+    """Create what a finished MPAS-Limited-Area install leaves in work_dir."""
+    prefix = behavior.work_dir / "limited-area" / behavior.limited_area_version
+    (prefix / "venv" / "bin").mkdir(parents=True, exist_ok=True)
+    (prefix / "src").mkdir(parents=True, exist_ok=True)
+    python = prefix / "venv" / "bin" / "python"
+    python.write_text("#!/bin/sh\n")
+    python.chmod(0o755)
+    (prefix / "src" / "create_region").write_text("#!/usr/bin/env python\n")
+    (prefix / ".installed").touch()
+    return prefix
+
+
+def mock_limited_area_tasks(monkeypatch, behavior, install=None, check=None):
+    """Replace the MPAS-Limited-Area install and check tasks with mocks."""
+    return mock_install_tasks(
+        monkeypatch,
+        behavior,
+        "limited_area",
+        mark_limited_area_installed,
+        install,
+        check,
+        names=("_install_{}", "_check_{}"),
+    )
 
 
 def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
@@ -533,6 +571,14 @@ def test_invalid_metis_version(tmp_path, version):
 def test_invalid_mpas_tools_version(tmp_path, version):
     with pytest.raises(ValueError, match="Invalid mpas_tools_version"):
         _MeshBehavior(str(tmp_path / "work"), mpas_tools_version=version)
+
+
+@pytest.mark.parametrize(
+    "version", ["", "../x", "2.2; rm -rf /", "v2.2", None, 2.2, "2.2\n", "$(id)"]
+)
+def test_invalid_limited_area_version(tmp_path, version):
+    with pytest.raises(ValueError, match="Invalid limited_area_version"):
+        _MeshBehavior(str(tmp_path / "work"), limited_area_version=version)
 
 
 def test_work_dir_is_made_absolute(monkeypatch, tmp_path):
@@ -951,6 +997,50 @@ def test_metis_scripts(tmp_path):
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
 
 
+def test_limited_area_scripts(tmp_path):
+    behavior = _MeshBehavior(str(tmp_path / "work dir"), limited_area_version="2.1")
+    install = _MeshBehavior._install_limited_area.func(behavior)
+    check = _MeshBehavior._check_limited_area.func(behavior)
+    prefix = f"{behavior.work_dir}/limited-area/2.1"
+    assert f"prefix='{prefix}'" in install
+    assert f"prefix='{prefix}'" in check
+    # The tag has a v, and the clone goes to src in the prefix
+    assert "--depth 1 --branch v2.1 https://github.com/MPAS-Dev/MPAS-Limited-Area" in (
+        install
+    )
+    assert "MPAS-Limited-Area.git src" in install
+    # The environment is made from the Python running the task
+    assert f'{shlex.quote(sys.executable)} -m venv "$prefix/venv"' in install
+    assert '"$prefix/venv/bin/python" -m pip install' in install
+    assert install.rstrip().endswith('echo "Completed install at $(date)"')
+    assert "numpy netCDF4" in install
+    # A failed earlier install is removed before anything is cloned
+    assert install.index('rm -rf "$prefix"') < install.index("git ")
+    # The install is marked only after the imports and the script are checked
+    lines = [line.strip() for line in check.splitlines()]
+    marker = lines.index('touch "$prefix/.installed"')
+    imports = next(i for i, line in enumerate(lines) if "import numpy, netCDF4" in line)
+    runs = next(i for i, line in enumerate(lines) if 'create_region" --help' in line)
+    assert imports < runs < marker
+    assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
+
+
+@pytest.mark.parametrize("works", [True, False])
+def test_limited_area_check_marks_only_a_working_install(tmp_path, behavior, works):
+    prefix = mark_limited_area_installed(behavior)
+    (prefix / ".installed").unlink()
+    # A fake Python that either runs everything or fails every import
+    (prefix / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\nexit 0\n" if works else "#!/bin/sh\nexit 1\n"
+    )
+    script = _MeshBehavior._check_limited_area.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert (done.returncode == 0) == works
+    assert (prefix / ".installed").is_file() == works
+    if not works:
+        assert "cannot import numpy and netCDF4" in done.stderr
+
+
 def test_mpas_tools_scripts(tmp_path):
     behavior = _MeshBehavior(str(tmp_path / "work dir"), mpas_tools_version="2.1.0")
     download = _MeshBehavior._download_mpas_tools.func(behavior)
@@ -1234,6 +1324,149 @@ async def test_install_mpas_tools_checks_resources_before_submitting(
         await behavior.install_mpas_tools()
     download.assert_not_called()
     build.assert_not_called()
+
+
+# Installing MPAS-Limited-Area
+
+
+async def test_install_limited_area_reuses_a_finished_install(monkeypatch, behavior):
+    mark_limited_area_installed(behavior)
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    await behavior.install_limited_area()
+    assert behavior.limited_area_built
+    install.assert_not_called()
+    check.assert_not_called()
+
+
+@pytest.mark.parametrize("damage", ["marker", "python", "not_executable", "script"])
+async def test_install_limited_area_replaces_a_damaged_install(
+    monkeypatch, behavior, damage
+):
+    prefix = mark_limited_area_installed(behavior)
+    if damage == "marker":
+        (prefix / ".installed").unlink()
+    elif damage == "python":
+        (prefix / "venv" / "bin" / "python").unlink()
+    elif damage == "not_executable":
+        (prefix / "venv" / "bin" / "python").chmod(0o644)
+    else:
+        (prefix / "src" / "create_region").unlink()
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    await behavior.install_limited_area()
+    install.assert_called_once()
+    check.assert_called_once()
+    assert behavior.limited_area_built
+
+
+async def test_install_limited_area_runs_on_service_and_checks_on_compute(
+    monkeypatch, behavior
+):
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    await behavior.install_limited_area()
+    install.assert_called_once_with(
+        executor=["service"],
+        stdout=str(behavior.log_dir / "limited_area_install.stdout"),
+        stderr=str(behavior.log_dir / "limited_area_install.stderr"),
+    )
+    check.assert_called_once_with(
+        executor=["compute"],
+        stdout=str(behavior.log_dir / "limited_area_check.stdout"),
+        stderr=str(behavior.log_dir / "limited_area_check.stderr"),
+        inputs=[install.return_value],
+    )
+
+
+async def test_concurrent_limited_area_installs_run_once(monkeypatch, behavior):
+    # Keep the install unfinished while the other requests arrive
+    pending, check_pending = Future(), Future()
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    install.return_value = pending
+    check.side_effect = lambda **kwargs: check_pending
+    requests = [asyncio.create_task(behavior.install_limited_area()) for _ in range(3)]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert install.call_count == 1
+    pending.set_result(None)
+    mark_limited_area_installed(behavior)
+    check_pending.set_result(None)
+    await asyncio.gather(*requests)
+    assert install.call_count == 1
+    assert check.call_count == 1
+
+
+@pytest.mark.parametrize("stage", ["install", "check"])
+async def test_failed_limited_area_install_is_reported_and_retried(
+    monkeypatch, behavior, stage
+):
+    failure = BashExitFailure("task", 3)
+    install, check = mock_limited_area_tasks(
+        monkeypatch,
+        behavior,
+        install=failure if stage == "install" else None,
+        check=failure if stage == "check" else None,
+    )
+    with pytest.raises(
+        RuntimeError, match=f"MPAS-Limited-Area {stage} failed \\(exit 3\\)"
+    ) as info:
+        await behavior.install_limited_area()
+    assert f"limited_area_{stage}.stderr" in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not behavior.limited_area_built
+
+    install.return_value = done_future()
+    check.side_effect = lambda **kwargs: (
+        mark_limited_area_installed(behavior),
+        done_future(),
+    )[1]
+    await behavior.install_limited_area()
+    assert behavior.limited_area_built
+
+
+async def test_limited_area_check_that_leaves_no_install_is_an_error(
+    monkeypatch, behavior
+):
+    monkeypatch.setattr(
+        behavior, "_install_limited_area", Mock(return_value=done_future())
+    )
+    monkeypatch.setattr(
+        behavior, "_check_limited_area", Mock(return_value=done_future())
+    )
+    with pytest.raises(RuntimeError, match="is not usable"):
+        await behavior.install_limited_area()
+    assert not behavior.limited_area_built
+
+
+@pytest.mark.parametrize(
+    ("defined", "missing"),
+    [(["compute"], "service"), (["service"], "compute"), ([], "service")],
+)
+async def test_install_limited_area_checks_resources_before_submitting(
+    monkeypatch, behavior, defined, missing
+):
+    define_resources(monkeypatch, "_parsl_internal", *defined)
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.install_limited_area()
+    install.assert_not_called()
+    check.assert_not_called()
+
+
+async def test_install_limited_area_shares_the_lock_with_other_installs(
+    monkeypatch, behavior
+):
+    # An MPAS-Tools install holding the lock makes the Limited-Area install wait
+    pending = Future()
+    tools_download, _ = mock_mpas_tools_tasks(monkeypatch, behavior)
+    tools_download.return_value = pending
+    install, _ = mock_limited_area_tasks(monkeypatch, behavior)
+    tools = asyncio.create_task(behavior.install_mpas_tools())
+    limited = asyncio.create_task(behavior.install_limited_area())
+    for _ in range(10):
+        await asyncio.sleep(0)
+    install.assert_not_called()
+    pending.set_result(None)
+    await asyncio.gather(tools, limited)
+    install.assert_called_once()
 
 
 # Generating project_hexes meshes
@@ -2116,18 +2349,22 @@ async def test_ensure_tools_installed(monkeypatch, behavior):
 
 
 @pytest.mark.parametrize(
-    ("config", "metis", "mpas_tools"),
+    ("config", "metis", "mpas_tools", "limited_area"),
     [
-        (regional_config(), False, True),
-        ({**regional_config(), "forecast_ranks": 4}, True, True),
-        ({"resolution": "480km", "forecast_ranks": 4}, True, False),
+        (regional_config(), False, True, False),
+        ({**regional_config(), "forecast_ranks": 4}, True, True, False),
+        ({"resolution": "480km", "forecast_ranks": 4}, True, False, False),
+        (create_region_config(), False, False, True),
+        ({**create_region_config("polygon"), "init_ranks": 8}, True, False, True),
     ],
 )
 async def test_ensure_tools_installed_for_regional_requests(
-    monkeypatch, behavior, config, metis, mpas_tools
+    monkeypatch, behavior, config, metis, mpas_tools, limited_area
 ):
     metis_download, _ = mock_metis_tasks(monkeypatch, behavior)
     tools_download, _ = mock_mpas_tools_tasks(monkeypatch, behavior)
+    limited_install, _ = mock_limited_area_tasks(monkeypatch, behavior)
     await behavior.ensure_tools_installed(config)
     assert metis_download.called == metis
     assert tools_download.called == mpas_tools
+    assert limited_install.called == limited_area
