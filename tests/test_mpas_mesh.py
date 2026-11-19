@@ -6,11 +6,13 @@ import asyncio
 import io
 import pickle
 import shlex
+import shutil
 import subprocess
 import tarfile
 import urllib.request
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.error import URLError
 
@@ -438,8 +440,19 @@ def mark_metis_installed(behavior):
     return prefix / "bin" / "gpmetis"
 
 
-def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
-    """Replace the Metis download and build tasks with mocks."""
+def mark_mpas_tools_installed(behavior):
+    """Create what a finished MPAS-Tools build leaves in work_dir."""
+    prefix = behavior.work_dir / "mpas-tools" / behavior.mpas_tools_version
+    (prefix / "bin").mkdir(parents=True, exist_ok=True)
+    for name in ("project_hexes", "grid_rotate"):
+        (prefix / "bin" / name).write_text("#!/bin/sh\n")
+        (prefix / "bin" / name).chmod(0o755)
+    (prefix / ".installed").touch()
+    return prefix
+
+
+def mock_install_tasks(monkeypatch, behavior, tool, mark, download=None, build=None):
+    """Replace a tool's download and build tasks with mocks."""
 
     def run_build(**kwargs):
         # A successful build leaves a finished install behind
@@ -447,14 +460,28 @@ def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
             if dependency.done() and dependency.exception() is not None:
                 return done_future(error=dependency.exception())
         if build is None:
-            mark_metis_installed(behavior)
+            mark(behavior)
         return done_future(error=build)
 
     download_task = Mock(return_value=done_future(error=download))
     build_task = Mock(side_effect=run_build)
-    monkeypatch.setattr(behavior, "_download_metis", download_task)
-    monkeypatch.setattr(behavior, "_build_metis", build_task)
+    monkeypatch.setattr(behavior, f"_download_{tool}", download_task)
+    monkeypatch.setattr(behavior, f"_build_{tool}", build_task)
     return download_task, build_task
+
+
+def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
+    """Replace the Metis download and build tasks with mocks."""
+    return mock_install_tasks(
+        monkeypatch, behavior, "metis", mark_metis_installed, download, build
+    )
+
+
+def mock_mpas_tools_tasks(monkeypatch, behavior, download=None, build=None):
+    """Replace the MPAS-Tools download and build tasks with mocks."""
+    return mock_install_tasks(
+        monkeypatch, behavior, "mpas_tools", mark_mpas_tools_installed, download, build
+    )
 
 
 def fake_partition_task(fail_ranks=()):
@@ -498,6 +525,14 @@ PARTITIONED = {
 def test_invalid_metis_version(tmp_path, version):
     with pytest.raises(ValueError, match="Invalid metis_version"):
         _MeshBehavior(str(tmp_path / "work"), metis_version=version)
+
+
+@pytest.mark.parametrize(
+    "version", ["", "../x", "2.0.0; rm -rf /", "a2", None, 2, "2.0.0\n", "$(id)"]
+)
+def test_invalid_mpas_tools_version(tmp_path, version):
+    with pytest.raises(ValueError, match="Invalid mpas_tools_version"):
+        _MeshBehavior(str(tmp_path / "work"), mpas_tools_version=version)
 
 
 def test_work_dir_is_made_absolute(monkeypatch, tmp_path):
@@ -544,10 +579,181 @@ def test_validate_mesh_config_rejects_invalid(behavior, config, message):
         behavior._validate_mesh_config(config)
 
 
+@pytest.mark.parametrize("name", ["a" * 200, "\u00e9" * 100, "x" * 199 + "."])
+def test_validate_mesh_config_accepts_names_up_to_the_limit(behavior, name):
+    behavior._validate_mesh_config({"name": name})
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("a" * 201, "at most 200 bytes long, got 201"),
+        ("\u00e9" * 101, "at most 200 bytes long, got 202"),
+        ("\U0001f600" * 51, "at most 200 bytes long, got 204"),
+        ("bad\ud800", "valid file name"),
+    ],
+)
+def test_validate_mesh_config_rejects_long_or_unencodable_names(
+    behavior, name, message
+):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config({"name": name})
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config({**regional_config(), "name": name})
+
+
+async def test_longest_name_gets_every_file_it_needs(
+    monkeypatch, mesh_download, behavior, tmp_path
+):
+    """The longest allowed name must leave room for the longest file suffix."""
+    output, _ = mesh_download
+    mark_metis_installed(behavior)
+    monkeypatch.setattr(behavior, "_partition_mesh", fake_partition_task())
+    name = "n" * 200
+    config = {"resolution": "480km", "name": name, "forecast_ranks": 1048576}
+    result = await behavior.generate_mesh(config, str(output))
+    assert Path(result["partitions"][1048576]).is_file()
+
+
 def test_validate_mesh_config_accepts_valid(behavior):
     behavior._validate_mesh_config({})
     behavior._validate_mesh_config(PARTITIONED)
     behavior._validate_mesh_config({"resolution": "480km", "init_ranks": 1})
+
+
+HEXES = {
+    "center_lat": 40.0,
+    "center_lon": -105.0,
+    "extent_x_km": 500,
+    "extent_y_km": 400,
+}
+
+
+def regional_config(**changes):
+    """Return a valid regional request, with the project_hexes block changed."""
+    block = {**HEXES, **changes}
+    return {
+        "resolution": "15km",
+        "name": "region",
+        "regional": {"project_hexes": {k: v for k, v in block.items() if v is not ...}},
+    }
+
+
+@pytest.mark.parametrize(
+    "resolution", ["15km", "7.5km", "2km", "0.5km", "100km", "12345km"]
+)
+def test_validate_mesh_config_accepts_any_regional_resolution(behavior, resolution):
+    config = regional_config()
+    config["resolution"] = resolution
+    behavior._validate_mesh_config(config)
+
+
+def test_validate_mesh_config_accepts_regional_defaults_and_rotation(behavior):
+    behavior._validate_mesh_config(
+        {"regional": {"project_hexes": {**HEXES, "rotation_degrees": -30.5}}}
+    )
+    behavior._validate_mesh_config(regional_config(center_lon=270, center_lat=-90))
+
+
+def test_global_resolutions_stay_limited_to_the_available_meshes(behavior):
+    with pytest.raises(ValueError, match="not supported"):
+        behavior._validate_mesh_config({"resolution": "2km"})
+
+
+@pytest.mark.parametrize(
+    "resolution",
+    [
+        "0km",
+        "0.0km",
+        "-5km",
+        "15",
+        "km",
+        "",
+        "1e3km",
+        "15 km",
+        "1.km",
+        None,
+        15,
+        ["1km"],
+    ]
+    + ["9" * 400 + "km"],
+)
+def test_validate_mesh_config_rejects_invalid_regional_resolution(behavior, resolution):
+    config = regional_config()
+    config["resolution"] = resolution
+    with pytest.raises(ValueError, match="is not valid"):
+        behavior._validate_mesh_config(config)
+
+
+@pytest.mark.parametrize(
+    ("regional", "message"),
+    [
+        ("project_hexes", "regional must be a dict"),
+        ([], "regional must be a dict"),
+        ({}, "exactly one of 'project_hexes' or 'create_region'"),
+        ({"create_region": {}}, "'create_region' is not supported yet"),
+        (
+            {"project_hexes": HEXES, "create_region": {}},
+            "exactly one of 'project_hexes' or 'create_region'",
+        ),
+        ({"project_hex": HEXES}, "Unknown regional keys: project_hex"),
+        ({"project_hexes": None}, "regional.project_hexes must be a dict"),
+        ({"project_hexes": []}, "regional.project_hexes must be a dict"),
+        ({"project_hexes": {}}, "missing required keys: center_lat, center_lon"),
+        (
+            {"project_hexes": {**HEXES, "extent": 5}},
+            "Unknown regional.project_hexes keys: extent",
+        ),
+    ],
+)
+def test_validate_mesh_config_rejects_invalid_regional(behavior, regional, message):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config({"resolution": "15km", "regional": regional})
+
+
+@pytest.mark.parametrize("key", list(HEXES) + ["rotation_degrees"])
+@pytest.mark.parametrize(
+    "value",
+    [True, "40", "40,", None, float("nan"), float("inf"), 10**400, -(2**1024)],
+)
+def test_validate_mesh_config_rejects_non_numbers_in_project_hexes(
+    behavior, key, value
+):
+    with pytest.raises(ValueError, match=f"regional.project_hexes.{key} must be a"):
+        behavior._validate_mesh_config(regional_config(**{key: value}))
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("center_lat", 90.1, "between -90 and 90"),
+        ("center_lat", -91, "between -90 and 90"),
+        ("center_lon", -180.5, "between -180 and 360"),
+        ("center_lon", 360.5, "between -180 and 360"),
+        ("extent_x_km", 0, "greater than 0"),
+        ("extent_y_km", -1.5, "greater than 0"),
+    ],
+)
+def test_validate_mesh_config_rejects_out_of_range_project_hexes(
+    behavior, key, value, message
+):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(regional_config(**{key: value}))
+
+
+def test_validate_mesh_config_requires_every_project_hexes_key(behavior):
+    for key in HEXES:
+        with pytest.raises(ValueError, match=f"missing required keys: {key}"):
+            behavior._validate_mesh_config(regional_config(**{key: ...}))
+
+
+async def test_invalid_regional_mesh_creates_nothing(tmp_path, behavior):
+    output = tmp_path / "meshes"
+    with pytest.raises(ValueError, match="not supported yet"):
+        await behavior.generate_mesh(
+            {"regional": {"create_region": {"circle": {}}}}, str(output)
+        )
+    assert not output.exists()
 
 
 # Task scripts
@@ -571,6 +777,52 @@ def test_metis_scripts(tmp_path):
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
 
 
+def test_mpas_tools_scripts(tmp_path):
+    behavior = _MeshBehavior(str(tmp_path / "work dir"), mpas_tools_version="2.1.0")
+    download = _MeshBehavior._download_mpas_tools.func(behavior)
+    build = _MeshBehavior._build_mpas_tools.func(behavior)
+    assert f"build='{behavior.work_dir}/mpas-tools/build/2.1.0'" in download
+    assert "--depth 1 --branch 2.1.0 https://github.com/MPAS-Dev/MPAS-Tools" in download
+    assert f"prefix='{behavior.work_dir}/mpas-tools/2.1.0'" in build
+    lines = [line.strip() for line in build.splitlines()]
+    # Missing netCDF tools fail before an existing install is touched
+    assert build.index("nf-config") < build.index('rm -rf "$prefix"')
+    # A failed earlier install is removed before the build, and the programs are
+    # copied out and the sources removed before the install is marked
+    assert build.index('rm -rf "$prefix"') < build.index("make -C")
+    last_make = max(i for i, line in enumerate(lines) if line.startswith("make -C"))
+    copy = next(i for i, line in enumerate(lines) if line.startswith("cp "))
+    sources = lines.index('rm -rf "$build" || true')
+    marker = lines.index('touch "$prefix/.installed"')
+    assert last_make < copy < sources < marker
+    assert "hex_projection/project_hexes" in lines[copy]
+    assert "grid_rotate/grid_rotate" in lines[copy]
+    # Only echo commands may follow the marker
+    assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
+
+
+def test_mpas_tools_build_without_netcdf_keeps_an_existing_install(tmp_path, behavior):
+    prefix = mark_mpas_tools_installed(behavior)
+    # A PATH holding only what the script uses before the netCDF check
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("date", "hostname"):
+        found = shutil.which(name)
+        if found is None:
+            pytest.skip(f"{name} is not available")
+        (tools / name).symlink_to(found)
+    script = _MeshBehavior._build_mpas_tools.func(behavior)
+    done = subprocess.run(
+        [shutil.which("bash"), "-c", script],
+        env={"PATH": str(tools)},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 1
+    assert "nf-config not found" in done.stderr
+    assert (prefix / ".installed").is_file()
+
+
 @pytest.mark.parametrize(
     "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME"]
 )
@@ -578,12 +830,11 @@ def test_partition_script_does_not_expand_mesh_path(tmp_path, behavior, name):
     pwned = tmp_path / "PWNED"
     mesh_path = str(tmp_path / name.format(pwn=pwned)) + ".graph.info"
     record = tmp_path / "args"
-    fake = tmp_path / "gpmetis"
+    # The script runs gpmetis from the install, so put a fake one there
+    fake = mark_metis_installed(behavior)
     fake.write_text(
         f'#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done > {shlex.quote(str(record))}\n'
     )
-    fake.chmod(0o755)
-    behavior.gpmetis_path = fake
 
     script = _MeshBehavior._partition_mesh.func(behavior, mesh_path, 4)
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
@@ -597,11 +848,10 @@ def test_partition_script_does_not_expand_mesh_path(tmp_path, behavior, name):
 
 
 async def test_install_metis_reuses_a_finished_install(monkeypatch, behavior):
-    gpmetis = mark_metis_installed(behavior)
+    mark_metis_installed(behavior)
     download, build = mock_metis_tasks(monkeypatch, behavior)
     await behavior.install_metis()
     assert behavior.metis_built
-    assert behavior.gpmetis_path == gpmetis
     download.assert_not_called()
     build.assert_not_called()
 
@@ -641,7 +891,7 @@ async def test_concurrent_installs_run_once(monkeypatch, behavior):
         stderr=str(behavior.log_dir / "metis_build.stderr"),
         inputs=[download.return_value],
     )
-    assert behavior.gpmetis_path == (
+    assert behavior._gpmetis == (
         behavior.work_dir / "metis" / "5.2.1" / "bin" / "gpmetis"
     )
 
@@ -689,6 +939,584 @@ async def test_behavior_is_picklable_while_requests_wait(behavior):
     behavior._install_lock.release()
     await waiter
     behavior._install_lock.release()
+
+
+# Installing MPAS-Tools
+
+
+async def test_install_mpas_tools_reuses_a_finished_install(monkeypatch, behavior):
+    mark_mpas_tools_installed(behavior)
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    await behavior.install_mpas_tools()
+    assert behavior.mpas_tools_built
+    download.assert_not_called()
+    build.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "damage", ["marker", "project_hexes", "grid_rotate", "not_executable"]
+)
+async def test_install_mpas_tools_rebuilds_a_damaged_install(
+    monkeypatch, behavior, damage
+):
+    prefix = mark_mpas_tools_installed(behavior)
+    if damage == "marker":
+        (prefix / ".installed").unlink()
+    elif damage == "not_executable":
+        (prefix / "bin" / "grid_rotate").chmod(0o644)
+    else:
+        (prefix / "bin" / damage).unlink()
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    await behavior.install_mpas_tools()
+    download.assert_called_once()
+    build.assert_called_once()
+    assert behavior.mpas_tools_built
+
+
+async def test_install_mpas_tools_runs_the_download_on_service_and_build_on_compute(
+    monkeypatch, behavior
+):
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    await behavior.install_mpas_tools()
+    download.assert_called_once_with(
+        executor=["service"],
+        stdout=str(behavior.log_dir / "mpas_tools_download.stdout"),
+        stderr=str(behavior.log_dir / "mpas_tools_download.stderr"),
+    )
+    build.assert_called_once_with(
+        executor=["compute"],
+        stdout=str(behavior.log_dir / "mpas_tools_build.stdout"),
+        stderr=str(behavior.log_dir / "mpas_tools_build.stderr"),
+        inputs=[download.return_value],
+    )
+
+
+async def test_concurrent_mpas_tools_installs_run_once(monkeypatch, behavior):
+    # Keep the download unfinished while the other requests arrive
+    pending, build_pending = Future(), Future()
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    download.return_value = pending
+    build.side_effect = lambda **kwargs: build_pending
+    requests = [asyncio.create_task(behavior.install_mpas_tools()) for _ in range(3)]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert download.call_count == 1
+    pending.set_result(None)
+    mark_mpas_tools_installed(behavior)
+    build_pending.set_result(None)
+    await asyncio.gather(*requests)
+    assert download.call_count == 1
+    assert build.call_count == 1
+
+
+@pytest.mark.parametrize("stage", ["download", "build"])
+async def test_failed_mpas_tools_install_is_reported_and_retried(
+    monkeypatch, behavior, stage
+):
+    failure = BashExitFailure("task", 3)
+    download, build = mock_mpas_tools_tasks(
+        monkeypatch,
+        behavior,
+        download=failure if stage == "download" else None,
+        build=failure if stage == "build" else None,
+    )
+    with pytest.raises(RuntimeError, match=f"MPAS-Tools {stage} failed") as info:
+        await behavior.install_mpas_tools()
+    assert f"mpas_tools_{stage}.stderr" in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not behavior.mpas_tools_built
+
+    download.return_value = done_future()
+    build.side_effect = lambda **kwargs: (
+        mark_mpas_tools_installed(behavior),
+        done_future(),
+    )[1]
+    await behavior.install_mpas_tools()
+    assert behavior.mpas_tools_built
+
+
+async def test_mpas_tools_build_that_leaves_no_programs_is_an_error(
+    monkeypatch, behavior
+):
+    monkeypatch.setattr(
+        behavior, "_download_mpas_tools", Mock(return_value=done_future())
+    )
+    monkeypatch.setattr(behavior, "_build_mpas_tools", Mock(return_value=done_future()))
+    with pytest.raises(RuntimeError, match="not usable"):
+        await behavior.install_mpas_tools()
+    assert not behavior.mpas_tools_built
+
+
+@pytest.mark.parametrize(
+    ("defined", "missing"),
+    [(["compute"], "service"), (["service"], "compute"), ([], "service")],
+)
+async def test_install_mpas_tools_checks_resources_before_submitting(
+    monkeypatch, behavior, defined, missing
+):
+    define_resources(monkeypatch, "_parsl_internal", *defined)
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.install_mpas_tools()
+    download.assert_not_called()
+    build.assert_not_called()
+
+
+# Generating project_hexes meshes
+
+PROJECT_HEXES_NAMELIST = """\
+&mesh
+  cell_spacing_km = 15.0
+  mesh_length_x_km = 500.0
+  mesh_length_y_km = 400.0
+  earth_radius_km = 6371.229
+/
+&projection
+  projection_type = "lambert_conformal"
+/
+&lambert_conformal
+  reference_longitude_degrees = -105.0
+  standard_longitude_degrees = -105.0
+  reference_latitude_degrees = 40.0
+  standard_parallel_1_degrees = 40.0
+  standard_parallel_2_degrees = 40.0
+/
+"""
+
+ROTATE_NAMELIST = """\
+&input
+   config_original_latitude_degrees = 40.0
+   config_original_longitude_degrees = -105.0
+
+   config_new_latitude_degrees = 40.0
+   config_new_longitude_degrees = -105.0
+   config_birdseye_rotation_counter_clockwise_degrees = -30.5
+/
+"""
+
+
+def test_project_hexes_namelist():
+    assert (
+        _MeshBehavior._project_hexes_namelist(15.0, 500, 400, 40, -105)
+        == PROJECT_HEXES_NAMELIST
+    )
+
+
+def test_rotate_namelist():
+    assert _MeshBehavior._rotate_namelist(40, -105, -30.5) == ROTATE_NAMELIST
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 10**400])
+def test_namelists_reject_non_finite_numbers(value):
+    with pytest.raises(ValueError, match="Cannot write"):
+        _MeshBehavior._project_hexes_namelist(15.0, value, 400, 40, -105)
+    with pytest.raises(ValueError, match="Cannot write"):
+        _MeshBehavior._rotate_namelist(40, -105, value)
+
+
+def test_namelist_numbers_keep_their_precision():
+    text = _MeshBehavior._project_hexes_namelist(0.0001, 1e22, 0.125, -33.3, 270.0)
+    assert "cell_spacing_km = 0.0001\n" in text
+    assert "mesh_length_x_km = 1e+22\n" in text
+    assert "reference_latitude_degrees = -33.3\n" in text
+
+
+@pytest.mark.parametrize(
+    "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME", "a b"]
+)
+def test_program_scripts_run_in_the_mesh_directory_without_expansion(
+    tmp_path, behavior, name
+):
+    pwned = tmp_path / "PWNED"
+    mesh_dir = tmp_path / name.format(pwn=pwned)
+    mesh_dir.mkdir(parents=True)
+    record = tmp_path / "record"
+    prefix = mark_mpas_tools_installed(behavior)
+    for program in ("project_hexes", "grid_rotate"):
+        fake = prefix / "bin" / program
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'{{ pwd; for a in "$@"; do printf "%s\\n" "$a"; done; }} '
+            f">> {shlex.quote(str(record))}\n"
+        )
+    inputs = [str(mesh_dir / "in.nc"), str(mesh_dir / "out.nc")]
+    scripts = [
+        _MeshBehavior._run_project_hexes.func(behavior, str(mesh_dir)),
+        _MeshBehavior._run_grid_rotate.func(behavior, str(mesh_dir), *inputs),
+    ]
+    for script in scripts:
+        done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+    assert not pwned.exists()
+    assert record.read_text().splitlines() == [str(mesh_dir)] + [str(mesh_dir)] + inputs
+
+
+def fake_program_tasks(behavior, monkeypatch, fail=None):
+    """Replace the project_hexes and grid_rotate tasks with fakes.
+
+    ``fail`` maps a program name to the exception its task fails with. Returns
+    the two mocks, which record what the fakes were called with.
+    """
+    fail = fail or {}
+
+    def project_hexes(mesh_dir, **kwargs):
+        if "project_hexes" in fail:
+            return done_future(error=fail["project_hexes"])
+        directory = Path(mesh_dir)
+        assert (directory / "namelist.projections").is_file()
+        (directory / "mpas_hex_mesh.nc").write_text("mesh")
+        (directory / "graph.info").write_text("graph")
+        return done_future()
+
+    def grid_rotate(mesh_dir, input_file, output_file, **kwargs):
+        if "grid_rotate" in fail:
+            return done_future(error=fail["grid_rotate"])
+        assert (Path(mesh_dir) / "namelist.input").is_file()
+        Path(output_file).write_text("rotated " + Path(input_file).read_text())
+        return done_future()
+
+    hexes, rotate = Mock(side_effect=project_hexes), Mock(side_effect=grid_rotate)
+    monkeypatch.setattr(behavior, "_run_project_hexes", hexes)
+    monkeypatch.setattr(behavior, "_run_grid_rotate", rotate)
+    return hexes, rotate
+
+
+@pytest.fixture
+def mesh_dir(tmp_path, behavior):
+    """Provide a new mesh directory and an installed set of MPAS-Tools."""
+    mark_mpas_tools_installed(behavior)
+    directory = tmp_path / "meshes" / "region"
+    directory.mkdir(parents=True)
+    return directory
+
+
+async def test_project_hexes_mesh_without_rotation(monkeypatch, behavior, mesh_dir):
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch)
+    result = await behavior._generate_project_hexes_mesh(
+        mesh_dir, "region", "15km", HEXES
+    )
+    assert result == {
+        "static": str(mesh_dir / "region.static.nc"),
+        "graph": str(mesh_dir / "region.graph.info"),
+    }
+    assert (mesh_dir / "region.static.nc").read_text() == "mesh"
+    assert (mesh_dir / "region.graph.info").read_text() == "graph"
+    # The inputs stay, and the intermediate names are gone
+    assert (mesh_dir / "namelist.projections").read_text() == PROJECT_HEXES_NAMELIST
+    assert {path.name for path in mesh_dir.iterdir()} == {
+        "namelist.projections",
+        "region.static.nc",
+        "region.graph.info",
+    }
+    rotate.assert_not_called()
+    hexes.assert_called_once()
+    assert hexes.call_args.args == (str(mesh_dir),)
+    assert hexes.call_args.kwargs["executor"] == ["compute"]
+    assert hexes.call_args.kwargs["stderr"].startswith(
+        str(behavior.log_dir / "project_hexes.")
+    )
+
+
+async def test_project_hexes_mesh_with_rotation(monkeypatch, behavior, mesh_dir):
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch)
+    result = await behavior._generate_project_hexes_mesh(
+        mesh_dir, "region", "15km", {**HEXES, "rotation_degrees": -30.5}
+    )
+    assert (mesh_dir / "region.static.nc").read_text() == "rotated mesh"
+    assert (mesh_dir / "region.graph.info").read_text() == "graph"
+    assert result["static"] == str(mesh_dir / "region.static.nc")
+    assert (mesh_dir / "namelist.input").read_text() == ROTATE_NAMELIST
+    assert {path.name for path in mesh_dir.iterdir()} == {
+        "namelist.projections",
+        "namelist.input",
+        "region.static.nc",
+        "region.graph.info",
+    }
+    rotate.assert_called_once()
+    assert rotate.call_args.args == (
+        str(mesh_dir),
+        str(mesh_dir / "mpas_hex_mesh.nc"),
+        str(mesh_dir / "rotated_mesh.nc"),
+    )
+    assert rotate.call_args.kwargs["executor"] == ["compute"]
+
+
+async def test_zero_rotation_does_not_run_grid_rotate(monkeypatch, behavior, mesh_dir):
+    _, rotate = fake_program_tasks(behavior, monkeypatch)
+    await behavior._generate_project_hexes_mesh(
+        mesh_dir, "region", "15km", {**HEXES, "rotation_degrees": 0}
+    )
+    rotate.assert_not_called()
+
+
+@pytest.mark.parametrize("program", ["project_hexes", "grid_rotate"])
+async def test_program_failure_names_its_log(monkeypatch, behavior, mesh_dir, program):
+    failure = BashExitFailure("task", 2)
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch, {program: failure})
+    with pytest.raises(RuntimeError, match=f"{program} failed \\(exit 2\\)") as info:
+        await behavior._generate_project_hexes_mesh(
+            mesh_dir, "region", "15km", {**HEXES, "rotation_degrees": 10}
+        )
+    task = hexes if program == "project_hexes" else rotate
+    assert str(task.call_args.kwargs["stderr"]) in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not (mesh_dir / "region.static.nc").exists()
+
+
+async def test_unexpected_program_error_becomes_a_runtime_error(
+    monkeypatch, behavior, mesh_dir
+):
+    failure = OSError("worker lost")
+    fake_program_tasks(behavior, monkeypatch, {"project_hexes": failure})
+    with pytest.raises(RuntimeError, match="project_hexes failed: worker lost") as info:
+        await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
+    assert info.value.__cause__ is failure
+
+
+@pytest.mark.parametrize("missing", ["mpas_hex_mesh.nc", "graph.info"])
+@pytest.mark.parametrize("empty", [False, True])
+async def test_missing_program_output_is_an_error(
+    monkeypatch, behavior, mesh_dir, missing, empty
+):
+    hexes, _ = fake_program_tasks(behavior, monkeypatch)
+    write = hexes.side_effect
+
+    def damaged(directory, **kwargs):
+        future = write(directory, **kwargs)
+        if empty:
+            (Path(directory) / missing).write_text("")
+        else:
+            (Path(directory) / missing).unlink()
+        return future
+
+    hexes.side_effect = damaged
+    with pytest.raises(RuntimeError, match=f"did not write {missing}"):
+        await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
+
+
+async def test_missing_project_hexes_output_blames_it_and_skips_the_rotation(
+    monkeypatch, behavior, mesh_dir
+):
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch)
+    hexes.side_effect = lambda directory, **kwargs: done_future()
+    config = {**HEXES, "rotation_degrees": 30}
+    with pytest.raises(RuntimeError, match="project_hexes did not write") as info:
+        await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", config)
+    assert str(hexes.call_args.kwargs["stderr"]) in str(info.value)
+    rotate.assert_not_called()
+
+
+@pytest.mark.parametrize("empty", [False, True])
+async def test_missing_grid_rotate_output_blames_it(
+    monkeypatch, behavior, mesh_dir, empty
+):
+    _, rotate = fake_program_tasks(behavior, monkeypatch)
+
+    def writes_nothing(mesh_dir, input_file, output_file, **kwargs):
+        if empty:
+            Path(output_file).write_text("")
+        return done_future()
+
+    rotate.side_effect = writes_nothing
+    config = {**HEXES, "rotation_degrees": 30}
+    with pytest.raises(
+        RuntimeError, match="grid_rotate did not write rotated_mesh.nc"
+    ) as info:
+        await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", config)
+    assert str(rotate.call_args.kwargs["stderr"]) in str(info.value)
+
+
+async def test_project_hexes_mesh_installs_the_programs_first(
+    monkeypatch, tmp_path, behavior
+):
+    mesh_dir = tmp_path / "region"
+    mesh_dir.mkdir()
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    fake_program_tasks(behavior, monkeypatch)
+    await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
+    download.assert_called_once()
+    build.assert_called_once()
+
+
+async def test_each_program_run_has_its_own_logs(monkeypatch, behavior, mesh_dir):
+    hexes, _ = fake_program_tasks(behavior, monkeypatch)
+    second = mesh_dir.parent / "second"
+    second.mkdir()
+    await behavior._generate_project_hexes_mesh(mesh_dir, "region", "15km", HEXES)
+    await behavior._generate_project_hexes_mesh(second, "second", "15km", HEXES)
+    logs = [call.kwargs["stderr"] for call in hexes.call_args_list]
+    assert len(set(logs)) == 2
+
+
+# Generating regional meshes through generate_mesh
+
+
+@pytest.fixture
+def regional(monkeypatch, tmp_path, behavior):
+    """Provide an output directory, installed tools, and fake programs."""
+    mark_mpas_tools_installed(behavior)
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch)
+    download = Mock(return_value=done_future())
+    monkeypatch.setattr(behavior, "_download_global_mesh", download)
+    return SimpleNamespace(
+        output=tmp_path / "meshes", hexes=hexes, rotate=rotate, download=download
+    )
+
+
+async def test_generate_regional_mesh(regional, behavior):
+    result = await behavior.generate_mesh(regional_config(), str(regional.output))
+    mesh_dir = regional.output / "region"
+    assert result == {
+        "static": str(mesh_dir / "region.static.nc"),
+        "graph": str(mesh_dir / "region.graph.info"),
+    }
+    assert (mesh_dir / "region.static.nc").read_text() == "mesh"
+    # No global mesh is downloaded for a regional one
+    regional.download.assert_not_called()
+    assert {path.name for path in regional.output.iterdir()} == {"region"}
+    regional.rotate.assert_not_called()
+
+
+@pytest.mark.parametrize("resolution", ["2km", "7.5km", "0.5km", "480km"])
+async def test_generate_regional_mesh_uses_the_requested_resolution(
+    regional, behavior, resolution
+):
+    config = regional_config()
+    config["resolution"] = resolution
+    await behavior.generate_mesh(config, str(regional.output))
+    text = (regional.output / "region" / "namelist.projections").read_text()
+    assert f"cell_spacing_km = {float(resolution[:-2])!r}\n" in text
+
+
+async def test_generate_regional_mesh_with_rotation(regional, behavior):
+    config = regional_config(rotation_degrees=45)
+    result = await behavior.generate_mesh(config, str(regional.output))
+    assert (regional.output / "region" / "region.static.nc").read_text() == (
+        "rotated mesh"
+    )
+    assert result["static"].endswith("region.static.nc")
+    regional.rotate.assert_called_once()
+
+
+async def test_generate_regional_mesh_with_default_name(regional, behavior):
+    config = regional_config()
+    del config["name"]
+    result = await behavior.generate_mesh(config, str(regional.output))
+    assert result["static"] == str(
+        regional.output / "mesh_15km" / "mesh_15km.static.nc"
+    )
+
+
+async def test_generate_regional_mesh_with_partitions(monkeypatch, regional, behavior):
+    mark_metis_installed(behavior)
+    task = fake_partition_task()
+    monkeypatch.setattr(behavior, "_partition_mesh", task)
+    config = {**regional_config(), "init_ranks": 4, "forecast_ranks": 8}
+    result = await behavior.generate_mesh(config, str(regional.output))
+    graph = result["graph"]
+    assert result["partitions"] == {4: f"{graph}.part.4", 8: f"{graph}.part.8"}
+    # The partitions are written next to the graph, in the mesh directory
+    assert Path(f"{graph}.part.8").is_file()
+    assert {call.args[0] for call in task.call_args_list} == {graph}
+
+
+async def test_none_regional_block_means_a_global_mesh(
+    monkeypatch, mesh_download, behavior
+):
+    output, download = mesh_download
+    result = await behavior.generate_mesh(
+        {"resolution": "480km", "name": "global", "regional": None}, str(output)
+    )
+    download.assert_called_once()
+    assert result["static"] == str(output / "global" / "global.static.nc")
+
+
+@pytest.mark.parametrize("fail", ["project_hexes", "grid_rotate"])
+async def test_failed_regional_mesh_is_removed_and_can_be_retried(
+    monkeypatch, regional, behavior, fail
+):
+    failure = BashExitFailure("task", 1)
+    hexes, rotate = fake_program_tasks(behavior, monkeypatch, {fail: failure})
+    config = regional_config(rotation_degrees=45)
+    with pytest.raises(RuntimeError, match=f"{fail} failed"):
+        await behavior.generate_mesh(config, str(regional.output))
+    # Nothing is left behind, including the namelists and intermediate meshes
+    assert list(regional.output.iterdir()) == []
+
+    fake_program_tasks(behavior, monkeypatch)
+    result = await behavior.generate_mesh(config, str(regional.output))
+    assert Path(result["static"]).is_file()
+
+
+async def test_failed_regional_partition_removes_the_whole_mesh(
+    monkeypatch, regional, behavior
+):
+    mark_metis_installed(behavior)
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    config = {**regional_config(), "init_ranks": 4, "forecast_ranks": 8}
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh(config, str(regional.output))
+    assert list(regional.output.iterdir()) == []
+
+
+async def test_existing_regional_mesh_name_fails_before_anything_runs(
+    regional, behavior
+):
+    (regional.output / "region").mkdir(parents=True)
+    with pytest.raises(FileExistsError):
+        await behavior.generate_mesh(regional_config(), str(regional.output))
+    regional.hexes.assert_not_called()
+    assert list((regional.output / "region").iterdir()) == []
+
+
+async def test_regional_mesh_installs_the_programs_before_running(
+    monkeypatch, tmp_path, behavior
+):
+    download, build = mock_mpas_tools_tasks(monkeypatch, behavior)
+    hexes, _ = fake_program_tasks(behavior, monkeypatch)
+    await behavior.generate_mesh(regional_config(), str(tmp_path / "meshes"))
+    download.assert_called_once()
+    build.assert_called_once()
+    hexes.assert_called_once()
+
+
+async def test_failed_install_leaves_no_regional_mesh(monkeypatch, tmp_path, behavior):
+    failure = BashExitFailure("task", 3)
+    mock_mpas_tools_tasks(monkeypatch, behavior, build=failure)
+    hexes, _ = fake_program_tasks(behavior, monkeypatch)
+    output = tmp_path / "meshes"
+    with pytest.raises(RuntimeError, match="MPAS-Tools build failed"):
+        await behavior.generate_mesh(regional_config(), str(output))
+    hexes.assert_not_called()
+    assert list(output.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("config", "defined", "missing"),
+    [
+        (regional_config(), ["service"], "compute"),
+        (regional_config(), [], "compute"),
+        ({**regional_config(), "forecast_ranks": 4}, ["service"], "compute"),
+    ],
+)
+async def test_regional_mesh_checks_resources_before_any_work(
+    monkeypatch, regional, behavior, config, defined, missing
+):
+    define_resources(monkeypatch, *defined)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.generate_mesh(config, str(regional.output))
+    regional.hexes.assert_not_called()
+    assert not regional.output.exists()
+
+
+async def test_installed_regional_mesh_needs_only_compute(
+    monkeypatch, regional, behavior
+):
+    define_resources(monkeypatch, "compute")
+    result = await behavior.generate_mesh(regional_config(), str(regional.output))
+    assert Path(result["static"]).is_file()
 
 
 # Partitioning
@@ -1104,7 +1932,28 @@ async def test_ensure_tools_installed_validates_the_config(
 
 async def test_ensure_tools_installed(monkeypatch, behavior):
     download, _ = mock_metis_tasks(monkeypatch, behavior)
+    tools_download, _ = mock_mpas_tools_tasks(monkeypatch, behavior)
     await behavior.ensure_tools_installed({"resolution": "480km"})
     download.assert_not_called()
+    tools_download.assert_not_called()
     await behavior.ensure_tools_installed({"init_ranks": 2})
     download.assert_called_once()
+    tools_download.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("config", "metis", "mpas_tools"),
+    [
+        (regional_config(), False, True),
+        ({**regional_config(), "forecast_ranks": 4}, True, True),
+        ({"resolution": "480km", "forecast_ranks": 4}, True, False),
+    ],
+)
+async def test_ensure_tools_installed_for_regional_requests(
+    monkeypatch, behavior, config, metis, mpas_tools
+):
+    metis_download, _ = mock_metis_tasks(monkeypatch, behavior)
+    tools_download, _ = mock_mpas_tools_tasks(monkeypatch, behavior)
+    await behavior.ensure_tools_installed(config)
+    assert metis_download.called == metis
+    assert tools_download.called == mpas_tools
