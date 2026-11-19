@@ -1900,6 +1900,263 @@ async def test_mesh_requests_leave_plotting_to_the_plot_step(monkeypatch, behavi
     install.assert_not_called()
 
 
+# Plotting
+
+
+def fake_plot_task(behavior, monkeypatch, code=0, writes=True):
+    """Replace the plotting task with a fake that acts like the script.
+
+    It writes a PNG to the path it is given unless ``writes`` is false, and
+    exits with ``code``.
+    """
+
+    def run(mesh_path, output_path, options, **kwargs):
+        assert Path(mesh_path).is_file()
+        if writes and code != 3:
+            Path(output_path).write_bytes(b"\x89PNG new image")
+        if code:
+            return done_future(error=BashExitFailure("plot", code))
+        return done_future()
+
+    task = Mock(side_effect=run)
+    monkeypatch.setattr(behavior, "_run_plot_mesh", task)
+    return task
+
+
+@pytest.fixture
+def plotting(behavior, tmp_path):
+    """Provide installed plotting and a mesh file to plot."""
+    mark_plotting_installed(behavior)
+    mesh = tmp_path / "meshes" / "cut" / "cut.static.nc"
+    mesh.parent.mkdir(parents=True)
+    mesh.write_bytes(b"CDF mesh")
+    return mesh
+
+
+@pytest.mark.parametrize(
+    ("name", "image"),
+    [
+        ("conus.static.nc", "conus.png"),
+        ("x1.2562.static.nc", "x1.2562.png"),
+        ("x1.2562.grid.nc", "x1.2562.grid.png"),
+        ("mesh", "mesh.png"),
+        # An image never replaces its mesh
+        ("picture.png", "picture.png.png"),
+    ],
+)
+def test_plot_path(name, image):
+    assert _MeshBehavior._plot_path(Path("/m") / name) == Path("/m") / image
+
+
+def test_plot_script_is_next_to_the_mesh_module(behavior):
+    assert behavior._plot_script == Path(mesh_module.__file__).with_name(
+        "_plot_mesh.py"
+    )
+    assert behavior._plot_script.is_file()
+
+
+async def test_plot_mesh(monkeypatch, behavior, plotting):
+    task = fake_plot_task(behavior, monkeypatch)
+    image = await behavior.plot_mesh(str(plotting))
+    assert image == str(plotting.with_name("cut.png"))
+    assert Path(image).read_bytes() == b"\x89PNG new image"
+    # Only the image is added, under its final name
+    assert {path.name for path in plotting.parent.iterdir()} == {
+        "cut.static.nc",
+        "cut.png",
+    }
+    task.assert_called_once()
+    mesh_arg, partial, options = task.call_args.args
+    assert mesh_arg == str(plotting)
+    assert Path(partial).parent == plotting.parent
+    assert Path(partial).name.startswith(".cut.") and partial.endswith(".png")
+    assert options == []
+    assert task.call_args.kwargs["executor"] == ["compute"]
+    assert task.call_args.kwargs["stderr"].startswith(
+        str(behavior.log_dir / "plot_mesh.")
+    )
+
+
+async def test_plot_mesh_passes_the_view(monkeypatch, behavior, plotting):
+    task = fake_plot_task(behavior, monkeypatch)
+    await behavior.plot_mesh(
+        str(plotting), title="A title", zoom=4, center_lat=50, center_lon=-10.5
+    )
+    assert task.call_args.args[2] == [
+        "--title",
+        "A title",
+        "--zoom",
+        "4.0",
+        "--center",
+        "50.0",
+        "-10.5",
+    ]
+
+
+async def test_plot_mesh_makes_relative_paths_absolute(monkeypatch, behavior, plotting):
+    fake_plot_task(behavior, monkeypatch)
+    monkeypatch.chdir(plotting.parent)
+    assert await behavior.plot_mesh("cut.static.nc") == str(
+        plotting.with_name("cut.png")
+    )
+
+
+async def test_plot_mesh_replaces_an_earlier_image(monkeypatch, behavior, plotting):
+    plotting.with_name("cut.png").write_bytes(b"old")
+    fake_plot_task(behavior, monkeypatch)
+    await behavior.plot_mesh(str(plotting))
+    assert plotting.with_name("cut.png").read_bytes() == b"\x89PNG new image"
+
+
+@pytest.mark.parametrize("code", [1, 139])
+async def test_failed_plot_names_its_logs_and_keeps_an_earlier_image(
+    monkeypatch, behavior, plotting, code
+):
+    plotting.with_name("cut.png").write_bytes(b"old")
+    task = fake_plot_task(behavior, monkeypatch, code=code)
+    with pytest.raises(
+        RuntimeError, match=f"Plotting failed \\(exit {code}\\)"
+    ) as info:
+        await behavior.plot_mesh(str(plotting))
+    assert task.call_args.kwargs["stdout"] in str(info.value)
+    assert task.call_args.kwargs["stderr"] in str(info.value)
+    # The partial image is removed, and the earlier one kept
+    assert {path.name for path in plotting.parent.iterdir()} == {
+        "cut.static.nc",
+        "cut.png",
+    }
+    assert plotting.with_name("cut.png").read_bytes() == b"old"
+
+
+async def test_unexpected_plot_error_becomes_a_runtime_error(
+    monkeypatch, behavior, plotting
+):
+    failure = OSError("worker lost")
+    monkeypatch.setattr(
+        behavior, "_run_plot_mesh", Mock(return_value=done_future(error=failure))
+    )
+    with pytest.raises(RuntimeError, match="Plotting failed: worker lost") as info:
+        await behavior.plot_mesh(str(plotting))
+    assert info.value.__cause__ is failure
+
+
+async def test_plot_without_some_map_layers_still_gives_an_image(
+    monkeypatch, behavior, plotting
+):
+    warning = Mock()
+    monkeypatch.setattr(mesh_module.logger, "warning", warning)
+    task = fake_plot_task(behavior, monkeypatch, code=2)
+    image = await behavior.plot_mesh(str(plotting))
+    assert Path(image).read_bytes() == b"\x89PNG new image"
+    warning.assert_called_once()
+    assert "without some map layers" in warning.call_args.args[2]
+    assert task.call_args.kwargs["stderr"] in warning.call_args.args[2]
+    path, message = await behavior._plot(str(plotting))
+    assert path == image
+    assert "without some map layers" in message
+
+
+async def test_view_of_a_regional_mesh_is_rejected(monkeypatch, behavior, plotting):
+    plotting.with_name("cut.png").write_bytes(b"old")
+    fake_plot_task(behavior, monkeypatch, code=3)
+    with pytest.raises(ValueError, match="apply only to global meshes, and .* is"):
+        await behavior.plot_mesh(str(plotting), zoom=2)
+    assert plotting.with_name("cut.png").read_bytes() == b"old"
+    assert len(list(plotting.parent.iterdir())) == 2
+
+
+async def test_plot_that_writes_nothing_is_an_error(monkeypatch, behavior, plotting):
+    task = fake_plot_task(behavior, monkeypatch, writes=False)
+    with pytest.raises(RuntimeError, match="plot_mesh did not write") as info:
+        await behavior.plot_mesh(str(plotting))
+    assert task.call_args.kwargs["stdout"] in str(info.value)
+    assert not plotting.with_name("cut.png").exists()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error", "message"),
+    [
+        ({"mesh_path": ""}, ValueError, "non-empty string"),
+        ({"mesh_path": None}, ValueError, "non-empty string"),
+        ({"zoom": 0}, ValueError, "zoom must be greater than 0"),
+        ({"center_lat": 10}, ValueError, "must be given together"),
+        ({"title": 5}, ValueError, "title must be a string"),
+        ({"mesh_path": "missing.static.nc"}, FileNotFoundError, "No mesh file"),
+    ],
+)
+async def test_plot_mesh_rejects_invalid_input_before_any_work(
+    monkeypatch, tmp_path, behavior, plotting, arguments, error, message
+):
+    monkeypatch.chdir(tmp_path)
+    install, _ = mock_plotting_tasks(monkeypatch, behavior)
+    task = fake_plot_task(behavior, monkeypatch)
+    arguments = {"mesh_path": str(plotting), **arguments}
+    with pytest.raises(error, match=message):
+        await behavior.plot_mesh(**arguments)
+    task.assert_not_called()
+    install.assert_not_called()
+
+
+async def test_plot_mesh_installs_plotting_first(monkeypatch, tmp_path, behavior):
+    mesh = tmp_path / "m.static.nc"
+    mesh.write_bytes(b"CDF")
+    install, check = mock_plotting_tasks(monkeypatch, behavior)
+    fake_plot_task(behavior, monkeypatch)
+    await behavior.plot_mesh(str(mesh))
+    install.assert_called_once()
+    check.assert_called_once()
+
+
+async def test_plot_mesh_needs_compute(monkeypatch, behavior, plotting):
+    define_resources(monkeypatch, "service")
+    task = fake_plot_task(behavior, monkeypatch)
+    with pytest.raises(RuntimeError, match="Plotting needs the resource 'compute'"):
+        await behavior.plot_mesh(str(plotting))
+    task.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME", "a b"]
+)
+def test_plot_script_runs_without_expansion(tmp_path, behavior, name):
+    pwned = tmp_path / "PWNED"
+    directory = tmp_path / name.format(pwn=pwned)
+    directory.mkdir(parents=True)
+    record = tmp_path / "record"
+    prefix = mark_plotting_installed(behavior)
+    (prefix / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\n"
+        f'{{ echo "$MPLBACKEND $MPLCONFIGDIR"; for a in "$@"; do printf "%s\\n" "$a"; done; }}'
+        f" > {shlex.quote(str(record))}\n"
+    )
+    mesh, output = str(directory / "m.static.nc"), str(directory / ".m.1.png")
+    options = ["--title", name, "--zoom", "2.0"]
+    script = _MeshBehavior._run_plot_mesh.func(behavior, mesh, output, options)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert not pwned.exists()
+    assert record.read_text().splitlines() == [
+        f"Agg {prefix / 'matplotlib'}",
+        str(behavior._plot_script),
+        mesh,
+        output,
+        "--map-data",
+        str(prefix / "natural_earth"),
+        *options,
+    ]
+
+
+@pytest.mark.parametrize("code", [2, 3, 5])
+def test_plot_script_passes_the_exit_code_on(tmp_path, behavior, code):
+    prefix = mark_plotting_installed(behavior)
+    (prefix / "venv" / "bin" / "python").write_text(f"#!/bin/sh\nexit {code}\n")
+    script = _MeshBehavior._run_plot_mesh.func(
+        behavior, str(tmp_path / "m.nc"), str(tmp_path / ".m.png"), []
+    )
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == code
+
+
 # Generating project_hexes meshes
 
 PROJECT_HEXES_NAMELIST = """\

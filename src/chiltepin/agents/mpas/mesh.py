@@ -19,6 +19,10 @@ from parsl.app.errors import BashExitFailure
 from parsl.errors import NoDataFlowKernelError
 
 from chiltepin.agents import agent_action, chiltepin_agent
+from chiltepin.agents.mpas._plot_mesh import (
+    EXIT_MISSING_MAP,
+    EXIT_VIEW_OF_REGIONAL_MESH,
+)
 from chiltepin.tasks import bash_task, python_task
 
 logger = logging.getLogger(__name__)
@@ -845,6 +849,15 @@ class _MeshBehavior:
             for resolution, category, name in _MAP_LAYERS
         ]
 
+    @property
+    def _plot_script(self) -> Path:
+        """Path of the plotting script, next to this module.
+
+        Tasks read this on the worker, so it is the script of the chiltepin
+        installation the worker runs, which the compute resource can read.
+        """
+        return Path(__file__).with_name("_plot_mesh.py")
+
     def _plotting_usable(self) -> bool:
         """Whether a finished plotting install exists."""
         return (self._plot_prefix / ".installed").is_file() and self._is_executable(
@@ -1106,6 +1119,31 @@ class _MeshBehavior:
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
             echo "Completed check at $(date)"
+            """
+        )
+
+    @bash_task
+    def _run_plot_mesh(
+        self, mesh_path: str, output_path: str, options: List[str]
+    ) -> str:
+        """Run the plotting script with the plotting environment's Python.
+
+        matplotlib keeps its configuration and font cache in the install, not in
+        the home directory.
+        """
+        import textwrap
+
+        arguments = " ".join(self._q(option) for option in options)
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started plot at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._plot_prefix)}
+            export MPLBACKEND=Agg
+            export MPLCONFIGDIR="$prefix/matplotlib"
+            "$prefix/venv/bin/python" {self._q(self._plot_script)} {self._q(mesh_path)} {self._q(output_path)} --map-data {self._q(self._map_data_dir)} {arguments}
+            echo "Completed plot at $(date)"
             """
         )
 
@@ -1497,6 +1535,148 @@ class _MeshBehavior:
                         f"{self.log_dir}/plot_check.stderr"
                     )
             self.plotting_built = True
+
+    @staticmethod
+    def _plot_path(mesh: Path) -> Path:
+        """Return the image path of a mesh: ``<name>.png`` next to it.
+
+        ``conus.static.nc`` gives ``conus.png``, and ``x1.2562.grid.nc`` gives
+        ``x1.2562.grid.png``.
+        """
+        name = mesh.name.removesuffix(".nc").removesuffix(".static")
+        return mesh.with_name(f"{name}.png")
+
+    async def _plot(
+        self,
+        mesh_path: str,
+        title: Optional[str] = None,
+        zoom: Optional[float] = None,
+        center_lat: Optional[float] = None,
+        center_lon: Optional[float] = None,
+    ) -> Tuple[str, Optional[str]]:
+        """Draw a mesh, and return the image's path and any warning about it.
+
+        The image is written under a temporary name and renamed when it is
+        complete, so a failed plot leaves an earlier image of the mesh alone.
+        The warning names the log of a plot drawn without some map layers.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or the view settings are given for a
+            regional mesh.
+        FileNotFoundError
+            If the mesh file does not exist.
+        RuntimeError
+            If plotting cannot be installed, the ``compute`` resource is not
+            defined, or the plot fails. The message names the log files.
+        """
+        if not isinstance(mesh_path, str) or not mesh_path:
+            raise ValueError("mesh_path must be a non-empty string")
+        self._validate_plot_view(title, zoom, center_lat, center_lon)
+        mesh = Path(os.path.abspath(os.path.expanduser(mesh_path)))
+        output = self._plot_path(mesh)
+        if not mesh.is_file():
+            raise FileNotFoundError(f"No mesh file at {mesh}")
+
+        await self.install_plotting()
+        self._require_resources("Plotting", "compute")
+        call_id = uuid.uuid4().hex[:8]
+        log = self.log_dir / f"plot_mesh.{call_id}"
+        partial = output.with_name(f".{output.stem}.{call_id}.png")
+        options: List[str] = []
+        if title is not None:
+            options += ["--title", title]
+        if zoom is not None:
+            options += ["--zoom", repr(float(zoom))]
+        if center_lat is not None:
+            options += ["--center", repr(float(center_lat)), repr(float(center_lon))]
+
+        warning = None
+        future = self._run_plot_mesh(
+            str(mesh),
+            str(partial),
+            options,
+            executor=["compute"],
+            stdout=f"{log}.stdout",
+            stderr=f"{log}.stderr",
+        )
+        try:
+            try:
+                await asyncio.wrap_future(future)
+            except BashExitFailure as e:
+                if e.exitcode == EXIT_VIEW_OF_REGIONAL_MESH:
+                    raise ValueError(
+                        "zoom, center_lat and center_lon apply only to global "
+                        f"meshes, and {mesh} is regional"
+                    ) from e
+                if e.exitcode != EXIT_MISSING_MAP:
+                    raise RuntimeError(
+                        f"Plotting failed (exit {e.exitcode}), "
+                        f"see {log}.stdout and {log}.stderr"
+                    ) from e
+                warning = f"Plotted without some map layers, see {log}.stderr"
+                logger.warning("%s: %s", output, warning)
+            except Exception as e:
+                raise RuntimeError(f"Plotting failed: {e}") from e
+            self._require_output(partial, "plot_mesh", call_id)
+            partial.replace(output)
+        finally:
+            partial.unlink(missing_ok=True)
+        return str(output), warning
+
+    @agent_action
+    async def plot_mesh(
+        self,
+        mesh_path: str,
+        title: Optional[str] = None,
+        zoom: Optional[float] = None,
+        center_lat: Optional[float] = None,
+        center_lon: Optional[float] = None,
+    ) -> str:
+        """Draw a PNG image of a mesh, and return its path.
+
+        The image is written next to the mesh as ``<name>.png``, replacing an
+        earlier one. A regional mesh is drawn on a flat map, with its cells
+        colored by boundary layer. A global mesh is drawn on a sphere. Cell
+        edges are drawn when cells come out large enough in the image to tell
+        apart. Plotting is installed first if it is not already installed, and
+        runs on the ``compute`` resource.
+
+        Parameters
+        ----------
+        mesh_path : str
+            Path to the mesh's static or grid file. A relative path or one
+            starting with ``~`` is made absolute on the agent.
+        title : str, optional
+            Title of the image, by default "MPAS mesh: <name>"
+        zoom : float, optional
+            Zoom of a global mesh's sphere, greater than 0. The default makes
+            the globe fill the image, and a larger zoom shows less of it, with
+            larger cells.
+        center_lat, center_lon : float, optional
+            Point of a global mesh to center the view on, given together, by
+            default 0N 0E.
+
+        Returns
+        -------
+        str
+            Absolute path of the image. If some map layers are missing, it is
+            drawn without them, and a warning naming the log is logged.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or ``zoom``, ``center_lat`` or
+            ``center_lon`` is given for a regional mesh.
+        FileNotFoundError
+            If the mesh file does not exist.
+        RuntimeError
+            If plotting cannot be installed, a resource it needs is not defined,
+            or the plot fails. The message names the log files.
+        """
+        path, _ = await self._plot(mesh_path, title, zoom, center_lat, center_lon)
+        return path
 
     # -------------------------------------------------------------------------
     # Public agent actions — Tools
