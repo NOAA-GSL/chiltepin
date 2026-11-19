@@ -23,6 +23,7 @@ from chiltepin.agents.mpas._plot_mesh import (
     EXIT_MISSING_MAP,
     EXIT_VIEW_OF_REGIONAL_MESH,
     MAP_LAYERS,
+    REQUIRED_PARTS,
     layer_path,
 )
 from chiltepin.tasks import bash_task, python_task
@@ -1066,7 +1067,12 @@ class _MeshBehavior:
         import sys
         import textwrap
 
-        layers = " ".join(self._q(path) for path in self._map_layer_paths())
+        # Every part each layer needs, as the plotting script checks
+        layers = " ".join(
+            self._q(path.with_suffix(suffix))
+            for path in self._map_layer_paths()
+            for suffix in REQUIRED_PARTS
+        )
         return textwrap.dedent(
             f"""\
             set -eu -o pipefail

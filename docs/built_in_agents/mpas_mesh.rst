@@ -380,7 +380,8 @@ Actions
    lines, are downloaded to ``work_dir/plot/natural_earth`` on the ``service``
    resource, since the ``compute`` resource may have no internet access. A check
    on the ``compute`` resource then confirms that the Python of its tasks has the
-   ``mpas`` extra and that every layer is there, and only then writes the
+   ``mpas`` extra and that every layer has its ``.shp``, ``.shx`` and ``.dbf``
+   files, and only then writes the
    ``work_dir/plot/.installed`` marker, so a restarted agent reuses it. The logs
    are ``plot_download.*`` and ``plot_check.*`` in ``work_dir/logs``. If the
    extra is missing, the check fails with a message saying to install it.
@@ -406,7 +407,8 @@ Actions
 
    A mesh is regional if any of its cells is in a boundary layer, as every
    ``project_hexes`` and ``create_region`` mesh is, or if its cells cover less
-   than 99.9% of the sphere, and global otherwise.
+   than 99.9% of the sphere, and global otherwise. A region without boundary
+   layers is drawn with every cell as interior.
 
    * A regional mesh is drawn on a flat map shaped like the region, with its
      cells colored by boundary layer, from white for the interior to purple for

@@ -9,10 +9,11 @@ standard library at the top, and the plotting packages inside the functions that
 draw.
 
 A mesh is regional if any cell has a nonzero ``bdyMaskCell``, or its cells cover
-less of the sphere than a global mesh does, and global otherwise. A regional mesh is drawn on a flat map, with its cells colored by
-boundary layer. A global mesh is drawn on a sphere, seen from above the view
-center. Cell edges are drawn only when cells come out at least
-``MIN_CELL_PIXELS`` across in the image, since smaller ones blur together.
+less of the sphere than a global mesh does, and global otherwise. A regional
+mesh is drawn on a flat map, with its cells colored by boundary layer, or all
+as interior if it has no ``bdyMaskCell``. A global mesh is drawn on a sphere,
+seen from above the view center. Cell edges are drawn only when cells come out
+at least ``MIN_CELL_PIXELS`` across in the image, since smaller ones blur together.
 
 Usage::
 
@@ -21,8 +22,9 @@ Usage::
     python _plot_mesh.py --download-map-data DIR
 
 The second form downloads the Natural Earth map layers the plots draw to DIR,
-where cartopy finds them, skipping layers already there. It needs only the standard library, so it runs on the
-``service`` resource, which can reach Natural Earth, without the extra.
+where cartopy finds them, skipping complete layers already there. It needs only
+the standard library, so it runs on the ``service`` resource, which can reach
+Natural Earth, without the extra.
 
 Exit codes:
 
@@ -107,8 +109,12 @@ NATURAL_EARTH_URL = (
     "ne_{resolution}_{name}.zip"
 )
 
-# Parts of a shapefile kept from a downloaded layer
+# Parts of a shapefile kept from a downloaded layer, and those a layer needs
 SHAPEFILE_PARTS = (".shp", ".shx", ".dbf", ".prj", ".cpg")
+REQUIRED_PARTS = (".shp", ".shx", ".dbf")
+
+# HTTP statuses of failed downloads worth trying again, besides 5xx
+RETRY_STATUSES = (408, 429)
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -150,6 +156,17 @@ def layer_path(map_data: Path, layer: Tuple[str, str, str]) -> Path:
     )
 
 
+def layer_complete(path: Path) -> bool:
+    """Whether a layer's ``.shp`` file and the other parts it needs are there.
+
+    Each part must be a non-empty file.
+    """
+    return all(
+        part.is_file() and part.stat().st_size > 0
+        for part in (path.with_suffix(suffix) for suffix in REQUIRED_PARTS)
+    )
+
+
 def layer_url(layer: Tuple[str, str, str]) -> str:
     """Return the address a Natural Earth layer is downloaded from."""
     resolution, category, name = layer
@@ -161,9 +178,10 @@ def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) ->
 
     Each layer's shapefile parts are extracted from its zip file, and the
     ``.shp`` file is written last, so a layer is complete once it exists. A
-    layer already there is kept, so plots drawing it are not disturbed.
-    Failed downloads are tried again, except when the server answers that the
-    request itself is wrong (a 4xx status).
+    complete layer already there is kept, so plots drawing it are not
+    disturbed, and an incomplete one is downloaded again. Failed downloads are
+    tried again, except when the server answers that the request itself is
+    wrong (a 4xx status other than 408 and 429).
 
     Raises
     ------
@@ -172,7 +190,8 @@ def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) ->
     http.client.HTTPException
         If a layer's download keeps ending early.
     ValueError
-        If a downloaded file is not a zip file holding the layer's shapefile.
+        If a downloaded file is not a zip file holding the layer's required
+        shapefile parts.
     """
     import urllib.error
     import urllib.request
@@ -180,7 +199,7 @@ def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) ->
     for layer in MAP_LAYERS:
         url = layer_url(layer)
         target = layer_path(map_data, layer)
-        if target.is_file() and target.stat().st_size > 0:
+        if layer_complete(target):
             print(f"Keeping {target}", flush=True)
             continue
         for attempt in range(1, attempts + 1):
@@ -189,7 +208,8 @@ def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) ->
                     data = response.read()
                 break
             except urllib.error.HTTPError as e:
-                if 400 <= e.code < 500 or attempt == attempts:
+                final = 400 <= e.code < 500 and e.code not in RETRY_STATUSES
+                if final or attempt == attempts:
                     raise
             except (OSError, http.client.HTTPException):
                 if attempt == attempts:
@@ -201,8 +221,10 @@ def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) ->
             raise ValueError(f"{url} is not a zip file") from e
         stem = target.stem
         names = set(archive.namelist())
-        if f"{stem}.shp" not in names:
-            raise ValueError(f"{url} holds no {stem}.shp")
+        absent = [f"{stem}{suffix}" for suffix in REQUIRED_PARTS]
+        absent = [name for name in absent if name not in names]
+        if absent:
+            raise ValueError(f"{url} holds no {', '.join(absent)}")
         target.parent.mkdir(parents=True, exist_ok=True)
         # Only the shapefile's own parts, by name, so nothing lands elsewhere
         parts = [f"{stem}{suffix}" for suffix in SHAPEFILE_PARTS]
@@ -354,13 +376,17 @@ def sphere_radius(ds) -> float:
     """Return the radius of the sphere a mesh is defined on, in its units.
 
     It is the ``sphere_radius`` attribute, or else the distance of the first
-    cell center from the center of the sphere.
+    cell center from the center of the sphere, or else the Earth's radius in
+    meters, the unit of MPAS meshes.
     """
     import numpy as np
 
     if "sphere_radius" in ds.ncattrs():
         return float(ds.sphere_radius)
-    return float(np.linalg.norm([float(ds.variables[f"{a}Cell"][0]) for a in "xyz"]))
+    if all(f"{axis}Cell" in ds.variables for axis in "xyz"):
+        center = [float(ds.variables[f"{axis}Cell"][0]) for axis in "xyz"]
+        return float(np.linalg.norm(center))
+    return SPHERE_RADIUS_KM * 1000
 
 
 def is_regional(mesh: Path) -> bool:
@@ -392,7 +418,7 @@ def map_layer(
 ) -> Optional[Path]:
     """Return a map layer's path, or record it as missing and return None."""
     path = layer_path(map_data, layer)
-    if path.is_file() and path.stat().st_size > 0:
+    if layer_complete(path):
         return path
     missing.append(path)
     return None
@@ -423,7 +449,11 @@ def draw_flat(mesh: Path, output: Path, title: str, map_data: Path) -> List[Path
         lon_cell = np.degrees(ds.variables["lonCell"][:])
         n_edges = ds.variables["nEdgesOnCell"][:]
         on_cell = ds.variables["verticesOnCell"][:] - 1
-        layer = np.asarray(ds.variables["bdyMaskCell"][:], dtype=float)
+        # A region without boundary layers is all interior
+        if "bdyMaskCell" in ds.variables:
+            layer = np.asarray(ds.variables["bdyMaskCell"][:], dtype=float)
+        else:
+            layer = np.zeros(len(lat_cell))
         # Areas are on the sphere the mesh is defined on, scaled to the Earth
         mean_area_km2 = (
             float(np.mean(ds.variables["areaCell"][:]))

@@ -31,6 +31,7 @@ from chiltepin.agents.mpas import mesh as mesh_module
 from chiltepin.agents.mpas._plot_mesh import (
     EXIT_MISSING_MAP,
     EXIT_VIEW_OF_REGIONAL_MESH,
+    REQUIRED_PARTS,
 )
 from chiltepin.agents.mpas.mesh import _MeshBehavior
 
@@ -519,7 +520,8 @@ def mark_plotting_installed(behavior):
     prefix = behavior.work_dir / "plot"
     for path in behavior._map_layer_paths():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"shapefile")
+        for suffix in REQUIRED_PARTS:
+            path.with_suffix(suffix).write_bytes(b"shapefile")
     (prefix / ".installed").touch()
     return prefix
 
@@ -1175,7 +1177,8 @@ def test_plotting_scripts(tmp_path):
     layers = next(i for i, line in enumerate(lines) if line.startswith("for layer"))
     assert imports < layers < marker
     for path in behavior._map_layer_paths():
-        assert shlex.quote(str(path)) in check
+        for suffix in REQUIRED_PARTS:
+            assert shlex.quote(str(path.with_suffix(suffix))) in check
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
 
 
@@ -1203,7 +1206,9 @@ def test_plotting_download_writes_the_layers(monkeypatch, tmp_path, behavior):
     assert (prefix / "matplotlib").is_dir()
 
 
-@pytest.mark.parametrize("problem", [None, "imports", "missing_layer", "empty_layer"])
+@pytest.mark.parametrize(
+    "problem", [None, "imports", "missing_layer", "empty_layer", "missing_dbf"]
+)
 def test_plotting_check_marks_only_a_working_install(
     monkeypatch, tmp_path, behavior, problem
 ):
@@ -1211,7 +1216,9 @@ def test_plotting_check_marks_only_a_working_install(
     (prefix / ".installed").unlink()
     fake_python(monkeypatch, tmp_path, "exit 1" if problem == "imports" else "exit 0")
     layer = behavior._map_layer_paths()[2]
-    if problem == "missing_layer":
+    if problem == "missing_dbf":
+        layer = layer.with_suffix(".dbf")
+    if problem in ("missing_layer", "missing_dbf"):
         layer.unlink()
     elif problem == "empty_layer":
         layer.write_bytes(b"")

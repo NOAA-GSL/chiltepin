@@ -332,8 +332,14 @@ def http_error(code):
 
 @pytest.mark.parametrize(
     "error",
-    [http.client.IncompleteRead(b"part", 10), http_error(503), TimeoutError()],
-    ids=["incomplete", "503", "timeout"],
+    [
+        http.client.IncompleteRead(b"part", 10),
+        http_error(503),
+        http_error(408),
+        http_error(429),
+        TimeoutError(),
+    ],
+    ids=["incomplete", "503", "408", "429", "timeout"],
 )
 def test_download_retries_transient_failures(monkeypatch, tmp_path, error):
     calls = fake_natural_earth(monkeypatch, failures=2, error=error)
@@ -355,20 +361,42 @@ def test_download_gives_up_on_a_server_error(monkeypatch, tmp_path):
     assert len(calls) == 3
 
 
+def write_layer(map_dir, layer, skip=(), empty=()):
+    """Write a layer's required parts, leaving out or emptying some of them."""
+    path = plot.layer_path(map_dir, layer)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in plot.REQUIRED_PARTS:
+        if suffix not in skip:
+            path.with_suffix(suffix).write_bytes(b"" if suffix in empty else b"kept")
+    return path
+
+
+def test_layer_complete(tmp_path):
+    assert plot.layer_complete(write_layer(tmp_path / "a", plot.COASTLINE))
+    assert not plot.layer_complete(plot.layer_path(tmp_path / "b", plot.COASTLINE))
+    for suffix in plot.REQUIRED_PARTS:
+        broken = tmp_path / suffix.strip(".")
+        assert not plot.layer_complete(
+            write_layer(broken, plot.COASTLINE, skip=[suffix])
+        )
+        assert not plot.layer_complete(
+            write_layer(broken / "e", plot.COASTLINE, empty=[suffix])
+        )
+
+
 def test_download_keeps_layers_already_there(monkeypatch, tmp_path):
-    kept = plot.layer_path(tmp_path, plot.COASTLINE)
-    kept.parent.mkdir(parents=True)
-    kept.write_bytes(b"kept")
-    # An empty layer is downloaded again
-    empty = plot.layer_path(tmp_path, plot.STATES)
-    empty.parent.mkdir(parents=True, exist_ok=True)
-    empty.write_bytes(b"")
+    kept = write_layer(tmp_path, plot.COASTLINE)
+    # Incomplete layers are downloaded again
+    empty = write_layer(tmp_path, plot.STATES, empty=[".shp"])
+    no_dbf = write_layer(tmp_path, plot.BORDERS, skip=[".dbf"])
     calls = fake_natural_earth(monkeypatch)
     plot.download_map_data(tmp_path)
     assert plot.layer_url(plot.COASTLINE) not in calls
     assert plot.layer_url(plot.STATES) in calls
+    assert plot.layer_url(plot.BORDERS) in calls
     assert kept.read_bytes() == b"kept"
     assert empty.read_text() == f"{empty.name} data"
+    assert no_dbf.with_suffix(".dbf").read_text() == f"{no_dbf.stem}.dbf data"
 
 
 def test_download_gives_up_after_its_attempts(monkeypatch, tmp_path):
@@ -380,13 +408,21 @@ def test_download_gives_up_after_its_attempts(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     ("body", "message"),
-    [(b"not a zip", "is not a zip file"), (None, "holds no ne_110m_coastline.shp")],
+    [
+        (b"not a zip", "is not a zip file"),
+        (None, "holds no ne_110m_coastline.shp, ne_110m_coastline.shx, "),
+        ("ne_110m_coastline.shp", "holds no ne_110m_coastline.dbf$"),
+    ],
+    ids=["not-zip", "no-parts", "no-dbf"],
 )
 def test_download_rejects_a_wrong_file(monkeypatch, tmp_path, body, message):
-    if body is None:
+    if not isinstance(body, bytes):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
             archive.writestr("other.shp", "x")
+            if body is not None:
+                for name in (body, body.replace(".shp", ".shx")):
+                    archive.writestr(name, "x")
         body = buffer.getvalue()
     fake_natural_earth(monkeypatch, bodies={plot.layer_url(plot.GLOBE_COASTLINE): body})
     with pytest.raises(ValueError, match=message):
@@ -588,6 +624,21 @@ def test_region_without_boundary_layers_is_regional(tmp_path, global_mesh, radiu
     assert not plot.is_regional(whole)
 
 
+def test_region_without_boundary_layers_is_drawn_as_interior(tmp_path, global_mesh):
+    region = regional_copy(
+        global_mesh, tmp_path / "r.nc", lambda lat, lon: lat > -60, mask=False
+    )
+    output = tmp_path / "r.png"
+    assert run_main(region, output, tmp_path / "none") == plot.EXIT_MISSING_MAP
+    # On a flat map, with every cell white like the interior
+    pixels = map_pixels(output)
+    assert pixels.shape[1] > 2 * pixels.shape[0]
+    colors = pixels.reshape(-1, 3)
+    for color in plot.LAYER_COLORS[1:]:
+        near = np.abs(colors - rgb(color)).max(axis=1) <= 4
+        assert not near.any(), color
+
+
 def test_sphere_radius(tmp_path, global_mesh):
     with Dataset(global_mesh) as ds:
         assert plot.sphere_radius(ds) == ds.sphere_radius == 6371229.0
@@ -596,6 +647,13 @@ def test_sphere_radius(tmp_path, global_mesh):
     )
     with Dataset(bare) as ds:
         assert plot.sphere_radius(ds) == pytest.approx(6371229.0)
+    # Without cell coordinates either, the Earth's radius in meters
+    empty = tmp_path / "empty.nc"
+    with Dataset(empty, "w") as ds:
+        ds.createDimension("nCells", 1)
+        ds.createVariable("xCell", "f8", ("nCells",))[:] = [1.0]
+    with Dataset(empty) as ds:
+        assert plot.sphere_radius(ds) == plot.SPHERE_RADIUS_KM * 1000
 
 
 def test_draw_global_mesh_on_a_sphere(tmp_path, global_mesh, map_data):
@@ -774,13 +832,17 @@ def test_region_across_the_180th_meridian(tmp_path, global_mesh):
     assert not blank(middle[middle.shape[0] // 4 : -middle.shape[0] // 4]).any()
 
 
-def test_region_around_a_pole(tmp_path, global_mesh):
-    region = regional_copy(global_mesh, tmp_path / "n.nc", lambda a, b: a > 55, layer=3)
+@pytest.mark.parametrize("north", [True, False], ids=["north", "south"])
+def test_region_around_a_pole(tmp_path, global_mesh, north):
+    def cap(lat, lon):
+        return lat > 55 if north else lat < -55
+
+    region = regional_copy(global_mesh, tmp_path / "n.nc", cap, layer=3)
     output = tmp_path / "n.png"
     assert run_main(region, output, tmp_path / "none") == plot.EXIT_MISSING_MAP
-    # The cell around the pole fills the top of the map, up to the pole
+    # The cell around the pole fills the map's edge at the pole
     pixels = map_pixels(output)
-    assert not blank(pixels[:10]).any()
+    assert not blank(pixels[:10] if north else pixels[-10:]).any()
     assert has_color(output, plot.LAYER_COLORS[3], tolerance=8)
 
 
@@ -810,11 +872,12 @@ def test_missing_map_layers_are_reported(tmp_path, global_mesh, regional_mesh, c
     assert "ne_10m_admin_1_states_provinces_lines.shp" in message
 
 
-def test_empty_map_layer_counts_as_missing(tmp_path, global_mesh, map_data):
+@pytest.mark.parametrize(
+    ("skip", "empty"), [((), (".shp",)), ((".dbf",), ()), ((".shx",), ())]
+)
+def test_incomplete_map_layer_counts_as_missing(tmp_path, global_mesh, skip, empty):
     broken = tmp_path / "broken"
-    path = plot.layer_path(broken, plot.GLOBE_COASTLINE)
-    path.parent.mkdir(parents=True)
-    path.write_bytes(b"")
+    write_layer(broken, plot.GLOBE_COASTLINE, skip=skip, empty=empty)
     assert run_main(global_mesh, tmp_path / "g.png", broken) == plot.EXIT_MISSING_MAP
 
 
