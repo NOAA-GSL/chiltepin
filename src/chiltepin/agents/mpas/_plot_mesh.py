@@ -177,9 +177,10 @@ def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) ->
     """Download the map layers to where cartopy finds them in ``map_data``.
 
     Each layer's shapefile parts are extracted from its zip file, and the
-    ``.shp`` file is written last, so a layer is complete once it exists. A
-    complete layer already there is kept, so plots drawing it are not
-    disturbed, and an incomplete one is downloaded again. Failed downloads are
+    ``.shp`` file is written last, so a plot never reads a layer whose other
+    parts are still being written. A layer already there with all its
+    ``REQUIRED_PARTS`` is kept, so plots drawing it are not disturbed, and
+    any other is downloaded again. Failed downloads are
     tried again, except when the server answers that the request itself is
     wrong (a 4xx status other than 408 and 429).
 
