@@ -4,10 +4,12 @@
 
 import asyncio
 import io
+import math
 import pickle
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.request
 from concurrent.futures import Future
@@ -451,8 +453,19 @@ def mark_mpas_tools_installed(behavior):
     return prefix
 
 
-def mock_install_tasks(monkeypatch, behavior, tool, mark, download=None, build=None):
-    """Replace a tool's download and build tasks with mocks."""
+def mock_install_tasks(
+    monkeypatch,
+    behavior,
+    tool,
+    mark,
+    download=None,
+    build=None,
+    names=("_download_{}", "_build_{}"),
+):
+    """Replace a tool's download and build tasks with mocks.
+
+    ``names`` gives the two task names, with ``{}`` standing for ``tool``.
+    """
 
     def run_build(**kwargs):
         # A successful build leaves a finished install behind
@@ -465,9 +478,35 @@ def mock_install_tasks(monkeypatch, behavior, tool, mark, download=None, build=N
 
     download_task = Mock(return_value=done_future(error=download))
     build_task = Mock(side_effect=run_build)
-    monkeypatch.setattr(behavior, f"_download_{tool}", download_task)
-    monkeypatch.setattr(behavior, f"_build_{tool}", build_task)
+    monkeypatch.setattr(behavior, names[0].format(tool), download_task)
+    monkeypatch.setattr(behavior, names[1].format(tool), build_task)
     return download_task, build_task
+
+
+def mark_limited_area_installed(behavior):
+    """Create what a finished MPAS-Limited-Area install leaves in work_dir."""
+    prefix = behavior.work_dir / "limited-area" / behavior.limited_area_version
+    (prefix / "venv" / "bin").mkdir(parents=True, exist_ok=True)
+    (prefix / "src").mkdir(parents=True, exist_ok=True)
+    python = prefix / "venv" / "bin" / "python"
+    python.write_text("#!/bin/sh\n")
+    python.chmod(0o755)
+    (prefix / "src" / "create_region").write_text("#!/usr/bin/env python\n")
+    (prefix / ".installed").touch()
+    return prefix
+
+
+def mock_limited_area_tasks(monkeypatch, behavior, install=None, check=None):
+    """Replace the MPAS-Limited-Area install and check tasks with mocks."""
+    return mock_install_tasks(
+        monkeypatch,
+        behavior,
+        "limited_area",
+        mark_limited_area_installed,
+        install,
+        check,
+        names=("_install_{}", "_check_{}"),
+    )
 
 
 def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
@@ -533,6 +572,14 @@ def test_invalid_metis_version(tmp_path, version):
 def test_invalid_mpas_tools_version(tmp_path, version):
     with pytest.raises(ValueError, match="Invalid mpas_tools_version"):
         _MeshBehavior(str(tmp_path / "work"), mpas_tools_version=version)
+
+
+@pytest.mark.parametrize(
+    "version", ["", "../x", "2.2; rm -rf /", "v2.2", None, 2.2, "2.2\n", "$(id)"]
+)
+def test_invalid_limited_area_version(tmp_path, version):
+    with pytest.raises(ValueError, match="Invalid limited_area_version"):
+        _MeshBehavior(str(tmp_path / "work"), limited_area_version=version)
 
 
 def test_work_dir_is_made_absolute(monkeypatch, tmp_path):
@@ -629,6 +676,37 @@ HEXES = {
 }
 
 
+# One valid block for each create_region shape
+SHAPES = {
+    "circle": {"center_lat": 39.0, "center_lon": -105.5, "radius_km": 1500},
+    "ellipse": {
+        "center_lat": 39.0,
+        "center_lon": -105.5,
+        "semi_major_axis_km": 2000,
+        "semi_minor_axis_km": 1000,
+        "orientation_degrees": 30,
+    },
+    "polygon": {
+        "vertices": [[30, -120], [30, -90], [48, -90], [48, -120]],
+        "inside_lat": 39.0,
+        "inside_lon": -105.0,
+    },
+    "channel": {"upper_lat": 23.5, "lower_lat": -23.5},
+}
+
+
+def create_region_config(shape="circle", name="cut", **changes):
+    """Return a valid create_region request, with the shape's block changed."""
+    block = {**SHAPES[shape], **changes}
+    return {
+        "resolution": "480km",
+        "name": name,
+        "regional": {
+            "create_region": {shape: {k: v for k, v in block.items() if v is not ...}}
+        },
+    }
+
+
 def regional_config(**changes):
     """Return a valid regional request, with the project_hexes block changed."""
     block = {**HEXES, **changes}
@@ -691,7 +769,7 @@ def test_validate_mesh_config_rejects_invalid_regional_resolution(behavior, reso
         ("project_hexes", "regional must be a dict"),
         ([], "regional must be a dict"),
         ({}, "exactly one of 'project_hexes' or 'create_region'"),
-        ({"create_region": {}}, "'create_region' is not supported yet"),
+        ({"create_region": {}}, "must contain exactly one of circle, ellipse"),
         (
             {"project_hexes": HEXES, "create_region": {}},
             "exactly one of 'project_hexes' or 'create_region'",
@@ -747,9 +825,189 @@ def test_validate_mesh_config_requires_every_project_hexes_key(behavior):
             behavior._validate_mesh_config(regional_config(**{key: ...}))
 
 
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_validate_mesh_config_accepts_each_create_region_shape(behavior, shape):
+    behavior._validate_mesh_config(create_region_config(shape))
+
+
+def test_validate_mesh_config_accepts_create_region_edge_values(behavior):
+    behavior._validate_mesh_config(
+        create_region_config("ellipse", orientation_degrees=...)
+    )
+    behavior._validate_mesh_config(
+        create_region_config("ellipse", semi_minor_axis_km=2000)
+    )
+    behavior._validate_mesh_config(
+        create_region_config("circle", center_lat=-90, center_lon=360)
+    )
+    behavior._validate_mesh_config(
+        create_region_config("polygon", vertices=((1, 2), (3, 4), (5, 6)))
+    )
+    behavior._validate_mesh_config(
+        create_region_config("channel", upper_lat=90, lower_lat=-90)
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "key"),
+    [
+        ("circle", "radius_km"),
+        ("ellipse", "semi_major_axis_km"),
+        ("ellipse", "semi_minor_axis_km"),
+    ],
+)
+def test_create_region_sizes_must_stay_within_half_the_globe(behavior, shape, key):
+    limit = math.pi * 6371.229
+    # The major axis must be valid when the minor one is the one tested
+    major = {"semi_major_axis_km": limit - 0.1} if key == "semi_minor_axis_km" else {}
+    for value in (limit, 1e306):
+        with pytest.raises(ValueError, match=f"{key} must be less than half the circ"):
+            behavior._validate_mesh_config(
+                create_region_config(shape, **major, **{key: value})
+            )
+    # Just under the limit is allowed
+    changes = {"semi_major_axis_km": limit - 0.1} if shape == "ellipse" else {}
+    changes[key] = limit - 0.1
+    behavior._validate_mesh_config(create_region_config(shape, **changes))
+
+
+@pytest.mark.parametrize(
+    ("angle", "written"),
+    [
+        (390, "30.0"),
+        (-330, "30.0"),
+        (720, "0.0"),
+        (-0.0, "0.0"),
+        (359.5, "359.5"),
+        (-1e-20, "0.0"),
+    ],
+)
+def test_create_region_orientation_is_written_as_one_turn(angle, written):
+    block = {**SHAPES["ellipse"], "orientation_degrees": angle}
+    text = _MeshBehavior._create_region_points({"ellipse": block})
+    assert f"Orientation-angle: {written}\n" in text
+
+
+def test_huge_create_region_orientation_is_still_a_finite_angle():
+    block = {**SHAPES["ellipse"], "orientation_degrees": 1e300}
+    text = _MeshBehavior._create_region_points({"ellipse": block})
+    angle = float(text.split("Orientation-angle: ")[1])
+    assert 0 <= angle < 360
+
+
+@pytest.mark.parametrize("resolution", ["2km", "50km", "0.5km"])
+def test_create_region_needs_a_downloadable_resolution(behavior, resolution):
+    config = create_region_config()
+    config["resolution"] = resolution
+    with pytest.raises(ValueError, match="not supported. Available"):
+        behavior._validate_mesh_config(config)
+
+
+@pytest.mark.parametrize(
+    ("create_region", "message"),
+    [
+        (None, "regional.create_region must be a dict"),
+        ([], "regional.create_region must be a dict"),
+        ({}, "must contain exactly one of circle, ellipse, polygon, channel"),
+        (
+            {"circle": SHAPES["circle"], "channel": SHAPES["channel"]},
+            "must contain exactly one of",
+        ),
+        ({"square": {}}, "Unknown regional.create_region keys: square"),
+        ({"circle": None}, "regional.create_region.circle must be a dict"),
+        (
+            {"circle": {**SHAPES["circle"], "radius": 5}},
+            "Unknown regional.create_region.circle keys: radius",
+        ),
+        (
+            {"circle": {"center_lat": 1}},
+            "circle is missing required keys: center_lon, radius_km",
+        ),
+    ],
+)
+def test_validate_mesh_config_rejects_invalid_create_region(
+    behavior, create_region, message
+):
+    config = {"resolution": "480km", "regional": {"create_region": create_region}}
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(config)
+
+
+@pytest.mark.parametrize(
+    ("shape", "key"),
+    [(shape, key) for shape, block in SHAPES.items() for key in block],
+)
+@pytest.mark.parametrize("value", [True, "40", None, float("nan"), 10**400])
+def test_validate_mesh_config_rejects_non_numbers_in_create_region(
+    behavior, shape, key, value
+):
+    with pytest.raises(ValueError, match=f"create_region.{shape}.{key}"):
+        behavior._validate_mesh_config(create_region_config(shape, **{key: value}))
+
+
+@pytest.mark.parametrize(
+    ("shape", "changes", "message"),
+    [
+        ("circle", {"center_lat": 90.5}, "center_lat must be between -90 and 90"),
+        ("circle", {"center_lon": -181}, "center_lon must be between -180 and 360"),
+        ("circle", {"radius_km": 0}, "radius_km must be greater than 0"),
+        ("ellipse", {"semi_major_axis_km": -1}, "semi_major_axis_km must be greater"),
+        ("ellipse", {"semi_minor_axis_km": 0}, "semi_minor_axis_km must be greater"),
+        (
+            "ellipse",
+            {"semi_minor_axis_km": 2001},
+            "semi_minor_axis_km must not be greater than semi_major_axis_km",
+        ),
+        ("polygon", {"inside_lat": -91}, "inside_lat must be between -90 and 90"),
+        ("polygon", {"inside_lon": 400}, "inside_lon must be between -180 and 360"),
+        ("channel", {"upper_lat": 95}, "upper_lat must be between -90 and 90"),
+        ("channel", {"lower_lat": 23.5}, "upper_lat must be greater than lower_lat"),
+        ("channel", {"lower_lat": 30}, "upper_lat must be greater than lower_lat"),
+    ],
+)
+def test_validate_mesh_config_rejects_out_of_range_create_region(
+    behavior, shape, changes, message
+):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(create_region_config(shape, **changes))
+
+
+@pytest.mark.parametrize(
+    ("vertices", "message"),
+    [
+        ("30,-120 30,-90 48,-90", "vertices must be a list of at least 3"),
+        ([[30, -120], [30, -90]], "vertices must be a list of at least 3"),
+        (None, "vertices must be a list of at least 3"),
+        ([[30, -120], [30, -90], [48]], r"vertices\[2\] must be a \[lat, lon\] pair"),
+        ([[30, -120], [30, -90], "48,-90"], r"vertices\[2\] must be a \[lat, lon\]"),
+        ([[30, -120], [30, -90], [48, -90, 0]], r"vertices\[2\] must be a \[lat"),
+        ([[30, -120], [True, -90], [48, -90]], r"vertices\[1\] latitude must be a fin"),
+        ([[30, -120], [30, "x"], [48, -90]], r"vertices\[1\] longitude must be a fin"),
+        ([[30, -120], [91, -90], [48, -90]], r"vertices\[1\] latitude must be betw"),
+        ([[30, -120], [30, 361], [48, -90]], r"vertices\[1\] longitude must be betw"),
+    ],
+)
+def test_validate_mesh_config_rejects_invalid_polygon_vertices(
+    behavior, vertices, message
+):
+    with pytest.raises(ValueError, match=message):
+        behavior._validate_mesh_config(
+            create_region_config("polygon", vertices=vertices)
+        )
+
+
+@pytest.mark.parametrize("name", ["a\nb", "tab\there", "nul\x00", "del\x7f", "c1\x85"])
+@pytest.mark.parametrize("config", [{}, regional_config(), create_region_config()])
+def test_validate_mesh_config_rejects_control_characters_in_names(
+    behavior, name, config
+):
+    with pytest.raises(ValueError, match="must not contain control characters"):
+        behavior._validate_mesh_config({**config, "name": name})
+
+
 async def test_invalid_regional_mesh_creates_nothing(tmp_path, behavior):
     output = tmp_path / "meshes"
-    with pytest.raises(ValueError, match="not supported yet"):
+    with pytest.raises(ValueError, match="missing required keys"):
         await behavior.generate_mesh(
             {"regional": {"create_region": {"circle": {}}}}, str(output)
         )
@@ -775,6 +1033,63 @@ def test_metis_scripts(tmp_path):
     assert marker > max(i for i, line in enumerate(lines) if line == "make install")
     # Only echo commands may follow the marker
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
+
+
+def test_limited_area_scripts(tmp_path):
+    behavior = _MeshBehavior(str(tmp_path / "work dir"), limited_area_version="2.1")
+    install = _MeshBehavior._install_limited_area.func(behavior)
+    check = _MeshBehavior._check_limited_area.func(behavior)
+    prefix = f"{behavior.work_dir}/limited-area/2.1"
+    assert f"prefix='{prefix}'" in install
+    assert f"prefix='{prefix}'" in check
+    # The tag has a v, and the clone goes to src in the prefix
+    assert "--depth 1 --branch v2.1 https://github.com/MPAS-Dev/MPAS-Limited-Area" in (
+        install
+    )
+    assert "MPAS-Limited-Area.git src" in install
+    # The environment is made from the Python running the task
+    assert f'{shlex.quote(sys.executable)} -m venv "$prefix/venv"' in install
+    assert '"$prefix/venv/bin/python" -m pip install' in install
+    assert install.rstrip().endswith('echo "Completed install at $(date)"')
+    assert "numpy netCDF4" in install
+    # A failed earlier install is removed before anything is cloned
+    assert install.index('rm -rf "$prefix"') < install.index("git ")
+    # The install is marked only after the imports and the script are checked
+    lines = [line.strip() for line in check.splitlines()]
+    marker = lines.index('touch "$prefix/.installed"')
+    imports = next(i for i, line in enumerate(lines) if "import numpy, netCDF4" in line)
+    runs = next(i for i, line in enumerate(lines) if 'create_region" --help' in line)
+    assert imports < runs < marker
+    assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
+
+
+def test_limited_area_check_fails_if_create_region_does_not_run(tmp_path, behavior):
+    prefix = mark_limited_area_installed(behavior)
+    (prefix / ".installed").unlink()
+    # Imports work, and running the script fails
+    (prefix / "venv" / "bin" / "python").write_text(
+        '#!/bin/sh\n[ "$1" = "-c" ] && exit 0\nexit 3\n'
+    )
+    script = _MeshBehavior._check_limited_area.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 3
+    assert not (prefix / ".installed").exists()
+
+
+@pytest.mark.parametrize("works", [True, False])
+def test_limited_area_check_marks_only_a_working_install(tmp_path, behavior, works):
+    prefix = mark_limited_area_installed(behavior)
+    (prefix / ".installed").unlink()
+    # A fake Python that either runs everything or fails every import
+    (prefix / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\nexit 0\n" if works else "#!/bin/sh\nexit 1\n"
+    )
+    script = _MeshBehavior._check_limited_area.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert (done.returncode == 0) == works
+    assert (prefix / ".installed").is_file() == works
+    if not works:
+        assert "cannot import numpy and netCDF4" in done.stderr
 
 
 def test_mpas_tools_scripts(tmp_path):
@@ -932,13 +1247,22 @@ async def test_behavior_is_picklable_while_requests_wait(behavior):
     waiter = asyncio.create_task(behavior._install_lock.acquire())
     await asyncio.sleep(0.05)
 
+    download_lock = behavior._download_locks.setdefault("key", asyncio.Lock())
+    await download_lock.acquire()
+    download_waiter = asyncio.create_task(download_lock.acquire())
+    await asyncio.sleep(0.05)
+
     restored = pickle.loads(pickle.dumps(behavior))
     assert restored.work_dir == behavior.work_dir
     assert not restored._install_lock.locked()
+    assert restored._download_locks == {}
 
     behavior._install_lock.release()
     await waiter
     behavior._install_lock.release()
+    download_lock.release()
+    await download_waiter
+    download_lock.release()
 
 
 # Installing MPAS-Tools
@@ -1060,6 +1384,149 @@ async def test_install_mpas_tools_checks_resources_before_submitting(
         await behavior.install_mpas_tools()
     download.assert_not_called()
     build.assert_not_called()
+
+
+# Installing MPAS-Limited-Area
+
+
+async def test_install_limited_area_reuses_a_finished_install(monkeypatch, behavior):
+    mark_limited_area_installed(behavior)
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    await behavior.install_limited_area()
+    assert behavior.limited_area_built
+    install.assert_not_called()
+    check.assert_not_called()
+
+
+@pytest.mark.parametrize("damage", ["marker", "python", "not_executable", "script"])
+async def test_install_limited_area_replaces_a_damaged_install(
+    monkeypatch, behavior, damage
+):
+    prefix = mark_limited_area_installed(behavior)
+    if damage == "marker":
+        (prefix / ".installed").unlink()
+    elif damage == "python":
+        (prefix / "venv" / "bin" / "python").unlink()
+    elif damage == "not_executable":
+        (prefix / "venv" / "bin" / "python").chmod(0o644)
+    else:
+        (prefix / "src" / "create_region").unlink()
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    await behavior.install_limited_area()
+    install.assert_called_once()
+    check.assert_called_once()
+    assert behavior.limited_area_built
+
+
+async def test_install_limited_area_runs_on_service_and_checks_on_compute(
+    monkeypatch, behavior
+):
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    await behavior.install_limited_area()
+    install.assert_called_once_with(
+        executor=["service"],
+        stdout=str(behavior.log_dir / "limited_area_install.stdout"),
+        stderr=str(behavior.log_dir / "limited_area_install.stderr"),
+    )
+    check.assert_called_once_with(
+        executor=["compute"],
+        stdout=str(behavior.log_dir / "limited_area_check.stdout"),
+        stderr=str(behavior.log_dir / "limited_area_check.stderr"),
+        inputs=[install.return_value],
+    )
+
+
+async def test_concurrent_limited_area_installs_run_once(monkeypatch, behavior):
+    # Keep the install unfinished while the other requests arrive
+    pending, check_pending = Future(), Future()
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    install.return_value = pending
+    check.side_effect = lambda **kwargs: check_pending
+    requests = [asyncio.create_task(behavior.install_limited_area()) for _ in range(3)]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert install.call_count == 1
+    pending.set_result(None)
+    mark_limited_area_installed(behavior)
+    check_pending.set_result(None)
+    await asyncio.gather(*requests)
+    assert install.call_count == 1
+    assert check.call_count == 1
+
+
+@pytest.mark.parametrize("stage", ["install", "check"])
+async def test_failed_limited_area_install_is_reported_and_retried(
+    monkeypatch, behavior, stage
+):
+    failure = BashExitFailure("task", 3)
+    install, check = mock_limited_area_tasks(
+        monkeypatch,
+        behavior,
+        install=failure if stage == "install" else None,
+        check=failure if stage == "check" else None,
+    )
+    with pytest.raises(
+        RuntimeError, match=f"MPAS-Limited-Area {stage} failed \\(exit 3\\)"
+    ) as info:
+        await behavior.install_limited_area()
+    assert f"limited_area_{stage}.stderr" in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not behavior.limited_area_built
+
+    install.return_value = done_future()
+    check.side_effect = lambda **kwargs: (
+        mark_limited_area_installed(behavior),
+        done_future(),
+    )[1]
+    await behavior.install_limited_area()
+    assert behavior.limited_area_built
+
+
+async def test_limited_area_check_that_leaves_no_install_is_an_error(
+    monkeypatch, behavior
+):
+    monkeypatch.setattr(
+        behavior, "_install_limited_area", Mock(return_value=done_future())
+    )
+    monkeypatch.setattr(
+        behavior, "_check_limited_area", Mock(return_value=done_future())
+    )
+    with pytest.raises(RuntimeError, match="is not usable"):
+        await behavior.install_limited_area()
+    assert not behavior.limited_area_built
+
+
+@pytest.mark.parametrize(
+    ("defined", "missing"),
+    [(["compute"], "service"), (["service"], "compute"), ([], "service")],
+)
+async def test_install_limited_area_checks_resources_before_submitting(
+    monkeypatch, behavior, defined, missing
+):
+    define_resources(monkeypatch, "_parsl_internal", *defined)
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.install_limited_area()
+    install.assert_not_called()
+    check.assert_not_called()
+
+
+async def test_install_limited_area_shares_the_lock_with_other_installs(
+    monkeypatch, behavior
+):
+    # An MPAS-Tools install holding the lock makes the Limited-Area install wait
+    pending = Future()
+    tools_download, _ = mock_mpas_tools_tasks(monkeypatch, behavior)
+    tools_download.return_value = pending
+    install, _ = mock_limited_area_tasks(monkeypatch, behavior)
+    tools = asyncio.create_task(behavior.install_mpas_tools())
+    limited = asyncio.create_task(behavior.install_limited_area())
+    for _ in range(10):
+        await asyncio.sleep(0)
+    install.assert_not_called()
+    pending.set_result(None)
+    await asyncio.gather(tools, limited)
+    install.assert_called_once()
 
 
 # Generating project_hexes meshes
@@ -1346,6 +1813,452 @@ async def test_each_program_run_has_its_own_logs(monkeypatch, behavior, mesh_dir
     await behavior._generate_project_hexes_mesh(second, "second", "15km", HEXES)
     logs = [call.kwargs["stderr"] for call in hexes.call_args_list]
     assert len(set(logs)) == 2
+
+
+# Cutting create_region meshes
+
+POINTS = {
+    "circle": "Name: region\nType: circle\nPoint: 39.0, -105.5\nRadius: 1500000.0\n",
+    "ellipse": (
+        "Name: region\nType: ellipse\nPoint: 39.0, -105.5\n"
+        "Semi-major-axis: 2000000.0\nSemi-minor-axis: 1000000.0\n"
+        "Orientation-angle: 30.0\n"
+    ),
+    "polygon": (
+        "Name: region\nType: custom\nPoint: 39.0, -105.0\n"
+        "30.0, -120.0\n30.0, -90.0\n48.0, -90.0\n48.0, -120.0\n"
+    ),
+    "channel": "Name: region\nType: channel\nUpper-lat: 23.5\nLower-lat: -23.5\n",
+}
+
+
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_create_region_points(shape):
+    config = create_region_config(shape)["regional"]["create_region"]
+    assert _MeshBehavior._create_region_points(config) == POINTS[shape]
+
+
+def test_create_region_points_default_orientation_and_precision():
+    block = {**SHAPES["ellipse"], "semi_major_axis_km": 0.0015}
+    del block["orientation_degrees"]
+    text = _MeshBehavior._create_region_points({"ellipse": block})
+    assert "Orientation-angle: 0.0\n" in text
+    assert "Semi-major-axis: 1.5\n" in text
+    tuples = {**SHAPES["polygon"], "vertices": ((1, 2), (3.25, -4), (5, 359.5))}
+    text = _MeshBehavior._create_region_points({"polygon": tuples})
+    assert text.endswith("1.0, 2.0\n3.25, -4.0\n5.0, 359.5\n")
+
+
+@pytest.mark.parametrize(
+    "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME", "a b"]
+)
+def test_create_region_script_runs_in_the_mesh_directory_without_expansion(
+    tmp_path, behavior, name
+):
+    pwned = tmp_path / "PWNED"
+    mesh_dir = tmp_path / name.format(pwn=pwned)
+    mesh_dir.mkdir(parents=True)
+    record = tmp_path / "record"
+    prefix = mark_limited_area_installed(behavior)
+    (prefix / "venv" / "bin" / "python").write_text(
+        "#!/bin/sh\n"
+        f'{{ pwd; for a in "$@"; do printf "%s\\n" "$a"; done; }} '
+        f"> {shlex.quote(str(record))}\n"
+    )
+    script = _MeshBehavior._run_create_region.func(behavior, str(mesh_dir))
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert not pwned.exists()
+    assert record.read_text().splitlines() == [
+        str(mesh_dir),
+        str(prefix / "src" / "create_region"),
+        "region.pts",
+        "parent.static.nc",
+    ]
+
+
+def fake_create_region_task(behavior, monkeypatch, fail=None, writes=None):
+    """Replace the create_region task with a fake that writes the region files.
+
+    The fake checks that the points file and the parent link are in place while
+    it runs. ``fail`` is an exception for it to fail with, and ``writes`` the
+    file names it writes, by default both outputs.
+    """
+    seen = {}
+
+    def run(mesh_dir, **kwargs):
+        directory = Path(mesh_dir)
+        seen["points"] = (directory / "region.pts").read_text()
+        link = directory / "parent.static.nc"
+        seen["parent"] = link.resolve() if link.is_symlink() else None
+        if fail is not None:
+            (directory / "region.static.nc").write_text("partial")
+            return done_future(error=fail)
+        for name in (
+            writes if writes is not None else ("region.static.nc", "region.graph.info")
+        ):
+            (directory / name).write_text(f"cut {name}")
+        return done_future()
+
+    task = Mock(side_effect=run)
+    monkeypatch.setattr(behavior, "_run_create_region", task)
+    return task, seen
+
+
+@pytest.fixture
+def region(monkeypatch, tmp_path, behavior, mesh_download):
+    """Provide a new mesh directory, cached global meshes, and installed tools."""
+    output, download = mesh_download
+    mark_limited_area_installed(behavior)
+    directory = output / "cut"
+    directory.mkdir()
+    return SimpleNamespace(output=output, mesh_dir=directory, download=download)
+
+
+async def test_create_region_mesh(monkeypatch, behavior, region):
+    task, seen = fake_create_region_task(behavior, monkeypatch)
+    config = create_region_config("ellipse")["regional"]["create_region"]
+    result = await behavior._generate_create_region_mesh(
+        region.mesh_dir, "cut", "480km", config, region.output
+    )
+    assert result == {
+        "static": str(region.mesh_dir / "cut.static.nc"),
+        "graph": str(region.mesh_dir / "cut.graph.info"),
+    }
+    assert (region.mesh_dir / "cut.static.nc").read_text() == "cut region.static.nc"
+    assert (region.mesh_dir / "cut.graph.info").read_text() == "cut region.graph.info"
+    # The tool saw the points and the shared parent mesh, and only the points
+    # file stays
+    assert seen["points"] == POINTS["ellipse"]
+    assert seen["parent"] == (region.output / "x1.2562.static.nc").resolve()
+    assert {path.name for path in region.mesh_dir.iterdir()} == {
+        "region.pts",
+        "cut.static.nc",
+        "cut.graph.info",
+    }
+    # The parent mesh is the global mesh of the requested resolution
+    region.download.assert_called_once()
+    assert region.download.call_args.args == ("480km", str(region.output))
+    assert (region.output / "x1.2562.static.nc").read_bytes().startswith(b"CDF")
+    task.assert_called_once()
+    assert task.call_args.args == (str(region.mesh_dir),)
+    assert task.call_args.kwargs["executor"] == ["compute"]
+    assert task.call_args.kwargs["stderr"].startswith(
+        str(behavior.log_dir / "create_region.")
+    )
+
+
+@pytest.mark.parametrize("name", ["parent", "region"])
+async def test_create_region_mesh_named_like_its_working_files(
+    monkeypatch, behavior, region, name
+):
+    fake_create_region_task(behavior, monkeypatch)
+    config = create_region_config()["regional"]["create_region"]
+    result = await behavior._generate_create_region_mesh(
+        region.mesh_dir, name, "480km", config, region.output
+    )
+    assert Path(result["static"]).read_text() == "cut region.static.nc"
+    assert Path(result["graph"]).read_text() == "cut region.graph.info"
+    assert {path.name for path in region.mesh_dir.iterdir()} == {
+        "region.pts",
+        f"{name}.static.nc",
+        f"{name}.graph.info",
+    }
+
+
+async def test_create_region_failure_names_its_log_and_removes_the_link(
+    monkeypatch, behavior, region
+):
+    failure = BashExitFailure("task", 255)
+    task, _ = fake_create_region_task(behavior, monkeypatch, fail=failure)
+    config = create_region_config()["regional"]["create_region"]
+    with pytest.raises(
+        RuntimeError, match="create_region failed \\(exit 255\\)"
+    ) as info:
+        await behavior._generate_create_region_mesh(
+            region.mesh_dir, "cut", "480km", config, region.output
+        )
+    assert str(task.call_args.kwargs["stderr"]) in str(info.value)
+    assert str(task.call_args.kwargs["stdout"]) in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not (region.mesh_dir / "parent.static.nc").is_symlink()
+    assert (region.output / "x1.2562.static.nc").is_file()
+
+
+async def test_unexpected_create_region_error_becomes_a_runtime_error(
+    monkeypatch, behavior, region
+):
+    failure = OSError("worker lost")
+    fake_create_region_task(behavior, monkeypatch, fail=failure)
+    config = create_region_config()["regional"]["create_region"]
+    with pytest.raises(RuntimeError, match="create_region failed: worker lost"):
+        await behavior._generate_create_region_mesh(
+            region.mesh_dir, "cut", "480km", config, region.output
+        )
+
+
+@pytest.mark.parametrize(
+    ("writes", "missing"),
+    [
+        ((), "region.static.nc"),
+        (("region.static.nc",), "region.graph.info"),
+        (("region.graph.info",), "region.static.nc"),
+    ],
+)
+async def test_missing_create_region_output_is_an_error(
+    monkeypatch, behavior, region, writes, missing
+):
+    task, _ = fake_create_region_task(behavior, monkeypatch, writes=writes)
+    config = create_region_config()["regional"]["create_region"]
+    with pytest.raises(RuntimeError, match=f"create_region did not write {missing}"):
+        await behavior._generate_create_region_mesh(
+            region.mesh_dir, "cut", "480km", config, region.output
+        )
+
+
+async def test_empty_create_region_output_is_an_error(monkeypatch, behavior, region):
+    task, _ = fake_create_region_task(behavior, monkeypatch)
+    write = task.side_effect
+
+    def empty(directory, **kwargs):
+        future = write(directory, **kwargs)
+        (Path(directory) / "region.graph.info").write_text("")
+        return future
+
+    task.side_effect = empty
+    config = create_region_config()["regional"]["create_region"]
+    with pytest.raises(RuntimeError, match="did not write region.graph.info"):
+        await behavior._generate_create_region_mesh(
+            region.mesh_dir, "cut", "480km", config, region.output
+        )
+
+
+async def test_create_region_mesh_installs_and_downloads_first(
+    monkeypatch, tmp_path, behavior
+):
+    output = tmp_path / "meshes"
+    mesh_dir = output / "cut"
+    mesh_dir.mkdir(parents=True)
+    install, check = mock_limited_area_tasks(monkeypatch, behavior)
+
+    def download(resolution, directory, **kwargs):
+        for name, content in mesh_files().items():
+            (Path(directory) / name).write_bytes(content)
+        return done_future()
+
+    monkeypatch.setattr(behavior, "_download_global_mesh", Mock(side_effect=download))
+    fake_create_region_task(behavior, monkeypatch)
+    config = create_region_config()["regional"]["create_region"]
+    await behavior._generate_create_region_mesh(
+        mesh_dir, "cut", "480km", config, output
+    )
+    install.assert_called_once()
+    check.assert_called_once()
+    assert (output / "x1.2562.static.nc").is_file()
+
+
+async def test_each_create_region_run_has_its_own_logs(monkeypatch, behavior, region):
+    task, _ = fake_create_region_task(behavior, monkeypatch)
+    second = region.output / "second"
+    second.mkdir()
+    config = create_region_config()["regional"]["create_region"]
+    for directory in (region.mesh_dir, second):
+        await behavior._generate_create_region_mesh(
+            directory, directory.name, "480km", config, region.output
+        )
+    assert len({call.kwargs["stderr"] for call in task.call_args_list}) == 2
+
+
+async def test_downloads_of_the_same_mesh_do_not_overlap(
+    monkeypatch, tmp_path, behavior
+):
+    pending = Future()
+    download = Mock(side_effect=[pending, done_future(), done_future()])
+    monkeypatch.setattr(behavior, "_download_global_mesh", download)
+    output = tmp_path / "meshes"
+    first = asyncio.create_task(behavior.download_global_mesh("480km", str(output)))
+    second = asyncio.create_task(behavior.download_global_mesh("480km", str(output)))
+    # Another directory, or another mesh, does not wait
+    other = asyncio.create_task(
+        behavior.download_global_mesh("480km", str(tmp_path / "other"))
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert download.call_count == 2
+    assert {call.args[1] for call in download.call_args_list} == {
+        str(output),
+        str(tmp_path / "other"),
+    }
+    pending.set_result(None)
+    await asyncio.gather(first, second, other)
+    assert download.call_count == 3
+
+
+async def test_failed_global_download_leaves_no_create_region_mesh(
+    monkeypatch, tmp_path, behavior
+):
+    mark_limited_area_installed(behavior)
+    failure = URLError("unreachable")
+    monkeypatch.setattr(
+        behavior, "_download_global_mesh", Mock(return_value=done_future(error=failure))
+    )
+    task, _ = fake_create_region_task(behavior, monkeypatch)
+    output = tmp_path / "meshes"
+    with pytest.raises(RuntimeError, match="Global mesh download failed"):
+        await behavior.generate_mesh(create_region_config(), str(output))
+    task.assert_not_called()
+    assert list(output.iterdir()) == []
+
+
+# Generating create_region meshes through generate_mesh
+
+
+@pytest.fixture
+def cutting(monkeypatch, behavior, mesh_download):
+    """Provide cached global meshes, installed tools, and a fake create_region."""
+    output, download = mesh_download
+    mark_limited_area_installed(behavior)
+    task, seen = fake_create_region_task(behavior, monkeypatch)
+    return SimpleNamespace(output=output, download=download, task=task, seen=seen)
+
+
+@pytest.mark.parametrize("shape", list(SHAPES))
+async def test_generate_create_region_mesh(cutting, behavior, shape):
+    result = await behavior.generate_mesh(
+        create_region_config(shape), str(cutting.output)
+    )
+    mesh_dir = cutting.output / "cut"
+    assert result == {
+        "static": str(mesh_dir / "cut.static.nc"),
+        "graph": str(mesh_dir / "cut.graph.info"),
+    }
+    assert cutting.seen["points"] == POINTS[shape]
+    assert {path.name for path in mesh_dir.iterdir()} == {
+        "region.pts",
+        "cut.static.nc",
+        "cut.graph.info",
+    }
+    # The global mesh it was cut from stays shared in mesh_data_dir
+    cutting.download.assert_called_once()
+    assert cutting.download.call_args.args[0] == "480km"
+    assert {path.name for path in cutting.output.iterdir()} == {"cut"} | set(
+        mesh_files()
+    )
+
+
+async def test_generate_create_region_mesh_with_default_name(cutting, behavior):
+    config = create_region_config()
+    del config["name"]
+    result = await behavior.generate_mesh(config, str(cutting.output))
+    assert result["static"] == str(
+        cutting.output / "mesh_480km" / "mesh_480km.static.nc"
+    )
+
+
+async def test_generate_create_region_mesh_with_partitions(
+    monkeypatch, cutting, behavior
+):
+    mark_metis_installed(behavior)
+    task = fake_partition_task()
+    monkeypatch.setattr(behavior, "_partition_mesh", task)
+    config = {**create_region_config("polygon"), "init_ranks": 4, "forecast_ranks": 8}
+    result = await behavior.generate_mesh(config, str(cutting.output))
+    graph = result["graph"]
+    assert result["partitions"] == {4: f"{graph}.part.4", 8: f"{graph}.part.8"}
+    assert Path(f"{graph}.part.4").is_file()
+    assert {call.args[0] for call in task.call_args_list} == {graph}
+
+
+async def test_failed_create_region_mesh_is_removed_and_can_be_retried(
+    monkeypatch, cutting, behavior
+):
+    fake_create_region_task(behavior, monkeypatch, fail=BashExitFailure("task", 255))
+    with pytest.raises(RuntimeError, match="create_region failed"):
+        await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    # Nothing is left of the mesh, and the shared global mesh is untouched
+    assert {path.name for path in cutting.output.iterdir()} == set(mesh_files())
+    assert all((cutting.output / name).stat().st_size > 0 for name in mesh_files())
+
+    fake_create_region_task(behavior, monkeypatch)
+    result = await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    assert Path(result["static"]).is_file()
+
+
+async def test_failed_create_region_partition_removes_the_whole_mesh(
+    monkeypatch, cutting, behavior
+):
+    mark_metis_installed(behavior)
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    config = {**create_region_config(), "init_ranks": 4, "forecast_ranks": 8}
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh(config, str(cutting.output))
+    assert {path.name for path in cutting.output.iterdir()} == set(mesh_files())
+
+
+async def test_existing_create_region_mesh_name_fails_before_anything_runs(
+    cutting, behavior
+):
+    (cutting.output / "cut").mkdir()
+    with pytest.raises(FileExistsError):
+        await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    cutting.task.assert_not_called()
+    cutting.download.assert_not_called()
+    assert list((cutting.output / "cut").iterdir()) == []
+
+
+async def test_create_region_mesh_installs_before_downloading(
+    monkeypatch, behavior, mesh_download
+):
+    output, download = mesh_download
+    order = []
+    install, _ = mock_limited_area_tasks(monkeypatch, behavior)
+    install.side_effect = lambda **kwargs: (order.append("install"), done_future())[1]
+    download.side_effect = lambda *a, **k: (order.append("download"), done_future())[1]
+    fake_create_region_task(behavior, monkeypatch)
+    await behavior.generate_mesh(create_region_config(), str(output))
+    assert order == ["install", "download"]
+
+
+async def test_failed_install_leaves_no_create_region_mesh(
+    monkeypatch, behavior, mesh_download
+):
+    output, download = mesh_download
+    mock_limited_area_tasks(monkeypatch, behavior, check=BashExitFailure("task", 1))
+    task, _ = fake_create_region_task(behavior, monkeypatch)
+    with pytest.raises(RuntimeError, match="MPAS-Limited-Area check failed"):
+        await behavior.generate_mesh(create_region_config(), str(output))
+    task.assert_not_called()
+    download.assert_not_called()
+    assert {path.name for path in output.iterdir()} == set(mesh_files())
+
+
+@pytest.mark.parametrize(
+    ("config", "defined", "missing"),
+    [
+        (create_region_config(), ["compute"], "service"),
+        (create_region_config(), ["service"], "compute"),
+        ({**create_region_config(), "forecast_ranks": 4}, ["service"], "compute"),
+    ],
+)
+async def test_create_region_mesh_checks_resources_before_any_work(
+    monkeypatch, cutting, behavior, config, defined, missing
+):
+    define_resources(monkeypatch, *defined)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.generate_mesh(config, str(cutting.output))
+    cutting.task.assert_not_called()
+    cutting.download.assert_not_called()
+    assert not (cutting.output / "cut").exists()
+
+
+async def test_installed_create_region_mesh_needs_service_and_compute(
+    monkeypatch, cutting, behavior
+):
+    define_resources(monkeypatch, "service", "compute")
+    result = await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    assert Path(result["static"]).is_file()
 
 
 # Generating regional meshes through generate_mesh
@@ -1942,18 +2855,22 @@ async def test_ensure_tools_installed(monkeypatch, behavior):
 
 
 @pytest.mark.parametrize(
-    ("config", "metis", "mpas_tools"),
+    ("config", "metis", "mpas_tools", "limited_area"),
     [
-        (regional_config(), False, True),
-        ({**regional_config(), "forecast_ranks": 4}, True, True),
-        ({"resolution": "480km", "forecast_ranks": 4}, True, False),
+        (regional_config(), False, True, False),
+        ({**regional_config(), "forecast_ranks": 4}, True, True, False),
+        ({"resolution": "480km", "forecast_ranks": 4}, True, False, False),
+        (create_region_config(), False, False, True),
+        ({**create_region_config("polygon"), "init_ranks": 8}, True, False, True),
     ],
 )
 async def test_ensure_tools_installed_for_regional_requests(
-    monkeypatch, behavior, config, metis, mpas_tools
+    monkeypatch, behavior, config, metis, mpas_tools, limited_area
 ):
     metis_download, _ = mock_metis_tasks(monkeypatch, behavior)
     tools_download, _ = mock_mpas_tools_tasks(monkeypatch, behavior)
+    limited_install, _ = mock_limited_area_tasks(monkeypatch, behavior)
     await behavior.ensure_tools_installed(config)
     assert metis_download.called == metis
     assert tools_download.called == mpas_tools
+    assert limited_install.called == limited_area

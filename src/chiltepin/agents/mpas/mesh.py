@@ -9,9 +9,10 @@ import os
 import re
 import shlex
 import shutil
+import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import parsl
 from parsl.app.errors import BashExitFailure
@@ -49,15 +50,40 @@ _REGIONAL_METHODS = ("project_hexes", "create_region")
 _PROJECT_HEXES_REQUIRED = ("center_lat", "center_lon", "extent_x_km", "extent_y_km")
 _PROJECT_HEXES_KEYS = frozenset(_PROJECT_HEXES_REQUIRED + ("rotation_degrees",))
 
+# Fixed names in a create_region mesh directory. The points file always names
+# the region "region", so the mesh name never reaches the tool's parser, and the
+# parent is linked under a name that tells the tool it is a static file.
+_REGION_POINTS = "region.pts"
+_REGION_PARENT = "parent.static.nc"
+_REGION_STATIC = "region.static.nc"
+_REGION_GRAPH = "region.graph.info"
+
+# Largest radius or semi-axis create_region can use: half the circumference of
+# the sphere it measures on, whose radius is 6371229 m. A larger one reaches
+# past the opposite side of the globe.
+_MAX_REGION_SIZE_KM = math.pi * 6371.229
+
+# Shapes a create_region block may hold, with their required and optional keys
+_CREATE_REGION_SHAPES = {
+    "circle": (("center_lat", "center_lon", "radius_km"), ()),
+    "ellipse": (
+        ("center_lat", "center_lon", "semi_major_axis_km", "semi_minor_axis_km"),
+        ("orientation_degrees",),
+    ),
+    "polygon": (("vertices", "inside_lat", "inside_lon"), ()),
+    "channel": (("upper_lat", "lower_lat"), ()),
+}
+
 
 class _MeshBehavior:
     """Mesh behavior for generating MPAS meshes.
 
     Provides a top-level ``generate_mesh()`` action that either downloads the
     requested global mesh and creates named links to its files, or generates a
-    regional mesh with the MPAS-Tools ``project_hexes`` program. It can also
-    partition the mesh graph for MPI execution. Tools a request needs, such as
-    Metis for partitioning, are installed on demand.
+    regional mesh, with the MPAS-Tools ``project_hexes`` program or by cutting
+    it from a global mesh with the MPAS-Limited-Area ``create_region`` program.
+    It can also partition the mesh graph for MPI execution. Tools a request
+    needs, such as Metis for partitioning, are installed on demand.
     """
 
     def __init__(
@@ -65,6 +91,7 @@ class _MeshBehavior:
         work_dir: str,
         metis_version: str = "5.2.1",
         mpas_tools_version: str = "2.0.0",
+        limited_area_version: str = "2.2",
     ):
         """Initialize the mesh behavior.
 
@@ -76,16 +103,20 @@ class _MeshBehavior:
             Metis version to install, by default "5.2.1"
         mpas_tools_version : str, optional
             MPAS-Tools tag to install, by default "2.0.0"
+        limited_area_version : str, optional
+            MPAS-Limited-Area version to install, by default "2.2". The tag is
+            this version with a ``v`` added, such as ``v2.2``.
 
         Raises
         ------
         ValueError
-            If ``metis_version`` or ``mpas_tools_version`` is not a plain
-            version string.
+            If ``metis_version``, ``mpas_tools_version`` or
+            ``limited_area_version`` is not a plain version string.
         """
         for name, version in (
             ("metis_version", metis_version),
             ("mpas_tools_version", mpas_tools_version),
+            ("limited_area_version", limited_area_version),
         ):
             if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
                 raise ValueError(f"Invalid {name}: {version!r}")
@@ -103,9 +134,17 @@ class _MeshBehavior:
         self.mpas_tools_version = mpas_tools_version
         self.mpas_tools_built = False
 
+        # MPAS-Limited-Area state (the create_region program and its Python)
+        self.limited_area_version = limited_area_version
+        self.limited_area_built = False
+
         # Serializes tool installs, so concurrent requests that need a tool wait
         # for one install instead of each starting their own
         self._install_lock = asyncio.Lock()
+
+        # Serializes downloads of each global mesh to each directory, so a
+        # request never replaces a mesh file another one is reading
+        self._download_locks: Dict[Any, asyncio.Lock] = {}
 
         # Mesh data
         self.mesh_data_url = "https://www2.mmm.ucar.edu/projects/mpas/atmosphere_meshes"
@@ -133,16 +172,18 @@ class _MeshBehavior:
         """Return picklable state for task submission.
 
         Task methods send ``self`` to workers. A lock with waiting requests cannot
-        be pickled, and workers do not need it.
+        be pickled, and workers do not need the locks.
         """
         state = self.__dict__.copy()
         del state["_install_lock"]
+        del state["_download_locks"]
         return state
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Restore state on a worker, with a fresh lock."""
+        """Restore state on a worker, with fresh locks."""
         self.__dict__.update(state)
         self._install_lock = asyncio.Lock()
+        self._download_locks = {}
 
     # -------------------------------------------------------------------------
     # Helpers
@@ -187,8 +228,9 @@ class _MeshBehavior:
         ValueError
             If ``mesh_config`` is not a dict, has an unknown key, or has an
             invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``
-            or ``regional`` block. A name must be at most 200 bytes long and
-            must not be that of a downloaded global mesh file.
+            or ``regional`` block. A name must be at most 200 bytes long, must
+            not contain control characters, and must not be that of a downloaded
+            global mesh file.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
@@ -204,8 +246,9 @@ class _MeshBehavior:
         if regional is not None:
             self._validate_regional(regional)
         resolution = mesh_config.get("resolution", "120km")
-        if regional is None:
-            # A global mesh is downloaded, so only the available ones can be used
+        if regional is None or "create_region" in regional:
+            # A global mesh is downloaded, and create_region cuts a region from
+            # one, so only the available resolutions can be used
             if (
                 not isinstance(resolution, str)
                 or resolution not in self.resolution_cells
@@ -223,6 +266,8 @@ class _MeshBehavior:
             or Path(mesh_name).name != mesh_name
         ):
             raise ValueError("Mesh name must be a valid file name and not a path")
+        if any(unicodedata.category(char) == "Cc" for char in mesh_name):
+            raise ValueError("Mesh name must not contain control characters")
         try:
             name_bytes = len(os.fsencode(mesh_name))
         except UnicodeEncodeError:
@@ -262,14 +307,18 @@ class _MeshBehavior:
             f"kilometers such as '15km' or '7.5km'"
         )
 
-    @staticmethod
-    def _number(config: Dict[str, Any], key: str, where: str) -> float:
+    @classmethod
+    def _number(cls, config: Dict[str, Any], key: str, where: str) -> float:
         """Return a required or optional value as a finite number.
 
         Booleans and strings are rejected, since a mesh request must give real
         numbers.
         """
-        value = config[key]
+        return cls._finite(config[key], f"{where}.{key}")
+
+    @staticmethod
+    def _finite(value: Any, label: str) -> float:
+        """Return a value as a finite number, naming it ``label`` if it is not."""
         number = math.nan
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             try:
@@ -278,7 +327,7 @@ class _MeshBehavior:
                 # An integer too large for a float is not a usable number
                 pass
         if not math.isfinite(number):
-            raise ValueError(f"{where}.{key} must be a finite number, got {value!r}")
+            raise ValueError(f"{label} must be a finite number, got {value!r}")
         return number
 
     @classmethod
@@ -288,9 +337,8 @@ class _MeshBehavior:
         Raises
         ------
         ValueError
-            If the block is not a dict holding exactly one known method, names
-            ``create_region``, which is not supported yet, or has an invalid
-            ``project_hexes`` block.
+            If the block is not a dict holding exactly one known method, or
+            that method's block is invalid.
         """
         if not isinstance(regional, dict):
             raise ValueError(f"regional must be a dict, got {type(regional).__name__}")
@@ -306,8 +354,9 @@ class _MeshBehavior:
                 + " or ".join(repr(method) for method in _REGIONAL_METHODS)
             )
         if "create_region" in regional:
-            raise ValueError("regional 'create_region' is not supported yet")
-        cls._validate_project_hexes(regional["project_hexes"])
+            cls._validate_create_region(regional["create_region"])
+        else:
+            cls._validate_project_hexes(regional["project_hexes"])
 
     @classmethod
     def _validate_project_hexes(cls, config: Any) -> None:
@@ -331,15 +380,126 @@ class _MeshBehavior:
         missing = [key for key in _PROJECT_HEXES_REQUIRED if key not in config]
         if missing:
             raise ValueError(f"{where} is missing required keys: {', '.join(missing)}")
-        if not -90 <= cls._number(config, "center_lat", where) <= 90:
-            raise ValueError(f"{where}.center_lat must be between -90 and 90")
-        if not -180 <= cls._number(config, "center_lon", where) <= 360:
-            raise ValueError(f"{where}.center_lon must be between -180 and 360")
+        cls._latitude(config["center_lat"], f"{where}.center_lat")
+        cls._longitude(config["center_lon"], f"{where}.center_lon")
         for key in ("extent_x_km", "extent_y_km"):
-            if cls._number(config, key, where) <= 0:
-                raise ValueError(f"{where}.{key} must be greater than 0")
+            cls._positive(config[key], f"{where}.{key}")
         if "rotation_degrees" in config:
             cls._number(config, "rotation_degrees", where)
+
+    @classmethod
+    def _latitude(cls, value: Any, label: str) -> float:
+        """Return a latitude, which must be from -90 to 90 degrees."""
+        number = cls._finite(value, label)
+        if not -90 <= number <= 90:
+            raise ValueError(f"{label} must be between -90 and 90")
+        return number
+
+    @classmethod
+    def _longitude(cls, value: Any, label: str) -> float:
+        """Return a longitude, which must be from -180 to 360 degrees."""
+        number = cls._finite(value, label)
+        if not -180 <= number <= 360:
+            raise ValueError(f"{label} must be between -180 and 360")
+        return number
+
+    @classmethod
+    def _positive(cls, value: Any, label: str) -> float:
+        """Return a size, which must be greater than 0."""
+        number = cls._finite(value, label)
+        if number <= 0:
+            raise ValueError(f"{label} must be greater than 0")
+        return number
+
+    @classmethod
+    def _region_size(cls, value: Any, label: str) -> float:
+        """Return a radius or semi-axis, from 0 to half the globe's circumference."""
+        number = cls._positive(value, label)
+        if number >= _MAX_REGION_SIZE_KM:
+            raise ValueError(
+                f"{label} must be less than half the circumference of the Earth, "
+                f"{_MAX_REGION_SIZE_KM:.1f} km"
+            )
+        return number
+
+    @classmethod
+    def _validate_create_region(cls, config: Any) -> None:
+        """Check a ``regional.create_region`` block.
+
+        It must hold exactly one shape: ``circle``, ``ellipse``, ``polygon`` or
+        ``channel``, each with its own keys.
+
+        Raises
+        ------
+        ValueError
+            If it is not a dict holding exactly one known shape, or the shape is
+            missing a key, has an unknown key, or has a value out of range.
+        """
+        where = "regional.create_region"
+        if not isinstance(config, dict):
+            raise ValueError(f"{where} must be a dict, got {type(config).__name__}")
+        shapes = ", ".join(_CREATE_REGION_SHAPES)
+        unknown = sorted(str(k) for k in config if k not in _CREATE_REGION_SHAPES)
+        if unknown:
+            raise ValueError(
+                f"Unknown {where} keys: {', '.join(unknown)}. Allowed: {shapes}"
+            )
+        if len(config) != 1:
+            raise ValueError(f"{where} must contain exactly one of {shapes}")
+        ((shape, block),) = config.items()
+        where = f"{where}.{shape}"
+        if not isinstance(block, dict):
+            raise ValueError(f"{where} must be a dict, got {type(block).__name__}")
+        required, optional = _CREATE_REGION_SHAPES[shape]
+        allowed = set(required) | set(optional)
+        unknown = sorted(str(k) for k in block if k not in allowed)
+        if unknown:
+            raise ValueError(
+                f"Unknown {where} keys: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(sorted(allowed))}"
+            )
+        missing = [key for key in required if key not in block]
+        if missing:
+            raise ValueError(f"{where} is missing required keys: {', '.join(missing)}")
+
+        if shape in ("circle", "ellipse"):
+            cls._latitude(block["center_lat"], f"{where}.center_lat")
+            cls._longitude(block["center_lon"], f"{where}.center_lon")
+        if shape == "circle":
+            cls._region_size(block["radius_km"], f"{where}.radius_km")
+        elif shape == "ellipse":
+            major = cls._region_size(
+                block["semi_major_axis_km"], f"{where}.semi_major_axis_km"
+            )
+            minor = cls._region_size(
+                block["semi_minor_axis_km"], f"{where}.semi_minor_axis_km"
+            )
+            if minor > major:
+                raise ValueError(
+                    f"{where}.semi_minor_axis_km must not be greater than "
+                    "semi_major_axis_km"
+                )
+            if "orientation_degrees" in block:
+                cls._number(block, "orientation_degrees", where)
+        elif shape == "polygon":
+            cls._latitude(block["inside_lat"], f"{where}.inside_lat")
+            cls._longitude(block["inside_lon"], f"{where}.inside_lon")
+            vertices = block["vertices"]
+            if not isinstance(vertices, (list, tuple)) or len(vertices) < 3:
+                raise ValueError(
+                    f"{where}.vertices must be a list of at least 3 [lat, lon] pairs"
+                )
+            for index, vertex in enumerate(vertices):
+                label = f"{where}.vertices[{index}]"
+                if not isinstance(vertex, (list, tuple)) or len(vertex) != 2:
+                    raise ValueError(f"{label} must be a [lat, lon] pair")
+                cls._latitude(vertex[0], f"{label} latitude")
+                cls._longitude(vertex[1], f"{label} longitude")
+        else:
+            upper = cls._latitude(block["upper_lat"], f"{where}.upper_lat")
+            lower = cls._latitude(block["lower_lat"], f"{where}.lower_lat")
+            if upper <= lower:
+                raise ValueError(f"{where}.upper_lat must be greater than lower_lat")
 
     @staticmethod
     def _real(value: float) -> str:
@@ -409,6 +569,50 @@ class _MeshBehavior:
             "/\n"
         )
 
+    @classmethod
+    def _create_region_points(cls, config: Dict[str, Any]) -> str:
+        """Return the points file that create_region reads for a region.
+
+        ``config`` is a validated ``regional.create_region`` block. Sizes are
+        given in kilometers and written in meters, which the tool expects. The
+        region is always named ``region``.
+        """
+        r = cls._real
+        ((shape, block),) = config.items()
+        lines = ["Name: region"]
+        # Any angle is written within one turn. A tiny negative angle gives
+        # exactly 360.0 from %, which is the same direction as 0.
+        orientation = block.get("orientation_degrees", 0) % 360
+        if orientation >= 360:
+            orientation = 0.0
+        if shape == "circle":
+            lines += [
+                "Type: circle",
+                f"Point: {r(block['center_lat'])}, {r(block['center_lon'])}",
+                f"Radius: {r(block['radius_km'] * 1000)}",
+            ]
+        elif shape == "ellipse":
+            lines += [
+                "Type: ellipse",
+                f"Point: {r(block['center_lat'])}, {r(block['center_lon'])}",
+                f"Semi-major-axis: {r(block['semi_major_axis_km'] * 1000)}",
+                f"Semi-minor-axis: {r(block['semi_minor_axis_km'] * 1000)}",
+                f"Orientation-angle: {r(orientation)}",
+            ]
+        elif shape == "polygon":
+            lines += [
+                "Type: custom",
+                f"Point: {r(block['inside_lat'])}, {r(block['inside_lon'])}",
+            ]
+            lines += [f"{r(lat)}, {r(lon)}" for lat, lon in block["vertices"]]
+        else:
+            lines += [
+                "Type: channel",
+                f"Upper-lat: {r(block['upper_lat'])}",
+                f"Lower-lat: {r(block['lower_lat'])}",
+            ]
+        return "\n".join(lines) + "\n"
+
     @staticmethod
     def _partition_ranks(mesh_config: Dict[str, Any]) -> List[int]:
         """Return the distinct rank counts above 1 requested by a mesh config.
@@ -475,30 +679,34 @@ class _MeshBehavior:
         log_name: str,
         download_task: Callable[..., Any],
         build_task: Callable[..., Any],
+        stages: Tuple[str, str] = ("download", "build"),
     ) -> None:
         """Download and build a tool, and report the first failure.
 
-        The download runs on ``service`` and the build on ``compute``. Logs are
-        ``<log_name>_download.*`` and ``<log_name>_build.*`` in ``log_dir``. The
-        caller holds the install lock and has checked that the resources exist.
+        The download runs on ``service`` and the build on ``compute``. ``stages``
+        names the two steps in logs and messages. Logs are
+        ``<log_name>_<stage>.*`` in ``log_dir``, such as
+        ``metis_download.stderr``. The caller holds the install lock and has
+        checked that the resources exist.
 
         Raises
         ------
         RuntimeError
-            If the download or build fails. The message names the log file.
+            If either step fails. The message names the log file.
         """
+        first, second = stages
         download_future = download_task(
             executor=["service"],
-            stdout=str(self.log_dir / f"{log_name}_download.stdout"),
-            stderr=str(self.log_dir / f"{log_name}_download.stderr"),
+            stdout=str(self.log_dir / f"{log_name}_{first}.stdout"),
+            stderr=str(self.log_dir / f"{log_name}_{first}.stderr"),
         )
         build_future = build_task(
             executor=["compute"],
-            stdout=str(self.log_dir / f"{log_name}_build.stdout"),
-            stderr=str(self.log_dir / f"{log_name}_build.stderr"),
+            stdout=str(self.log_dir / f"{log_name}_{second}.stdout"),
+            stderr=str(self.log_dir / f"{log_name}_{second}.stderr"),
             inputs=[download_future],
         )
-        for stage, future in (("download", download_future), ("build", build_future)):
+        for stage, future in ((first, download_future), (second, build_future)):
             try:
                 await asyncio.wrap_future(future)
             except BashExitFailure as e:
@@ -539,6 +747,29 @@ class _MeshBehavior:
     def _grid_rotate(self) -> Path:
         """Path of the grid_rotate executable."""
         return self._mpas_tools_prefix / "bin" / "grid_rotate"
+
+    @property
+    def _limited_area_prefix(self) -> Path:
+        """Directory MPAS-Limited-Area and its Python environment are installed in."""
+        return self.work_dir / "limited-area" / self.limited_area_version
+
+    @property
+    def _limited_area_python(self) -> Path:
+        """Python of the environment that runs create_region."""
+        return self._limited_area_prefix / "venv" / "bin" / "python"
+
+    @property
+    def _create_region(self) -> Path:
+        """Path of the create_region script."""
+        return self._limited_area_prefix / "src" / "create_region"
+
+    def _limited_area_usable(self) -> bool:
+        """Whether a finished MPAS-Limited-Area install exists."""
+        return (
+            (self._limited_area_prefix / ".installed").is_file()
+            and self._is_executable(self._limited_area_python)
+            and self._create_region.is_file()
+        )
 
     def _mpas_tools_usable(self) -> bool:
         """Whether a finished MPAS-Tools install with runnable programs exists."""
@@ -666,6 +897,79 @@ class _MeshBehavior:
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
             echo "Completed build at $(date)"
+            """
+        )
+
+    # -------------------------------------------------------------------------
+    # Private bash tasks — MPAS-Limited-Area
+    # -------------------------------------------------------------------------
+
+    @bash_task
+    def _install_limited_area(self) -> str:
+        """Clone MPAS-Limited-Area and create its Python environment.
+
+        Runs on ``service``, which can reach GitHub and PyPI. A virtual
+        environment only works at the path it was created at, so it is created
+        in its final place. It is built from the Python running this task, and
+        the check on ``compute`` confirms that it runs there too.
+        """
+        import sys
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started install at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._limited_area_prefix)}
+            # Start from an empty prefix so a failed earlier install leaves nothing
+            rm -rf "$prefix"
+            mkdir -p "$prefix"
+            cd "$prefix"
+            # Clone only the requested tag, giving up if the transfer stalls
+            git -c advice.detachedHead=false -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 clone --depth 1 --branch {self._q("v" + self.limited_area_version)} https://github.com/MPAS-Dev/MPAS-Limited-Area.git src
+            {self._q(sys.executable)} -m venv "$prefix/venv"
+            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 60 --retries 5 numpy netCDF4
+            echo "Completed install at $(date)"
+            """
+        )
+
+    @bash_task
+    def _check_limited_area(self) -> str:
+        """Check that create_region runs on ``compute``, and mark the install."""
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started check at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._limited_area_prefix)}
+            python="$prefix/venv/bin/python"
+            if ! "$python" -c "import numpy, netCDF4"; then
+                echo "The Python environment in $prefix/venv cannot import numpy and netCDF4 on this resource. It was created from the Python of the service resource, which must also run on the compute resource." >&2
+                exit 1
+            fi
+            "$python" "$prefix/src/create_region" --help > /dev/null
+            # Mark the install complete. The agent only uses a marked install.
+            touch "$prefix/.installed"
+            echo "Completed check at $(date)"
+            """
+        )
+
+    @bash_task
+    def _run_create_region(self, mesh_dir: str) -> str:
+        """Run create_region in a mesh directory holding the points and parent."""
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started create_region at $(date)"
+            echo "Executing on $(hostname)"
+            cd {self._q(mesh_dir)}
+            {self._q(self._limited_area_python)} {self._q(self._create_region)} {self._q(_REGION_POINTS)} {self._q(_REGION_PARENT)}
+            echo "Completed create_region at $(date)"
             """
         )
 
@@ -949,6 +1253,53 @@ class _MeshBehavior:
             self.mpas_tools_built = True
 
     # -------------------------------------------------------------------------
+    # Public agent actions — MPAS-Limited-Area
+    # -------------------------------------------------------------------------
+
+    @agent_action
+    async def install_limited_area(self) -> None:
+        """Install MPAS-Limited-Area and the Python it needs, unless installed.
+
+        The ``create_region`` program of MPAS-Limited-Area is a Python script
+        that needs numpy and netCDF4. The tag is cloned and a virtual
+        environment with those two packages is created in ``work_dir`` on the
+        ``service`` resource, and a check on the ``compute`` resource confirms
+        that it runs there. It counts as installed once that check has passed,
+        so a restarted agent reuses it. Requests that need it while it is being
+        installed wait for that install. If it fails, each waiting request tries
+        again in turn. Called automatically when a request needs it, but can be
+        called earlier to have it ready.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` or ``compute`` resource is not defined, or the
+            install or check fails. The message names the log file.
+        """
+        async with self._install_lock:
+            # Check the install on disk each time, so a removed or damaged
+            # install is replaced instead of failing every later request
+            if not self._limited_area_usable():
+                self.limited_area_built = False
+                self._require_resources(
+                    "Installing MPAS-Limited-Area", "service", "compute"
+                )
+                await self._run_install(
+                    "MPAS-Limited-Area",
+                    "limited_area",
+                    self._install_limited_area,
+                    self._check_limited_area,
+                    stages=("install", "check"),
+                )
+                if not self._limited_area_usable():
+                    raise RuntimeError(
+                        "MPAS-Limited-Area check finished but the install in "
+                        f"{self._limited_area_prefix} is not usable, see "
+                        f"{self.log_dir}/limited_area_check.stderr"
+                    )
+            self.limited_area_built = True
+
+    # -------------------------------------------------------------------------
     # Public agent actions — Tools
     # -------------------------------------------------------------------------
 
@@ -973,8 +1324,11 @@ class _MeshBehavior:
         self._validate_mesh_config(mesh_config)
         if self._partition_ranks(mesh_config):
             await self.install_metis()
-        if "project_hexes" in (mesh_config.get("regional") or {}):
+        regional = mesh_config.get("regional") or {}
+        if "project_hexes" in regional:
             await self.install_mpas_tools()
+        if "create_region" in regional:
+            await self.install_limited_area()
 
     # -------------------------------------------------------------------------
     # Private mesh generation
@@ -983,12 +1337,15 @@ class _MeshBehavior:
     async def _run_program(
         self, task: Callable[..., Any], program: str, call_id: str, *args: str
     ) -> None:
-        """Run a program on ``compute`` and report a failure with its log name.
+        """Run a program on ``compute`` and report a failure with its log names.
+
+        Both logs are named, since some programs, such as create_region, print
+        their errors to standard output.
 
         Raises
         ------
         RuntimeError
-            If the program fails. The message names the log file.
+            If the program fails. The message names the log files.
         """
         log = self.log_dir / f"{program}.{call_id}"
         future = task(
@@ -1001,7 +1358,8 @@ class _MeshBehavior:
             await asyncio.wrap_future(future)
         except BashExitFailure as e:
             raise RuntimeError(
-                f"{program} failed (exit {e.exitcode}), see {log}.stderr"
+                f"{program} failed (exit {e.exitcode}), "
+                f"see {log}.stdout and {log}.stderr"
             ) from e
         except Exception as e:
             raise RuntimeError(f"{program} failed: {e}") from e
@@ -1015,9 +1373,10 @@ class _MeshBehavior:
             If it did not. The message names the log file of that program.
         """
         if not path.is_file() or path.stat().st_size == 0:
+            log = self.log_dir / f"{program}.{call_id}"
             raise RuntimeError(
                 f"{program} did not write {path.name}, "
-                f"see {self.log_dir}/{program}.{call_id}.stderr"
+                f"see {log}.stdout and {log}.stderr"
             )
 
     async def _generate_project_hexes_mesh(
@@ -1101,6 +1460,72 @@ class _MeshBehavior:
         graph_file.replace(graph)
         return {"static": str(static), "graph": str(graph)}
 
+    async def _generate_create_region_mesh(
+        self,
+        mesh_dir: Path,
+        mesh_name: str,
+        resolution: str,
+        config: Dict[str, Any],
+        mesh_data_dir: Path,
+    ) -> Dict[str, str]:
+        """Cut a regional mesh from a global mesh with create_region.
+
+        The global mesh of ``resolution`` is downloaded to ``mesh_data_dir``
+        unless it is already there, and is linked into ``mesh_dir`` while the
+        tool runs. Everything else is written in ``mesh_dir``, which the caller
+        created and removes if this fails. The points file stays there, and the
+        mesh and graph end up named after the mesh.
+
+        Parameters
+        ----------
+        mesh_dir : Path
+            Absolute path of the new mesh directory
+        mesh_name : str
+            Name of the mesh
+        resolution : str
+            Resolution of the global mesh to cut from, such as ``"120km"``
+        config : dict
+            A validated ``regional.create_region`` block
+        mesh_data_dir : Path
+            Absolute path of the directory holding the downloaded global meshes
+
+        Returns
+        -------
+        dict
+            ``{"static": path, "graph": path}``
+
+        Raises
+        ------
+        RuntimeError
+            If MPAS-Limited-Area cannot be installed, the global mesh cannot be
+            downloaded, or create_region fails or does not write its files.
+        """
+        # Write the points first, so a value the tool cannot take fails at once
+        points = self._create_region_points(config)
+        (mesh_dir / _REGION_POINTS).write_text(points)
+        await self.install_limited_area()
+        parent = await self.download_global_mesh(resolution, str(mesh_data_dir))
+        call_id = uuid.uuid4().hex[:8]
+
+        link = mesh_dir / _REGION_PARENT
+        link.symlink_to(Path(parent["static"]).resolve())
+        try:
+            await self._run_program(
+                self._run_create_region, "create_region", call_id, str(mesh_dir)
+            )
+        finally:
+            link.unlink(missing_ok=True)
+        mesh_file = mesh_dir / _REGION_STATIC
+        graph_file = mesh_dir / _REGION_GRAPH
+        for path in (mesh_file, graph_file):
+            self._require_output(path, "create_region", call_id)
+
+        static = mesh_dir / f"{mesh_name}.static.nc"
+        graph = mesh_dir / f"{mesh_name}.graph.info"
+        mesh_file.replace(static)
+        graph_file.replace(graph)
+        return {"static": str(static), "graph": str(graph)}
+
     # -------------------------------------------------------------------------
     # Public agent actions — Mesh operations
     # -------------------------------------------------------------------------
@@ -1142,15 +1567,19 @@ class _MeshBehavior:
 
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
 
-        future = self._download_global_mesh(
-            resolution,
-            str(request_mesh_data_dir),
-            executor=["service"],
-        )
-        try:
-            await asyncio.wrap_future(future)
-        except Exception as e:
-            raise RuntimeError("Global mesh download failed") from e
+        # A second request for the same mesh waits, then finds the files there
+        key = (str(request_mesh_data_dir), resolution)
+        lock = self._download_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            future = self._download_global_mesh(
+                resolution,
+                str(request_mesh_data_dir),
+                executor=["service"],
+            )
+            try:
+                await asyncio.wrap_future(future)
+            except Exception as e:
+                raise RuntimeError("Global mesh download failed") from e
 
         cells = self.resolution_cells[resolution]
         return {
@@ -1168,23 +1597,30 @@ class _MeshBehavior:
 
         Without a ``regional`` block the request is for a global mesh, which is
         downloaded. With one, a regional mesh is generated. Tools the request
-        needs, such as Metis for partitioning or the MPAS-Tools programs for a
+        needs, such as Metis for partitioning or the program that makes a
         regional mesh, are installed first if they are not already installed.
 
         Parameters
         ----------
         mesh_config : dict
             Optional ``resolution`` (default ``"120km"``) and ``name``
-            (default ``"mesh_<resolution>"``). A global mesh must use one of the
-            supported global resolutions. A regional mesh may use any positive
-            number of kilometers, such as ``"2km"``. Optional ``init_ranks`` and
+            (default ``"mesh_<resolution>"``). A global mesh, and a regional
+            mesh cut from one with ``create_region``, must use one of the
+            supported global resolutions. A ``project_hexes`` mesh may use any
+            positive number of kilometers, such as ``"2km"``. Optional
+            ``init_ranks`` and
             ``forecast_ranks`` are positive integers giving MPI rank counts to
             partition the mesh graph for. A count of 1 needs no partition.
             An optional ``regional`` dict holds exactly one method.
             ``{"project_hexes": {...}}`` needs ``center_lat``, ``center_lon``,
             ``extent_x_km`` and ``extent_y_km`` as numbers, and may have
             ``rotation_degrees`` to rotate the mesh counter-clockwise about its
-            center. ``create_region`` is not supported yet.
+            center. ``{"create_region": {shape: {...}}}`` holds exactly one
+            shape: ``circle`` (``center_lat``, ``center_lon``, ``radius_km``),
+            ``ellipse`` (``center_lat``, ``center_lon``, ``semi_major_axis_km``,
+            ``semi_minor_axis_km``, optional ``orientation_degrees``),
+            ``polygon`` (``vertices`` as ``[lat, lon]`` pairs, ``inside_lat``,
+            ``inside_lon``) or ``channel`` (``upper_lat``, ``lower_lat``).
         mesh_data_dir : str
             Directory where this request's mesh files are written
 
@@ -1206,8 +1642,9 @@ class _MeshBehavior:
             of a downloaded global mesh file such as ``x1.2562.graph.info``.
         RuntimeError
             If a resource the request needs is not defined (``service`` for a
-            global mesh, ``compute`` for a regional mesh or partitioning), or a
-            download, tool install, program run or partition fails.
+            global or ``create_region`` mesh, ``compute`` for a regional mesh or
+            partitioning), or a download, tool install, program run or partition
+            fails.
         """
         self._validate_mesh_config(mesh_config)
         ranks = self._partition_ranks(mesh_config)
@@ -1220,7 +1657,8 @@ class _MeshBehavior:
         # Check resources before creating anything, so a request that cannot
         # finish downloads nothing and leaves nothing behind. Installing a tool
         # that is missing checks that it has the resources it needs.
-        needed = ["service"] if regional is None else []
+        downloads = regional is None or "create_region" in regional
+        needed = ["service"] if downloads else []
         if regional is not None or ranks:
             needed.append("compute")
         self._require_resources("This mesh request", *needed)
@@ -1240,10 +1678,18 @@ class _MeshBehavior:
                     link = mesh_dir / f"{mesh_name}.{suffix}"
                     link.symlink_to(Path(paths[key]).resolve())
                     result[key] = str(link)
-            else:
-                # The validator allows only project_hexes so far
+            elif "project_hexes" in regional:
                 result = await self._generate_project_hexes_mesh(
                     mesh_dir, mesh_name, resolution, regional["project_hexes"]
+                )
+            else:
+                # Cut from the global mesh of the same resolution
+                result = await self._generate_create_region_mesh(
+                    mesh_dir,
+                    mesh_name,
+                    resolution,
+                    regional["create_region"],
+                    request_mesh_data_dir,
                 )
             if ranks:
                 result["partitions"] = await self.partition_mesh(result["graph"], ranks)
@@ -1266,5 +1712,8 @@ class MeshAgent(_MeshBehavior):
     metis_version : str, optional
         Metis version to install for partitioning, by default "5.2.1"
     mpas_tools_version : str, optional
-        MPAS-Tools tag to install for regional meshes, by default "2.0.0"
+        MPAS-Tools tag to install for ``project_hexes`` meshes, by default "2.0.0"
+    limited_area_version : str, optional
+        MPAS-Limited-Area version to install for ``create_region`` meshes, by
+        default "2.2"
     """
