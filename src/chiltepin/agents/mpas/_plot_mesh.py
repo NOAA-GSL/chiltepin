@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Draw a PNG image of an MPAS mesh.
 
-This is a standalone script, run by the MPAS mesh agent with the Python of the
-plotting environment that ``install_plotting()`` creates. That environment has
-numpy, netCDF4, matplotlib and cartopy but not chiltepin, so this module imports
-only the standard library at the top, and the plotting packages inside the
-functions that draw.
+This is a standalone script, which the MPAS mesh agent runs with the Python of
+its tasks on the ``compute`` resource. Drawing needs numpy, netCDF4, matplotlib
+and cartopy, which the ``chiltepin[mpas]`` extra installs. The agent imports this
+module for its exit codes and map layers without them, so it imports only the
+standard library at the top, and the plotting packages inside the functions that
+draw.
 
 A mesh is regional if any cell has a nonzero ``bdyMaskCell``, and global
 otherwise. A regional mesh is drawn on a flat map, with its cells colored by
@@ -17,6 +18,11 @@ Usage::
 
     python _plot_mesh.py MESH OUTPUT --map-data DIR [--title TITLE]
         [--zoom ZOOM] [--center LAT LON]
+    python _plot_mesh.py --download-map-data DIR
+
+The second form downloads the Natural Earth map layers the plots draw to DIR,
+where cartopy finds them. It needs only the standard library, so it runs on the
+``service`` resource, which can reach Natural Earth, without the extra.
 
 Exit codes:
 
@@ -29,8 +35,11 @@ Exit codes:
 """
 
 import argparse
+import io
 import math
 import sys
+import time
+import zipfile
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -82,6 +91,16 @@ COASTLINE = ("10m", "physical", "coastline")
 BORDERS = ("10m", "cultural", "admin_0_boundary_lines_land")
 STATES = ("10m", "cultural", "admin_1_states_provinces_lines")
 GLOBE_COASTLINE = ("110m", "physical", "coastline")
+MAP_LAYERS = (COASTLINE, BORDERS, STATES, GLOBE_COASTLINE)
+
+# Where Natural Earth layers are downloaded from, as cartopy does
+NATURAL_EARTH_URL = (
+    "https://naturalearth.s3.amazonaws.com/{resolution}_{category}/"
+    "ne_{resolution}_{name}.zip"
+)
+
+# Parts of a shapefile kept from a downloaded layer
+SHAPEFILE_PARTS = (".shp", ".shx", ".dbf", ".prj", ".cpg")
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -119,6 +138,58 @@ def layer_path(map_data: Path, layer: Tuple[str, str, str]) -> Path:
         / category
         / f"ne_{resolution}_{name}.shp"
     )
+
+
+def layer_url(layer: Tuple[str, str, str]) -> str:
+    """Return the address a Natural Earth layer is downloaded from."""
+    resolution, category, name = layer
+    return NATURAL_EARTH_URL.format(resolution=resolution, category=category, name=name)
+
+
+def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) -> None:
+    """Download the map layers to where cartopy finds them in ``map_data``.
+
+    Each layer's shapefile parts are extracted from its zip file, and the
+    ``.shp`` file is written last, so a layer is complete once it exists.
+
+    Raises
+    ------
+    OSError
+        If a layer cannot be downloaded after ``attempts`` tries.
+    ValueError
+        If a downloaded file is not a zip file holding the layer's shapefile.
+    """
+    import urllib.request
+
+    for layer in MAP_LAYERS:
+        url = layer_url(layer)
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(url, timeout=timeout) as response:
+                    data = response.read()
+                break
+            except OSError:
+                if attempt == attempts:
+                    raise
+                time.sleep(2**attempt)
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile as e:
+            raise ValueError(f"{url} is not a zip file") from e
+        target = layer_path(map_data, layer)
+        stem = target.stem
+        names = set(archive.namelist())
+        if f"{stem}.shp" not in names:
+            raise ValueError(f"{url} holds no {stem}.shp")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Only the shapefile's own parts, by name, so nothing lands elsewhere
+        parts = [f"{stem}{suffix}" for suffix in SHAPEFILE_PARTS]
+        for part in sorted(parts, key=lambda name: name.endswith(".shp")):
+            if part in names:
+                partial = target.with_name(f".{part}.partial")
+                partial.write_bytes(archive.read(part))
+                partial.replace(target.with_name(part))
+        print(f"Downloaded {url} to {target}", flush=True)
 
 
 def global_cell_spacing_km(n_cells: int) -> float:
@@ -214,7 +285,13 @@ def wrap_longitude(lon, center: float):
 
 
 def main(argv: Sequence[str]) -> int:
-    """Draw the image, and return the exit code."""
+    """Draw the image or download the map layers, and return the exit code."""
+    if argv[:1] == ["--download-map-data"]:
+        if len(argv) != 2:
+            print("Usage: _plot_mesh.py --download-map-data DIR", file=sys.stderr)
+            return 1
+        download_map_data(Path(argv[1]))
+        return 0
     args = parse_args(argv)
     title = args.title if args.title is not None else default_title(args.mesh)
     regional = is_regional(args.mesh)

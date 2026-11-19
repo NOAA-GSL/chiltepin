@@ -12,7 +12,9 @@ import math
 import subprocess
 import sys
 import tarfile
+import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -202,6 +204,134 @@ def test_shows_states(spans, center, states):
 )
 def test_wrap_longitude(lon, center, wrapped):
     assert plot.wrap_longitude(lon, center) == pytest.approx(wrapped)
+
+
+# Downloading the map layers
+
+
+def layer_zip(layer, extra=()):
+    """Return a zip file like Natural Earth's for a layer, with extra members."""
+    stem = f"ne_{layer[0]}_{layer[2]}"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for suffix in plot.SHAPEFILE_PARTS:
+            archive.writestr(f"{stem}{suffix}", f"{stem}{suffix} data")
+        archive.writestr(f"{stem}.README.html", "readme")
+        for name in extra:
+            archive.writestr(name, "unwanted")
+    return buffer.getvalue()
+
+
+def fake_natural_earth(monkeypatch, failures=0, bodies=None):
+    """Serve the layers' zip files to urlopen, failing ``failures`` times first."""
+    calls = []
+    by_url = {plot.layer_url(layer): layer_zip(layer) for layer in plot.MAP_LAYERS}
+    by_url.update(bodies or {})
+
+    def urlopen(url, timeout):
+        calls.append(url)
+        if len(calls) <= failures:
+            raise urllib.error.URLError("unreachable")
+        return io.BytesIO(by_url[url])
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(plot.time, "sleep", lambda seconds: None)
+    return calls
+
+
+def test_layer_url():
+    assert plot.layer_url(plot.GLOBE_COASTLINE) == (
+        "https://naturalearth.s3.amazonaws.com/110m_physical/ne_110m_coastline.zip"
+    )
+    assert plot.layer_url(plot.STATES) == (
+        "https://naturalearth.s3.amazonaws.com/10m_cultural/"
+        "ne_10m_admin_1_states_provinces_lines.zip"
+    )
+
+
+def test_download_map_data(monkeypatch, tmp_path):
+    calls = fake_natural_earth(monkeypatch)
+    plot.download_map_data(tmp_path)
+    assert calls == [plot.layer_url(layer) for layer in plot.MAP_LAYERS]
+    for layer in plot.MAP_LAYERS:
+        shp = plot.layer_path(tmp_path, layer)
+        assert shp.read_text() == f"{shp.name} data"
+        # Only the shapefile's parts, and no partial files
+        assert sorted(path.name for path in shp.parent.iterdir()) == sorted(
+            path.name
+            for path in shp.parent.iterdir()
+            if path.suffix in plot.SHAPEFILE_PARTS
+        )
+    names = {path.name for path in tmp_path.rglob("*")}
+    assert not any(name.endswith(".partial") or "README" in name for name in names)
+
+
+def test_download_writes_each_shapefile_last(monkeypatch, tmp_path):
+    fake_natural_earth(monkeypatch)
+    order = []
+    replace = Path.replace
+
+    def record(self, target):
+        order.append(Path(target).name)
+        return replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", record)
+    plot.download_map_data(tmp_path)
+    for layer in plot.MAP_LAYERS:
+        stem = f"ne_{layer[0]}_{layer[2]}"
+        mine = [name for name in order if name.startswith(stem + ".")]
+        assert mine[-1] == f"{stem}.shp"
+
+
+def test_download_ignores_other_members(monkeypatch, tmp_path):
+    layer = plot.GLOBE_COASTLINE
+    body = layer_zip(layer, extra=["../escape.shp", "sub/ne_110m_coastline.shp"])
+    fake_natural_earth(monkeypatch, bodies={plot.layer_url(layer): body})
+    plot.download_map_data(tmp_path / "data")
+    assert not (tmp_path / "escape.shp").exists()
+    assert not any(path.name == "sub" for path in (tmp_path / "data").rglob("*"))
+
+
+def test_download_retries(monkeypatch, tmp_path):
+    calls = fake_natural_earth(monkeypatch, failures=2)
+    plot.download_map_data(tmp_path)
+    assert len(calls) == len(plot.MAP_LAYERS) + 2
+
+
+def test_download_gives_up_after_its_attempts(monkeypatch, tmp_path):
+    calls = fake_natural_earth(monkeypatch, failures=3)
+    with pytest.raises(urllib.error.URLError):
+        plot.download_map_data(tmp_path)
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [(b"not a zip", "is not a zip file"), (None, "holds no ne_110m_coastline.shp")],
+)
+def test_download_rejects_a_wrong_file(monkeypatch, tmp_path, body, message):
+    if body is None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("other.shp", "x")
+        body = buffer.getvalue()
+    fake_natural_earth(monkeypatch, bodies={plot.layer_url(plot.GLOBE_COASTLINE): body})
+    with pytest.raises(ValueError, match=message):
+        plot.download_map_data(tmp_path)
+
+
+def test_main_downloads_the_map_data(monkeypatch, tmp_path):
+    fake_natural_earth(monkeypatch)
+    assert plot.main(["--download-map-data", str(tmp_path)]) == 0
+    assert all(plot.layer_path(tmp_path, layer).is_file() for layer in plot.MAP_LAYERS)
+
+
+@pytest.mark.parametrize(
+    "argv", [["--download-map-data"], ["--download-map-data", "a", "b"]]
+)
+def test_main_needs_one_map_data_directory(argv, capsys):
+    assert plot.main(argv) == 1
+    assert "Usage" in capsys.readouterr().err
 
 
 # Drawing

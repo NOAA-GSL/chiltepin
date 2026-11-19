@@ -22,6 +22,8 @@ from chiltepin.agents import agent_action, chiltepin_agent
 from chiltepin.agents.mpas._plot_mesh import (
     EXIT_MISSING_MAP,
     EXIT_VIEW_OF_REGIONAL_MESH,
+    MAP_LAYERS,
+    layer_path,
 )
 from chiltepin.tasks import bash_task, python_task
 
@@ -53,20 +55,6 @@ _MESH_CONFIG_KEYS = frozenset(
 _REGIONAL_METHODS = ("project_hexes", "create_region")
 _PROJECT_HEXES_REQUIRED = ("center_lat", "center_lon", "extent_x_km", "extent_y_km")
 _PROJECT_HEXES_KEYS = frozenset(_PROJECT_HEXES_REQUIRED + ("rotation_degrees",))
-
-# Python packages of the plotting environment. Plots are drawn with matplotlib
-# from the cells' corners, which netCDF4 reads, and cartopy draws the map.
-_PLOT_PACKAGES = ("numpy", "netCDF4", "matplotlib", "cartopy")
-
-# Natural Earth map layers the plots draw, as (resolution, category, name). The
-# 10m layers are for flat maps of regional meshes, and the 110m coastline is for
-# global meshes on the sphere.
-_MAP_LAYERS = (
-    ("10m", "physical", "coastline"),
-    ("10m", "cultural", "admin_0_boundary_lines_land"),
-    ("10m", "cultural", "admin_1_states_provinces_lines"),
-    ("110m", "physical", "coastline"),
-)
 
 # Fixed names in a create_region mesh directory. The points file always names
 # the region "region", so the mesh name never reaches the tool's parser, and the
@@ -825,13 +813,8 @@ class _MeshBehavior:
 
     @property
     def _plot_prefix(self) -> Path:
-        """Directory the plotting environment and map layers are installed in."""
+        """Directory the map layers and matplotlib's settings are kept in."""
         return self.work_dir / "plot"
-
-    @property
-    def _plot_python(self) -> Path:
-        """Python of the environment that draws plots."""
-        return self._plot_prefix / "venv" / "bin" / "python"
 
     @property
     def _map_data_dir(self) -> Path:
@@ -840,14 +823,7 @@ class _MeshBehavior:
 
     def _map_layer_paths(self) -> List[Path]:
         """Paths of the map layer files, where cartopy stores and finds them."""
-        return [
-            self._map_data_dir
-            / "shapefiles"
-            / "natural_earth"
-            / category
-            / f"ne_{resolution}_{name}.shp"
-            for resolution, category, name in _MAP_LAYERS
-        ]
+        return [layer_path(self._map_data_dir, layer) for layer in MAP_LAYERS]
 
     @property
     def _plot_script(self) -> Path:
@@ -859,10 +835,8 @@ class _MeshBehavior:
         return Path(__file__).with_name("_plot_mesh.py")
 
     def _plotting_usable(self) -> bool:
-        """Whether a finished plotting install exists."""
-        return (self._plot_prefix / ".installed").is_file() and self._is_executable(
-            self._plot_python
-        )
+        """Whether the map layers are installed and plotting was checked."""
+        return (self._plot_prefix / ".installed").is_file()
 
     def _mpas_tools_usable(self) -> bool:
         """Whether a finished MPAS-Tools install with runnable programs exists."""
@@ -1055,47 +1029,37 @@ class _MeshBehavior:
     # -------------------------------------------------------------------------
 
     @bash_task
-    def _install_plotting(self) -> str:
-        """Create the plotting environment and download the map layers.
+    def _download_plotting(self) -> str:
+        """Download the map layers the plots draw, on ``service``.
 
-        Runs on ``service``, which can reach PyPI and Natural Earth. Only wheels
-        are installed, so a missing one fails here instead of starting a build
-        that needs system libraries. The map layers are fetched through cartopy
-        itself, so they are stored where it looks for them when it draws. The
-        check on ``compute`` confirms that the environment runs there too.
+        The plotting script downloads them with only the standard library, so
+        the ``service`` resource does not need the ``chiltepin[mpas]`` extra.
         """
         import sys
         import textwrap
 
-        fetch = textwrap.dedent(
-            f"""\
-            import cartopy
-            import cartopy.io.shapereader as shpreader
-            cartopy.config["data_dir"] = {str(self._map_data_dir)!r}
-            for resolution, category, name in {_MAP_LAYERS!r}:
-                print(shpreader.natural_earth(resolution, category, name), flush=True)
-            """
-        )
-        packages = " ".join(self._q(package) for package in _PLOT_PACKAGES)
         return textwrap.dedent(
             f"""\
             set -eu -o pipefail
-            echo "Started install at $(date)"
+            echo "Started download at $(date)"
             echo "Executing on $(hostname)"
             prefix={self._q(self._plot_prefix)}
             # Start from an empty prefix so a failed earlier install leaves nothing
             rm -rf "$prefix"
             mkdir -p "$prefix"
-            {self._q(sys.executable)} -m venv "$prefix/venv"
-            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --no-input --timeout 60 --retries 5 --only-binary=:all: {packages}
-            MPLBACKEND=Agg "$prefix/venv/bin/python" -c {self._q(fetch)}
-            echo "Completed install at $(date)"
+            {self._q(sys.executable)} {self._q(self._plot_script)} --download-map-data {self._q(self._map_data_dir)}
+            echo "Completed download at $(date)"
             """
         )
 
     @bash_task
     def _check_plotting(self) -> str:
-        """Check that the plotting environment runs on ``compute``, and mark it."""
+        """Check that plotting can run on ``compute``, and mark the install.
+
+        Plotting runs with the Python of the tasks on ``compute``, which must
+        have the ``chiltepin[mpas]`` extra.
+        """
+        import sys
         import textwrap
 
         layers = " ".join(self._q(path) for path in self._map_layer_paths())
@@ -1105,9 +1069,8 @@ class _MeshBehavior:
             echo "Started check at $(date)"
             echo "Executing on $(hostname)"
             prefix={self._q(self._plot_prefix)}
-            python="$prefix/venv/bin/python"
-            if ! MPLBACKEND=Agg "$python" -c "import cartopy, matplotlib, netCDF4, numpy"; then
-                echo "The Python environment in $prefix/venv cannot import the plotting packages on this resource. It was created from the Python of the service resource, which must also run on the compute resource." >&2
+            if ! MPLBACKEND=Agg {self._q(sys.executable)} -c "import cartopy, matplotlib, netCDF4, numpy"; then
+                echo "The Python of the compute resource cannot import the plotting packages. Install chiltepin[mpas] in the environment of the compute resource." >&2
                 exit 1
             fi
             for layer in {layers}; do
@@ -1126,11 +1089,12 @@ class _MeshBehavior:
     def _run_plot_mesh(
         self, mesh_path: str, output_path: str, options: List[str]
     ) -> str:
-        """Run the plotting script with the plotting environment's Python.
+        """Run the plotting script with the Python of the task.
 
-        matplotlib keeps its configuration and font cache in the install, not in
-        the home directory.
+        matplotlib keeps its configuration and font cache in ``work_dir/plot``,
+        not in the home directory.
         """
+        import sys
         import textwrap
 
         arguments = " ".join(self._q(option) for option in options)
@@ -1142,7 +1106,7 @@ class _MeshBehavior:
             prefix={self._q(self._plot_prefix)}
             export MPLBACKEND=Agg
             export MPLCONFIGDIR="$prefix/matplotlib"
-            "$prefix/venv/bin/python" {self._q(self._plot_script)} {self._q(mesh_path)} {self._q(output_path)} --map-data {self._q(self._map_data_dir)} {arguments}
+            {self._q(sys.executable)} {self._q(self._plot_script)} {self._q(mesh_path)} {self._q(output_path)} --map-data {self._q(self._map_data_dir)} {arguments}
             echo "Completed plot at $(date)"
             """
         )
@@ -1495,14 +1459,14 @@ class _MeshBehavior:
 
     @agent_action
     async def install_plotting(self) -> None:
-        """Install the Python environment and map layers plots need, unless installed.
+        """Download the map layers plots need and check plotting, unless done.
 
-        Plots are drawn with matplotlib and cartopy, and the mesh is read with
-        netCDF4, none of which are chiltepin dependencies. On the ``service``
-        resource, a virtual environment with them is created in
-        ``work_dir/plot/venv``, and the Natural Earth map layers the plots draw
-        are downloaded to ``work_dir/plot/natural_earth``. A check on the
-        ``compute`` resource confirms that the environment runs there and the
+        Plots are drawn on the ``compute`` resource with numpy, netCDF4,
+        matplotlib and cartopy, which the ``chiltepin[mpas]`` extra installs
+        there. The Natural Earth map layers the plots draw are downloaded to
+        ``work_dir/plot/natural_earth`` on the ``service`` resource, since the
+        ``compute`` resource may have no internet access. A check on the
+        ``compute`` resource then confirms that its Python has the extra and the
         layers are in place. It counts as installed once that check has passed,
         so a restarted agent reuses it. Requests that need it while it is being
         installed wait for that install. If it fails, each waiting request tries
@@ -1513,7 +1477,7 @@ class _MeshBehavior:
         ------
         RuntimeError
             If the ``service`` or ``compute`` resource is not defined, or the
-            install or check fails. The message names the log file.
+            download or check fails. The message names the log file.
         """
         async with self._install_lock:
             # Check the install on disk each time, so a removed or damaged
@@ -1524,9 +1488,9 @@ class _MeshBehavior:
                 await self._run_install(
                     "Plotting",
                     "plot",
-                    self._install_plotting,
+                    self._download_plotting,
                     self._check_plotting,
-                    stages=("install", "check"),
+                    stages=("download", "check"),
                 )
                 if not self._plotting_usable():
                     raise RuntimeError(

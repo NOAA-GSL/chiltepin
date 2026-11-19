@@ -512,10 +512,6 @@ def mock_limited_area_tasks(monkeypatch, behavior, install=None, check=None):
 def mark_plotting_installed(behavior):
     """Create what a finished plotting install leaves in work_dir."""
     prefix = behavior.work_dir / "plot"
-    (prefix / "venv" / "bin").mkdir(parents=True, exist_ok=True)
-    python = prefix / "venv" / "bin" / "python"
-    python.write_text("#!/bin/sh\n")
-    python.chmod(0o755)
     for path in behavior._map_layer_paths():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"shapefile")
@@ -523,17 +519,30 @@ def mark_plotting_installed(behavior):
     return prefix
 
 
-def mock_plotting_tasks(monkeypatch, behavior, install=None, check=None):
-    """Replace the plotting install and check tasks with mocks."""
+def mock_plotting_tasks(monkeypatch, behavior, download=None, check=None):
+    """Replace the map download and plotting check tasks with mocks."""
     return mock_install_tasks(
         monkeypatch,
         behavior,
         "plotting",
         mark_plotting_installed,
-        install,
+        download,
         check,
-        names=("_install_{}", "_check_{}"),
+        names=("_download_{}", "_check_{}"),
     )
+
+
+def fake_python(monkeypatch, tmp_path, body):
+    """Make the tasks' Python a shell script running ``body``.
+
+    Scripts the tasks build name the Python running them, so this stands in for
+    the Python of a resource.
+    """
+    path = tmp_path / "fake-python"
+    path.write_text("#!/bin/sh\n" + body + "\n")
+    path.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(path))
+    return path
 
 
 def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
@@ -1144,27 +1153,26 @@ def test_metis_scripts(tmp_path):
 
 def test_plotting_scripts(tmp_path):
     behavior = _MeshBehavior(str(tmp_path / "work dir"))
-    install = _MeshBehavior._install_plotting.func(behavior)
+    download = _MeshBehavior._download_plotting.func(behavior)
     check = _MeshBehavior._check_plotting.func(behavior)
     prefix = f"{behavior.work_dir}/plot"
-    assert f"prefix='{prefix}'" in install
+    assert f"prefix='{prefix}'" in download
     assert f"prefix='{prefix}'" in check
-    # The environment is made from the Python running the task, from wheels
-    # only, and pip keeps no download cache in the home directory
-    assert f'{shlex.quote(sys.executable)} -m venv "$prefix/venv"' in install
-    pip = next(line for line in install.splitlines() if " -m pip install " in line)
-    assert "--only-binary=:all:" in pip
-    assert "--no-cache-dir" in pip
-    assert pip.endswith(" numpy netCDF4 matplotlib cartopy")
-    # A failed earlier install is removed before anything is installed
-    assert install.index('rm -rf "$prefix"') < install.index(" -m venv ")
-    # The map layers are fetched after the packages are installed
-    assert install.index(" -m pip install ") < install.index(" -c ")
-    assert install.rstrip().endswith('echo "Completed install at $(date)"')
-    # The install is marked only after the imports and every layer are checked
+    # The map layers are downloaded by the plotting script, with the Python of
+    # the task, after a failed earlier install is removed
+    fetch = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(behavior._plot_script))} "
+        f"--download-map-data {shlex.quote(str(behavior._map_data_dir))}"
+    )
+    assert fetch in download
+    assert download.index('rm -rf "$prefix"') < download.index(fetch)
+    assert download.rstrip().endswith('echo "Completed download at $(date)"')
+    # The install is marked only after the imports and every layer are checked,
+    # with the Python of the task
     lines = [line.strip() for line in check.splitlines()]
     marker = lines.index('touch "$prefix/.installed"')
     imports = next(i for i, line in enumerate(lines) if "import cartopy" in line)
+    assert shlex.quote(sys.executable) in lines[imports]
     layers = next(i for i, line in enumerate(lines) if line.startswith("for layer"))
     assert imports < layers < marker
     for path in behavior._map_layer_paths():
@@ -1172,48 +1180,35 @@ def test_plotting_scripts(tmp_path):
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
 
 
-def test_plotting_install_fetches_each_layer_into_the_map_directory(tmp_path, behavior):
-    """Run the install's fetch step against a stand-in for cartopy."""
-    install = _MeshBehavior._install_plotting.func(behavior)
-    # The fetch command's quoted code spans several lines
-    start = install.index('"$prefix/venv/bin/python" -c ')
-    end = install.index('echo "Completed install', start)
-    code = shlex.split(install[start:end])[-1]
-    fake = tmp_path / "fake" / "cartopy"
-    (fake / "io").mkdir(parents=True)
+def test_plotting_download_writes_the_layers(monkeypatch, tmp_path, behavior):
+    """Run the download script with a stand-in Python that writes the layers."""
     record = tmp_path / "record"
-    (fake / "__init__.py").write_text("config = {}\n")
-    (fake / "io" / "__init__.py").write_text("")
-    (fake / "io" / "shapereader.py").write_text(
-        "import cartopy\n"
-        "def natural_earth(resolution, category, name):\n"
-        f"    with open({str(record)!r}, 'a') as f:\n"
-        "        f.write(f\"{cartopy.config['data_dir']} {resolution} {category} {name}\\n\")\n"
-        "    return name\n"
+    fake_python(
+        monkeypatch,
+        tmp_path,
+        f'printf "%s\\n" "$@" > {shlex.quote(str(record))}',
     )
-    done = subprocess.run(
-        [sys.executable, "-c", code],
-        env={"PYTHONPATH": str(tmp_path / "fake")},
-        capture_output=True,
-        text=True,
-    )
+    prefix = behavior.work_dir / "plot"
+    (prefix / "stale").mkdir(parents=True)
+    script = _MeshBehavior._download_plotting.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    data_dir = str(behavior.work_dir / "plot" / "natural_earth")
     assert record.read_text().splitlines() == [
-        f"{data_dir} 10m physical coastline",
-        f"{data_dir} 10m cultural admin_0_boundary_lines_land",
-        f"{data_dir} 10m cultural admin_1_states_provinces_lines",
-        f"{data_dir} 110m physical coastline",
+        str(behavior._plot_script),
+        "--download-map-data",
+        str(behavior._map_data_dir),
     ]
+    # An earlier install is gone
+    assert not (prefix / "stale").exists()
 
 
 @pytest.mark.parametrize("problem", [None, "imports", "missing_layer", "empty_layer"])
-def test_plotting_check_marks_only_a_working_install(tmp_path, behavior, problem):
+def test_plotting_check_marks_only_a_working_install(
+    monkeypatch, tmp_path, behavior, problem
+):
     prefix = mark_plotting_installed(behavior)
     (prefix / ".installed").unlink()
-    (prefix / "venv" / "bin" / "python").write_text(
-        "#!/bin/sh\nexit 1\n" if problem == "imports" else "#!/bin/sh\nexit 0\n"
-    )
+    fake_python(monkeypatch, tmp_path, "exit 1" if problem == "imports" else "exit 0")
     layer = behavior._map_layer_paths()[2]
     if problem == "missing_layer":
         layer.unlink()
@@ -1224,9 +1219,19 @@ def test_plotting_check_marks_only_a_working_install(tmp_path, behavior, problem
     assert (done.returncode == 0) == (problem is None)
     assert (prefix / ".installed").is_file() == (problem is None)
     if problem == "imports":
-        assert "cannot import the plotting packages" in done.stderr
+        assert "Install chiltepin[mpas]" in done.stderr
     elif problem is not None:
         assert f"Map layer {layer} is missing" in done.stderr
+
+
+def test_plotting_check_imports_with_the_real_packages(monkeypatch, tmp_path, behavior):
+    # The tests have the chiltepin[mpas] extra, so the real check passes
+    prefix = mark_plotting_installed(behavior)
+    (prefix / ".installed").unlink()
+    script = _MeshBehavior._check_plotting.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert (prefix / ".installed").is_file()
 
 
 def test_map_layers_are_where_cartopy_stores_them(behavior):
@@ -1753,17 +1758,9 @@ async def test_install_plotting_reuses_a_finished_install(monkeypatch, behavior)
     check.assert_not_called()
 
 
-@pytest.mark.parametrize("damage", ["marker", "python", "not_executable"])
-async def test_install_plotting_replaces_a_damaged_install(
-    monkeypatch, behavior, damage
-):
+async def test_install_plotting_replaces_an_unfinished_install(monkeypatch, behavior):
     prefix = mark_plotting_installed(behavior)
-    if damage == "marker":
-        (prefix / ".installed").unlink()
-    elif damage == "python":
-        (prefix / "venv" / "bin" / "python").unlink()
-    else:
-        (prefix / "venv" / "bin" / "python").chmod(0o644)
+    (prefix / ".installed").unlink()
     install, check = mock_plotting_tasks(monkeypatch, behavior)
     await behavior.install_plotting()
     install.assert_called_once()
@@ -1778,8 +1775,8 @@ async def test_install_plotting_runs_on_service_and_checks_on_compute(
     await behavior.install_plotting()
     install.assert_called_once_with(
         executor=["service"],
-        stdout=str(behavior.log_dir / "plot_install.stdout"),
-        stderr=str(behavior.log_dir / "plot_install.stderr"),
+        stdout=str(behavior.log_dir / "plot_download.stdout"),
+        stderr=str(behavior.log_dir / "plot_download.stderr"),
     )
     check.assert_called_once_with(
         executor=["compute"],
@@ -1806,7 +1803,7 @@ async def test_concurrent_plotting_installs_run_once(monkeypatch, behavior):
     assert check.call_count == 1
 
 
-@pytest.mark.parametrize("stage", ["install", "check"])
+@pytest.mark.parametrize("stage", ["download", "check"])
 async def test_failed_plotting_install_is_reported_and_retried(
     monkeypatch, behavior, stage
 ):
@@ -1814,7 +1811,7 @@ async def test_failed_plotting_install_is_reported_and_retried(
     install, check = mock_plotting_tasks(
         monkeypatch,
         behavior,
-        install=failure if stage == "install" else None,
+        download=failure if stage == "download" else None,
         check=failure if stage == "check" else None,
     )
     with pytest.raises(
@@ -1835,7 +1832,9 @@ async def test_failed_plotting_install_is_reported_and_retried(
 
 
 async def test_plotting_check_that_leaves_no_install_is_an_error(monkeypatch, behavior):
-    monkeypatch.setattr(behavior, "_install_plotting", Mock(return_value=done_future()))
+    monkeypatch.setattr(
+        behavior, "_download_plotting", Mock(return_value=done_future())
+    )
     monkeypatch.setattr(behavior, "_check_plotting", Mock(return_value=done_future()))
     with pytest.raises(RuntimeError, match="is not usable"):
         await behavior.install_plotting()
@@ -2118,16 +2117,17 @@ async def test_plot_mesh_needs_compute(monkeypatch, behavior, plotting):
 @pytest.mark.parametrize(
     "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME", "a b"]
 )
-def test_plot_script_runs_without_expansion(tmp_path, behavior, name):
+def test_plot_script_runs_without_expansion(monkeypatch, tmp_path, behavior, name):
     pwned = tmp_path / "PWNED"
     directory = tmp_path / name.format(pwn=pwned)
     directory.mkdir(parents=True)
     record = tmp_path / "record"
     prefix = mark_plotting_installed(behavior)
-    (prefix / "venv" / "bin" / "python").write_text(
-        "#!/bin/sh\n"
+    fake_python(
+        monkeypatch,
+        tmp_path,
         f'{{ echo "$MPLBACKEND $MPLCONFIGDIR"; for a in "$@"; do printf "%s\\n" "$a"; done; }}'
-        f" > {shlex.quote(str(record))}\n"
+        f" > {shlex.quote(str(record))}",
     )
     mesh, output = str(directory / "m.static.nc"), str(directory / ".m.1.png")
     options = ["--title", name, "--zoom", "2.0"]
@@ -2147,9 +2147,9 @@ def test_plot_script_runs_without_expansion(tmp_path, behavior, name):
 
 
 @pytest.mark.parametrize("code", [2, 3, 5])
-def test_plot_script_passes_the_exit_code_on(tmp_path, behavior, code):
-    prefix = mark_plotting_installed(behavior)
-    (prefix / "venv" / "bin" / "python").write_text(f"#!/bin/sh\nexit {code}\n")
+def test_plot_script_passes_the_exit_code_on(monkeypatch, tmp_path, behavior, code):
+    mark_plotting_installed(behavior)
+    fake_python(monkeypatch, tmp_path, f"exit {code}")
     script = _MeshBehavior._run_plot_mesh.func(
         behavior, str(tmp_path / "m.nc"), str(tmp_path / ".m.png"), []
     )
