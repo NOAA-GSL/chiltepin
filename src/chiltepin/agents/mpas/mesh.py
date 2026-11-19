@@ -580,6 +580,11 @@ class _MeshBehavior:
         r = cls._real
         ((shape, block),) = config.items()
         lines = ["Name: region"]
+        # Any angle is written within one turn. A tiny negative angle gives
+        # exactly 360.0 from %, which is the same direction as 0.
+        orientation = block.get("orientation_degrees", 0) % 360
+        if orientation >= 360:
+            orientation = 0.0
         if shape == "circle":
             lines += [
                 "Type: circle",
@@ -592,7 +597,7 @@ class _MeshBehavior:
                 f"Point: {r(block['center_lat'])}, {r(block['center_lon'])}",
                 f"Semi-major-axis: {r(block['semi_major_axis_km'] * 1000)}",
                 f"Semi-minor-axis: {r(block['semi_minor_axis_km'] * 1000)}",
-                f"Orientation-angle: {r(block.get('orientation_degrees', 0) % 360)}",
+                f"Orientation-angle: {r(orientation)}",
             ]
         elif shape == "polygon":
             lines += [

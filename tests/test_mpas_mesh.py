@@ -873,7 +873,14 @@ def test_create_region_sizes_must_stay_within_half_the_globe(behavior, shape, ke
 
 @pytest.mark.parametrize(
     ("angle", "written"),
-    [(390, "30.0"), (-330, "30.0"), (720, "0.0"), (-0.0, "0.0"), (359.5, "359.5")],
+    [
+        (390, "30.0"),
+        (-330, "30.0"),
+        (720, "0.0"),
+        (-0.0, "0.0"),
+        (359.5, "359.5"),
+        (-1e-20, "0.0"),
+    ],
 )
 def test_create_region_orientation_is_written_as_one_turn(angle, written):
     block = {**SHAPES["ellipse"], "orientation_degrees": angle}
