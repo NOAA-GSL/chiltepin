@@ -50,10 +50,9 @@ _REGIONAL_METHODS = ("project_hexes", "create_region")
 _PROJECT_HEXES_REQUIRED = ("center_lat", "center_lon", "extent_x_km", "extent_y_km")
 _PROJECT_HEXES_KEYS = frozenset(_PROJECT_HEXES_REQUIRED + ("rotation_degrees",))
 
-# Python packages of the plotting environment. The two uxarray extras bring in
-# cartopy, geoviews, holoviews and matplotlib, and uxarray cannot plot without
-# them.
-_PLOT_PACKAGES = ("uxarray[viz,geo]", "Pillow")
+# Python packages of the plotting environment. Plots are drawn with matplotlib
+# from the cells' corners, which netCDF4 reads, and cartopy draws the map.
+_PLOT_PACKAGES = ("numpy", "netCDF4", "matplotlib", "cartopy")
 
 # Natural Earth map layers the plots draw, as (resolution, category, name). The
 # 10m layers are for flat maps of regional meshes, and the 110m coastline is for
@@ -1094,7 +1093,7 @@ class _MeshBehavior:
             echo "Executing on $(hostname)"
             prefix={self._q(self._plot_prefix)}
             python="$prefix/venv/bin/python"
-            if ! MPLBACKEND=Agg "$python" -c "import cartopy, geoviews, holoviews, matplotlib, netCDF4, PIL, uxarray"; then
+            if ! MPLBACKEND=Agg "$python" -c "import cartopy, matplotlib, netCDF4, numpy"; then
                 echo "The Python environment in $prefix/venv cannot import the plotting packages on this resource. It was created from the Python of the service resource, which must also run on the compute resource." >&2
                 exit 1
             fi
@@ -1460,8 +1459,8 @@ class _MeshBehavior:
     async def install_plotting(self) -> None:
         """Install the Python environment and map layers plots need, unless installed.
 
-        Plots are drawn with uxarray, geoviews, holoviews, matplotlib and
-        cartopy, which are not chiltepin dependencies. On the ``service``
+        Plots are drawn with matplotlib and cartopy, and the mesh is read with
+        netCDF4, none of which are chiltepin dependencies. On the ``service``
         resource, a virtual environment with them is created in
         ``work_dir/plot/venv``, and the Natural Earth map layers the plots draw
         are downloaded to ``work_dir/plot/natural_earth``. A check on the

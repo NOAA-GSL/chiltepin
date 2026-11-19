@@ -1155,7 +1155,7 @@ def test_plotting_scripts(tmp_path):
     pip = next(line for line in install.splitlines() if " -m pip install " in line)
     assert "--only-binary=:all:" in pip
     assert "--no-cache-dir" in pip
-    assert pip.endswith("'uxarray[viz,geo]' Pillow")
+    assert pip.endswith(" numpy netCDF4 matplotlib cartopy")
     # A failed earlier install is removed before anything is installed
     assert install.index('rm -rf "$prefix"') < install.index(" -m venv ")
     # The map layers are fetched after the packages are installed
