@@ -26,7 +26,12 @@ from parsl.errors import NoDataFlowKernelError
 from chiltepin import AgentRuntime, Workflow
 from chiltepin.agents import mpas
 from chiltepin.agents.mpas import MeshAgent
+from chiltepin.agents.mpas import _plot_mesh as plot_script
 from chiltepin.agents.mpas import mesh as mesh_module
+from chiltepin.agents.mpas._plot_mesh import (
+    EXIT_MISSING_MAP,
+    EXIT_VIEW_OF_REGIONAL_MESH,
+)
 from chiltepin.agents.mpas.mesh import _MeshBehavior
 
 RESOLUTIONS = {
@@ -1151,13 +1156,15 @@ def test_plotting_scripts(tmp_path):
     assert f"prefix='{prefix}'" in download
     assert f"prefix='{prefix}'" in check
     # The map layers are downloaded by the plotting script, with the Python of
-    # the task, after a failed earlier install is removed
+    # the task, after the install's marker is removed. Nothing else is removed,
+    # so plots running meanwhile keep their map layers.
     fetch = (
         f"{shlex.quote(sys.executable)} {shlex.quote(str(behavior._plot_script))} "
         f"--download-map-data {shlex.quote(str(behavior._map_data_dir))}"
     )
     assert fetch in download
-    assert download.index('rm -rf "$prefix"') < download.index(fetch)
+    assert download.index('rm -f "$prefix/.installed"') < download.index(fetch)
+    assert "rm -rf" not in download
     assert download.rstrip().endswith('echo "Completed download at $(date)"')
     # The install is marked only after the imports and every layer are checked,
     # with the Python of the task
@@ -1181,7 +1188,8 @@ def test_plotting_download_writes_the_layers(monkeypatch, tmp_path, behavior):
         f'printf "%s\\n" "$@" > {shlex.quote(str(record))}',
     )
     prefix = behavior.work_dir / "plot"
-    (prefix / "stale").mkdir(parents=True)
+    (prefix / "matplotlib").mkdir(parents=True)
+    (prefix / ".installed").touch()
     script = _MeshBehavior._download_plotting.func(behavior)
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
@@ -1190,8 +1198,9 @@ def test_plotting_download_writes_the_layers(monkeypatch, tmp_path, behavior):
         "--download-map-data",
         str(behavior._map_data_dir),
     ]
-    # An earlier install is gone
-    assert not (prefix / "stale").exists()
+    # The earlier install no longer counts, but its files are kept
+    assert not (prefix / ".installed").exists()
+    assert (prefix / "matplotlib").is_dir()
 
 
 @pytest.mark.parametrize("problem", [None, "imports", "missing_layer", "empty_layer"])
@@ -1903,7 +1912,7 @@ def fake_plot_task(behavior, monkeypatch, code=0, writes=True):
 
     def run(mesh_path, output_path, options, **kwargs):
         assert Path(mesh_path).is_file()
-        if writes and code != 3:
+        if writes and code != EXIT_VIEW_OF_REGIONAL_MESH:
             Path(output_path).write_bytes(b"\x89PNG new image")
         if code:
             return done_future(error=BashExitFailure("plot", code))
@@ -1974,14 +1983,29 @@ async def test_plot_mesh_passes_the_view(monkeypatch, behavior, plotting):
         str(plotting), title="A title", zoom=4, center_lat=50, center_lon=-10.5
     )
     assert task.call_args.args[2] == [
-        "--title",
-        "A title",
-        "--zoom",
-        "4.0",
-        "--center",
-        "50.0",
-        "-10.5",
+        "--title=A title",
+        "--zoom=4.0",
+        "--center-lat=50.0",
+        "--center-lon=-10.5",
     ]
+
+
+async def test_plot_mesh_passes_values_starting_with_a_dash(
+    monkeypatch, behavior, plotting
+):
+    task = fake_plot_task(behavior, monkeypatch)
+    await behavior.plot_mesh(
+        str(plotting), title="-t --zoom 3", center_lat=-1e-05, center_lon=-0.0
+    )
+    options = task.call_args.args[2]
+    assert options == [
+        "--title=-t --zoom 3",
+        "--center-lat=-1e-05",
+        "--center-lon=-0.0",
+    ]
+    # As the script reads them
+    args = plot_script.parse_args(["m.nc", "o.png", "--map-data", "/d", *options])
+    assert (args.title, args.center_lat, args.center_lon) == ("-t --zoom 3", -1e-05, 0)
 
 
 async def test_plot_mesh_makes_relative_paths_absolute(monkeypatch, behavior, plotting):
@@ -2036,7 +2060,7 @@ async def test_plot_without_some_map_layers_still_gives_an_image(
 ):
     warning = Mock()
     monkeypatch.setattr(mesh_module.logger, "warning", warning)
-    task = fake_plot_task(behavior, monkeypatch, code=2)
+    task = fake_plot_task(behavior, monkeypatch, code=EXIT_MISSING_MAP)
     image = await behavior.plot_mesh(str(plotting))
     assert Path(image).read_bytes() == b"\x89PNG new image"
     warning.assert_called_once()
@@ -2049,7 +2073,7 @@ async def test_plot_without_some_map_layers_still_gives_an_image(
 
 async def test_view_of_a_regional_mesh_is_rejected(monkeypatch, behavior, plotting):
     plotting.with_name("cut.png").write_bytes(b"old")
-    fake_plot_task(behavior, monkeypatch, code=3)
+    fake_plot_task(behavior, monkeypatch, code=EXIT_VIEW_OF_REGIONAL_MESH)
     with pytest.raises(ValueError, match="apply only to global meshes, and .* is"):
         await behavior.plot_mesh(str(plotting), zoom=2)
     assert plotting.with_name("cut.png").read_bytes() == b"old"
@@ -2122,7 +2146,7 @@ def test_plot_script_runs_without_expansion(monkeypatch, tmp_path, behavior, nam
         f" > {shlex.quote(str(record))}",
     )
     mesh, output = str(directory / "m.static.nc"), str(directory / ".m.1.png")
-    options = ["--title", name, "--zoom", "2.0"]
+    options = [f"--title={name}", "--zoom=2.0"]
     script = _MeshBehavior._run_plot_mesh.func(behavior, mesh, output, options)
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
@@ -2138,7 +2162,7 @@ def test_plot_script_runs_without_expansion(monkeypatch, tmp_path, behavior, nam
     ]
 
 
-@pytest.mark.parametrize("code", [2, 3, 5])
+@pytest.mark.parametrize("code", [1, 2, EXIT_MISSING_MAP, EXIT_VIEW_OF_REGIONAL_MESH])
 def test_plot_script_passes_the_exit_code_on(monkeypatch, tmp_path, behavior, code):
     mark_plotting_installed(behavior)
     fake_python(monkeypatch, tmp_path, f"exit {code}")
@@ -2214,7 +2238,7 @@ async def test_plot_without_some_map_layers_reports_it(
 ):
     output, _ = mesh_download
     mark_plotting_installed(behavior)
-    fake_plot_task(behavior, monkeypatch, code=2)
+    fake_plot_task(behavior, monkeypatch, code=EXIT_MISSING_MAP)
     config = {"resolution": "480km", "name": "g", "plot": True}
     result = await behavior.generate_mesh(config, str(output))
     assert result["plot"] == str(output / "g" / "g.png")

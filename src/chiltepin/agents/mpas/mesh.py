@@ -1034,6 +1034,10 @@ class _MeshBehavior:
 
         The plotting script downloads them with only the standard library, so
         the ``service`` resource does not need the ``chiltepin[mpas]`` extra.
+        Layers already downloaded are kept, and nothing is removed, so plots
+        running while plotting is installed again keep their map layers and
+        matplotlib settings. Removing ``work_dir/plot`` downloads every layer
+        again.
         """
         import sys
         import textwrap
@@ -1044,9 +1048,9 @@ class _MeshBehavior:
             echo "Started download at $(date)"
             echo "Executing on $(hostname)"
             prefix={self._q(self._plot_prefix)}
-            # Start from an empty prefix so a failed earlier install leaves nothing
-            rm -rf "$prefix"
+            # The install counts again only once the check passes
             mkdir -p "$prefix"
+            rm -f "$prefix/.installed"
             {self._q(sys.executable)} {self._q(self._plot_script)} --download-map-data {self._q(self._map_data_dir)}
             echo "Completed download at $(date)"
             """
@@ -1505,7 +1509,8 @@ class _MeshBehavior:
         """Return the image path of a mesh: ``<name>.png`` next to it.
 
         ``conus.static.nc`` gives ``conus.png``, and ``x1.2562.grid.nc`` gives
-        ``x1.2562.grid.png``.
+        ``x1.2562.grid.png``. Meshes whose names differ only by these endings,
+        such as ``a.nc`` and ``a.static.nc`` in one directory, share an image.
         """
         name = mesh.name.removesuffix(".nc").removesuffix(".static")
         return mesh.with_name(f"{name}.png")
@@ -1548,13 +1553,15 @@ class _MeshBehavior:
         call_id = uuid.uuid4().hex[:8]
         log = self.log_dir / f"plot_mesh.{call_id}"
         partial = output.with_name(f".{output.stem}.{call_id}.png")
+        # One argument per option, so values starting with "-" stay values
         options: List[str] = []
         if title is not None:
-            options += ["--title", title]
+            options.append(f"--title={title}")
         if zoom is not None:
-            options += ["--zoom", repr(float(zoom))]
+            options.append(f"--zoom={float(zoom)!r}")
         if center_lat is not None:
-            options += ["--center", repr(float(center_lat)), repr(float(center_lon))]
+            options.append(f"--center-lat={float(center_lat)!r}")
+            options.append(f"--center-lon={float(center_lon)!r}")
 
         warning = None
         future = self._run_plot_mesh(

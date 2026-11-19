@@ -394,6 +394,8 @@ Actions
    example ``conus.png`` for ``conus.static.nc``, and replaces an earlier one. It
    is written under a temporary name and renamed when complete, so a failed plot
    keeps an earlier image. Plotting is prepared first if it is not already.
+   Meshes whose names differ only by ``.static`` or ``.nc``, such as ``a.nc``
+   and ``a.static.nc`` in one directory, are drawn to the same ``a.png``.
 
    * ``mesh_path``: Path to a mesh's static or grid file. A relative path or one
      starting with ``~`` is made absolute on the agent.
@@ -403,13 +405,18 @@ Actions
      ``ValueError``, without drawing.
 
    A mesh is regional if any of its cells is in a boundary layer, as every
-   ``project_hexes`` and ``create_region`` mesh is, and global otherwise.
+   ``project_hexes`` and ``create_region`` mesh is, or if its cells cover less
+   than 99.9% of the sphere, and global otherwise.
 
    * A regional mesh is drawn on a flat map shaped like the region, with its
      cells colored by boundary layer, from white for the interior to purple for
      layer 7, on a fixed scale with a color bar. Coastlines and country borders
      are drawn over it, and state and province lines too on a map less than 60
-     degrees across over North America, or 30 degrees elsewhere.
+     degrees across over North America, or 30 degrees elsewhere. A region
+     across the 180th meridian is drawn in one piece, and one around a pole as
+     a band up to the pole. The whole region is drawn at once, which takes
+     about 2.5 GB of memory on the ``compute`` resource for each million
+     cells, so the largest regional meshes may not fit.
    * A global mesh is drawn on a sphere with coastlines, seen from above
      ``center_lat`` and ``center_lon``, by default 0N 0E. ``zoom`` is greater
      than 0. The default makes the globe fill the image, and a larger zoom shows

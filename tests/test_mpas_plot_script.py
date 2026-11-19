@@ -7,6 +7,7 @@ meshes in-process: the 480km global mesh, and regional meshes made from it.
 The integration test runs the script in the agent's own environment.
 """
 
+import http.client
 import io
 import math
 import subprocess
@@ -53,17 +54,41 @@ def test_script_help_runs_without_plotting_packages():
 
 def test_parse_args():
     args = plot.parse_args(
-        ["m.nc", "out.png", "--map-data", "/d", "--title", "T", "--zoom", "2.5"]
-        + ["--center", "50", "-10.5"]
+        ["m.nc", "out.png", "--map-data", "/d", "--title=T", "--zoom=2.5"]
+        + ["--center-lat=50.0", "--center-lon=-10.5"]
     )
     assert args.mesh == Path("m.nc")
     assert args.output == Path("out.png")
     assert args.map_data == Path("/d")
     assert args.title == "T"
     assert args.zoom == 2.5
-    assert args.center == [50.0, -10.5]
+    assert (args.center_lat, args.center_lon) == (50.0, -10.5)
     defaults = plot.parse_args(["m.nc", "out.png", "--map-data", "/d"])
-    assert (defaults.title, defaults.zoom, defaults.center) == (None, None, None)
+    assert (defaults.title, defaults.zoom, defaults.center_lat) == (None, None, None)
+
+
+def test_parse_args_reads_values_starting_with_a_dash():
+    # As the agent passes them, which argparse could otherwise take for options
+    args = plot.parse_args(
+        ["m.nc", "out.png", "--map-data", "/d", "--title=-x --zoom 3"]
+        + [f"--center-lat={-1e-05!r}", f"--center-lon={-1e-05!r}"]
+    )
+    assert args.title == "-x --zoom 3"
+    assert (args.center_lat, args.center_lon) == (-1e-05, -1e-05)
+
+
+@pytest.mark.parametrize("option", ["--center-lat=1", "--center-lon=1"])
+def test_parse_args_needs_both_center_coordinates(option, capsys):
+    with pytest.raises(SystemExit) as error:
+        plot.parse_args(["m.nc", "out.png", "--map-data", "/d", option])
+    assert error.value.code == 2
+    assert "must be given together" in capsys.readouterr().err
+
+
+def test_exit_codes_differ_from_those_of_python_and_argparse():
+    codes = {plot.EXIT_MISSING_MAP, plot.EXIT_VIEW_OF_REGIONAL_MESH}
+    assert len(codes) == 2
+    assert not codes & {0, 1, 2}
 
 
 def test_parse_args_requires_the_map_data():
@@ -150,8 +175,8 @@ def test_sphere_coastline_is_detailed_when_zoomed_in():
 
 
 def test_view_center():
-    assert plot.view_center(None) == (0.0, 0.0)
-    assert plot.view_center([50, -10]) == (50.0, -10.0)
+    assert plot.view_center(None, None) == (0.0, 0.0)
+    assert plot.view_center(50, -10) == (50.0, -10.0)
 
 
 @pytest.mark.parametrize(
@@ -222,8 +247,11 @@ def layer_zip(layer, extra=()):
     return buffer.getvalue()
 
 
-def fake_natural_earth(monkeypatch, failures=0, bodies=None):
-    """Serve the layers' zip files to urlopen, failing ``failures`` times first."""
+def fake_natural_earth(monkeypatch, failures=0, bodies=None, error=None):
+    """Serve the layers' zip files to urlopen, failing ``failures`` times first.
+
+    A failure raises ``error``, by default an unreachable server.
+    """
     calls = []
     by_url = {plot.layer_url(layer): layer_zip(layer) for layer in plot.MAP_LAYERS}
     by_url.update(bodies or {})
@@ -231,7 +259,7 @@ def fake_natural_earth(monkeypatch, failures=0, bodies=None):
     def urlopen(url, timeout):
         calls.append(url)
         if len(calls) <= failures:
-            raise urllib.error.URLError("unreachable")
+            raise error or urllib.error.URLError("unreachable")
         return io.BytesIO(by_url[url])
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
@@ -296,6 +324,51 @@ def test_download_retries(monkeypatch, tmp_path):
     calls = fake_natural_earth(monkeypatch, failures=2)
     plot.download_map_data(tmp_path)
     assert len(calls) == len(plot.MAP_LAYERS) + 2
+
+
+def http_error(code):
+    return urllib.error.HTTPError("https://x", code, "error", {}, None)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [http.client.IncompleteRead(b"part", 10), http_error(503), TimeoutError()],
+    ids=["incomplete", "503", "timeout"],
+)
+def test_download_retries_transient_failures(monkeypatch, tmp_path, error):
+    calls = fake_natural_earth(monkeypatch, failures=2, error=error)
+    plot.download_map_data(tmp_path)
+    assert len(calls) == len(plot.MAP_LAYERS) + 2
+
+
+def test_download_does_not_retry_a_wrong_request(monkeypatch, tmp_path):
+    calls = fake_natural_earth(monkeypatch, failures=1, error=http_error(404))
+    with pytest.raises(urllib.error.HTTPError):
+        plot.download_map_data(tmp_path)
+    assert len(calls) == 1
+
+
+def test_download_gives_up_on_a_server_error(monkeypatch, tmp_path):
+    calls = fake_natural_earth(monkeypatch, failures=3, error=http_error(500))
+    with pytest.raises(urllib.error.HTTPError):
+        plot.download_map_data(tmp_path)
+    assert len(calls) == 3
+
+
+def test_download_keeps_layers_already_there(monkeypatch, tmp_path):
+    kept = plot.layer_path(tmp_path, plot.COASTLINE)
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"kept")
+    # An empty layer is downloaded again
+    empty = plot.layer_path(tmp_path, plot.STATES)
+    empty.parent.mkdir(parents=True, exist_ok=True)
+    empty.write_bytes(b"")
+    calls = fake_natural_earth(monkeypatch)
+    plot.download_map_data(tmp_path)
+    assert plot.layer_url(plot.COASTLINE) not in calls
+    assert plot.layer_url(plot.STATES) in calls
+    assert kept.read_bytes() == b"kept"
+    assert empty.read_text() == f"{empty.name} data"
 
 
 def test_download_gives_up_after_its_attempts(monkeypatch, tmp_path):
@@ -373,12 +446,24 @@ def global_mesh(tmp_path_factory):
     return directory / "x1.2562.static.nc"
 
 
-def regional_copy(global_mesh, path, keep):
+def regional_copy(
+    global_mesh,
+    path,
+    keep,
+    layer=None,
+    mask=True,
+    area_scale=1.0,
+    radius=True,
+    padding=None,
+):
     """Write a regional mesh with the global mesh's cells for which ``keep`` is true.
 
-    Cells are colored by boundary layer, from 1 at the edge of the kept cells to
-    7, as a cut from a global mesh would be. Vertices are kept whole, since the
-    plot only looks up the corners of its cells.
+    Cells are in boundary layers 1 to 7, 40 cells each, and the rest are
+    interior, unless ``layer`` puts every cell in one. ``mask=False`` leaves out
+    ``bdyMaskCell``, ``radius=False`` leaves out ``sphere_radius``, and
+    ``area_scale`` scales the cell areas. ``padding`` replaces the unused
+    entries of ``verticesOnCell``. Vertices are kept whole, since the plot only
+    looks up the corners of its cells.
     """
     with Dataset(global_mesh) as source:
         lat = np.degrees(source["latCell"][:])
@@ -388,22 +473,35 @@ def regional_copy(global_mesh, path, keep):
         layers[: min(len(cells), 7 * 40)] = np.repeat(np.arange(1, 8), 40)[
             : min(len(cells), 280)
         ]
+        if layer is not None:
+            layers[:] = layer
+        on_cell = source["verticesOnCell"][cells]
+        if padding is not None:
+            unused = (
+                np.arange(on_cell.shape[1]) >= source["nEdgesOnCell"][cells][:, None]
+            )
+            on_cell[unused] = padding
         with Dataset(path, "w") as target:
-            target.sphere_radius = source.sphere_radius
+            if radius:
+                target.sphere_radius = source.sphere_radius
             target.createDimension("nCells", len(cells))
             target.createDimension("nVertices", source.dimensions["nVertices"].size)
             target.createDimension("maxEdges", source.dimensions["maxEdges"].size)
             for name in ("latVertex", "lonVertex"):
                 target.createVariable(name, "f8", ("nVertices",))[:] = source[name][:]
-            for name in ("latCell", "lonCell", "areaCell"):
+            for name in ("latCell", "lonCell", "xCell", "yCell", "zCell"):
                 target.createVariable(name, "f8", ("nCells",))[:] = source[name][cells]
+            target.createVariable("areaCell", "f8", ("nCells",))[:] = (
+                source["areaCell"][cells] * area_scale
+            )
             target.createVariable("nEdgesOnCell", "i4", ("nCells",))[:] = source[
                 "nEdgesOnCell"
             ][cells]
             target.createVariable("verticesOnCell", "i4", ("nCells", "maxEdges"))[:] = (
-                source["verticesOnCell"][cells]
+                on_cell
             )
-            target.createVariable("bdyMaskCell", "i4", ("nCells",))[:] = layers
+            if mask:
+                target.createVariable("bdyMaskCell", "i4", ("nCells",))[:] = layers
     return path
 
 
@@ -460,7 +558,7 @@ def test_global_mesh_is_not_regional(global_mesh, regional_mesh, band_mesh):
     assert plot.is_regional(band_mesh)
 
 
-def test_mesh_without_boundary_layers_is_global(tmp_path):
+def test_mesh_without_boundary_layers_or_areas_is_global(tmp_path):
     path = tmp_path / "bare.nc"
     with Dataset(path, "w") as ds:
         ds.createDimension("nCells", 3)
@@ -468,9 +566,41 @@ def test_mesh_without_boundary_layers_is_global(tmp_path):
     assert not plot.is_regional(path)
 
 
+@pytest.mark.parametrize("radius", [True, False], ids=["radius", "no-radius"])
+def test_region_without_boundary_layers_is_regional(tmp_path, global_mesh, radius):
+    # By the part of the sphere its cells cover, with the sphere's radius from
+    # the file or from the distance of its cells from the center
+    region = regional_copy(
+        global_mesh,
+        tmp_path / "r.nc",
+        lambda lat, lon: lat > -60,
+        mask=False,
+        radius=radius,
+    )
+    assert plot.is_regional(region)
+    whole = regional_copy(
+        global_mesh,
+        tmp_path / "g.nc",
+        lambda lat, lon: lat > -91,
+        mask=False,
+        radius=radius,
+    )
+    assert not plot.is_regional(whole)
+
+
+def test_sphere_radius(tmp_path, global_mesh):
+    with Dataset(global_mesh) as ds:
+        assert plot.sphere_radius(ds) == ds.sphere_radius == 6371229.0
+    bare = regional_copy(
+        global_mesh, tmp_path / "r.nc", lambda a, b: a > 0, radius=False
+    )
+    with Dataset(bare) as ds:
+        assert plot.sphere_radius(ds) == pytest.approx(6371229.0)
+
+
 def test_draw_global_mesh_on_a_sphere(tmp_path, global_mesh, map_data):
     output = tmp_path / "g.png"
-    assert run_main(global_mesh, output, map_data, "--title", "Global") == 0
+    assert run_main(global_mesh, output, map_data, "--title=Global") == 0
     with Image.open(output) as image:
         assert image.size == (1500, 1590)
     # 480km cells are large enough for edges, which leave about 110000 light gray
@@ -486,18 +616,17 @@ def test_small_cells_on_a_sphere_have_no_edges(tmp_path, global_mesh, map_data):
     # Zoomed far out, the cells are a few pixels across, and only the globe's
     # outline and coastlines leave some gray pixels where they blend with white.
     # The edges of the near globe leave about a hundred times more.
-    assert run_main(global_mesh, far, map_data, "--zoom", "0.15") == 0
+    assert run_main(global_mesh, far, map_data, "--zoom=0.15") == 0
     assert count_light_gray(far) < count_light_gray(near) / 20
 
 
 @pytest.mark.parametrize(
     "view",
     [
-        ["--zoom", "4", "--center", "45", "-100"],
+        ["--zoom=4", "--center-lat=45", "--center-lon=-100"],
         # Above a pole, the globe's outline is found another way
-        ["--center", "90", "0"],
-        # So far zoomed in that no cell center is in view
-        ["--zoom", "5000", "--center", "10", "10"],
+        ["--center-lat=90", "--center-lon=0"],
+        ["--center-lat=-90", "--center-lon=0"],
     ],
 )
 def test_draw_global_mesh_with_a_view(tmp_path, global_mesh, map_data, view):
@@ -505,6 +634,37 @@ def test_draw_global_mesh_with_a_view(tmp_path, global_mesh, map_data, view):
     assert run_main(global_mesh, output, map_data, *view) == 0
     with Image.open(output) as image:
         assert image.size == (1500, 1590)
+    # The cells' edges are drawn, leaving 40000 or more light gray pixels,
+    # against a few thousand from a globe without them
+    assert count_light_gray(output) > 20_000
+
+
+def test_draw_global_mesh_with_no_cell_in_view(tmp_path, global_mesh, map_data):
+    output = tmp_path / "view.png"
+    view = ["--zoom=5000", "--center-lat=10", "--center-lon=10"]
+    assert run_main(global_mesh, output, map_data, *view) == 0
+    with Image.open(output) as image:
+        assert image.size == (1500, 1590)
+
+
+@pytest.mark.parametrize("zoom", [1.0, plot.DEFAULT_ZOOM])
+def test_sphere_has_the_measured_size(tmp_path, global_mesh, zoom):
+    output = tmp_path / "g.png"
+    run_main(global_mesh, output, tmp_path / "none", f"--zoom={zoom!r}")
+    pixels = np.asarray(Image.open(output).convert("RGB")).astype(int)
+    # The globe's center is half the square image below the title
+    title = pixels.shape[0] - pixels.shape[1]
+    row = pixels[title + pixels.shape[1] // 2]
+    drawn = np.where(row.min(axis=1) < 200)[0]
+    diameter = drawn.max() - drawn.min()
+    assert diameter == pytest.approx(2 * plot.sphere_pixels_per_unit(zoom), abs=4)
+
+
+def test_title_is_drawn_as_written(tmp_path, global_mesh, regional_mesh, map_data):
+    # Dollar signs would otherwise start a formula, which this one breaks
+    title = "--title=a$\\bad$"
+    assert run_main(global_mesh, tmp_path / "g.png", map_data, title) == 0
+    assert run_main(regional_mesh, tmp_path / "r.png", map_data, title) == 0
 
 
 def test_draw_regional_mesh_on_a_flat_map(tmp_path, regional_mesh, map_data):
@@ -531,7 +691,7 @@ def test_draw_regional_mesh_on_a_flat_map(tmp_path, regional_mesh, map_data):
 
 def test_draw_band_around_the_globe(tmp_path, band_mesh, map_data):
     output = tmp_path / "band.png"
-    assert run_main(band_mesh, output, map_data, "--title", "Band") == 0
+    assert run_main(band_mesh, output, map_data, "--title=Band") == 0
     with Image.open(output) as image:
         width, height = image.size
     # A wide band gets the widest map, and a short one
@@ -540,6 +700,102 @@ def test_draw_band_around_the_globe(tmp_path, band_mesh, map_data):
         * plot.FLAT_DPI
     )
     assert height < width / 2
+
+
+def map_pixels(image):
+    """Return the pixels of a flat map inside its black frame, as an array.
+
+    The frame's top edge is the first row with a long dark run, which the
+    color bar's narrow outline does not have.
+    """
+    pixels = np.asarray(Image.open(image).convert("RGB")).astype(int)
+    dark = (pixels < 60).all(axis=-1)
+    rows = np.where(dark.sum(axis=1) > 200)[0]
+    top, bottom = rows.min(), rows.max()
+    columns = np.where(dark[top])[0]
+    runs = np.split(columns, np.where(np.diff(columns) > 1)[0] + 1)
+    frame = max(runs, key=len)
+    return pixels[top + 3 : bottom - 2, frame.min() + 3 : frame.max() - 2]
+
+
+def blank(pixels):
+    """Return which pixels are white, where no cell was drawn."""
+    return (pixels >= 250).all(axis=-1)
+
+
+def test_flat_map_of_small_cells_has_no_edges(tmp_path, global_mesh, map_data):
+    def near_colorado(lat, lon):
+        return (np.abs(lat - 39) < 18) & (np.abs(lon + 105) < 22)
+
+    large = regional_copy(global_mesh, tmp_path / "large.nc", near_colorado, layer=0)
+    # Cells a 400th the area are 24 km across, and a pixel or two on the map
+    small = regional_copy(
+        global_mesh, tmp_path / "small.nc", near_colorado, layer=0, area_scale=1 / 400
+    )
+    assert run_main(large, tmp_path / "large.png", map_data) == 0
+    assert run_main(small, tmp_path / "small.png", map_data) == 0
+    assert count_light_gray(tmp_path / "small.png") < (
+        count_light_gray(tmp_path / "large.png") / 3
+    )
+
+
+def test_flat_map_ignores_unused_corners(tmp_path, global_mesh, map_data):
+    def near_pentagon(lat, lon):
+        # A pentagon of the icosahedral mesh is at 26.57N 36E
+        return (np.abs(lat - 26.57) < 15) & (np.abs(lon - 36) < 15)
+
+    # The unused corners of a pentagon point to another vertex far away
+    plain = regional_copy(global_mesh, tmp_path / "plain.nc", near_pentagon)
+    padded = regional_copy(
+        global_mesh, tmp_path / "padded.nc", near_pentagon, padding=1
+    )
+    with Dataset(padded) as ds:
+        assert 5 in ds["nEdgesOnCell"][:]
+    assert run_main(plain, tmp_path / "plain.png", map_data, "--title=T") == 0
+    assert run_main(padded, tmp_path / "padded.png", map_data, "--title=T") == 0
+    assert np.array_equal(
+        np.asarray(Image.open(tmp_path / "plain.png")),
+        np.asarray(Image.open(tmp_path / "padded.png")),
+    )
+
+
+def test_region_across_the_180th_meridian(tmp_path, global_mesh):
+    def pacific(lat, lon):
+        return (np.abs(lat) < 20) & (np.abs(lon) > 150)
+
+    region = regional_copy(global_mesh, tmp_path / "p.nc", pacific, layer=3)
+    output = tmp_path / "p.png"
+    assert run_main(region, output, tmp_path / "none") == plot.EXIT_MISSING_MAP
+    # The region is about 60 degrees by 40, so it is drawn in one piece on a
+    # map of that shape, not as two ends of a map of the whole globe
+    pixels = map_pixels(output)
+    assert pixels.shape[1] / pixels.shape[0] == pytest.approx(1.5, rel=0.1)
+    middle = pixels[:, pixels.shape[1] // 10 : -pixels.shape[1] // 10]
+    assert not blank(middle[middle.shape[0] // 4 : -middle.shape[0] // 4]).any()
+
+
+def test_region_around_a_pole(tmp_path, global_mesh):
+    region = regional_copy(global_mesh, tmp_path / "n.nc", lambda a, b: a > 55, layer=3)
+    output = tmp_path / "n.png"
+    assert run_main(region, output, tmp_path / "none") == plot.EXIT_MISSING_MAP
+    # The cell around the pole fills the top of the map, up to the pole
+    pixels = map_pixels(output)
+    assert not blank(pixels[:10]).any()
+    assert has_color(output, plot.LAYER_COLORS[3], tolerance=8)
+
+
+def test_band_has_no_gap_at_the_seam(tmp_path, global_mesh):
+    band = regional_copy(
+        global_mesh, tmp_path / "b.nc", lambda a, b: np.abs(a) < 30, layer=3
+    )
+    output = tmp_path / "b.png"
+    assert run_main(band, output, tmp_path / "none") == plot.EXIT_MISSING_MAP
+    # Cells cut by the map's left and right edges are drawn on both, as
+    # cartopy wraps the parts past the seam
+    pixels = map_pixels(output)
+    rows = pixels[pixels.shape[0] // 4 : -pixels.shape[0] // 4]
+    assert not blank(rows[:, :5]).any()
+    assert not blank(rows[:, -5:]).any()
 
 
 def test_missing_map_layers_are_reported(tmp_path, global_mesh, regional_mesh, capsys):
@@ -563,7 +819,9 @@ def test_empty_map_layer_counts_as_missing(tmp_path, global_mesh, map_data):
 
 
 @pytest.mark.parametrize(
-    "view", [["--zoom", "2"], ["--center", "39", "-105"]], ids=["zoom", "center"]
+    "view",
+    [["--zoom=2"], ["--center-lat=39", "--center-lon=-105"]],
+    ids=["zoom", "center"],
 )
 def test_view_of_a_regional_mesh_is_refused(
     tmp_path, regional_mesh, map_data, view, capsys

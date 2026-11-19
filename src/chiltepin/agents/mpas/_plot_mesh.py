@@ -8,33 +8,37 @@ module for its exit codes and map layers without them, so it imports only the
 standard library at the top, and the plotting packages inside the functions that
 draw.
 
-A mesh is regional if any cell has a nonzero ``bdyMaskCell``, and global
-otherwise. A regional mesh is drawn on a flat map, with its cells colored by
+A mesh is regional if any cell has a nonzero ``bdyMaskCell``, or its cells cover
+less of the sphere than a global mesh does, and global otherwise. A regional mesh is drawn on a flat map, with its cells colored by
 boundary layer. A global mesh is drawn on a sphere, seen from above the view
 center. Cell edges are drawn only when cells come out at least
 ``MIN_CELL_PIXELS`` across in the image, since smaller ones blur together.
 
 Usage::
 
-    python _plot_mesh.py MESH OUTPUT --map-data DIR [--title TITLE]
-        [--zoom ZOOM] [--center LAT LON]
+    python _plot_mesh.py MESH OUTPUT --map-data DIR [--title=TITLE]
+        [--zoom=ZOOM] [--center-lat=LAT --center-lon=LON]
     python _plot_mesh.py --download-map-data DIR
 
 The second form downloads the Natural Earth map layers the plots draw to DIR,
-where cartopy finds them. It needs only the standard library, so it runs on the
+where cartopy finds them, skipping layers already there. It needs only the standard library, so it runs on the
 ``service`` resource, which can reach Natural Earth, without the extra.
 
 Exit codes:
 
 - 0: the image was written
-- 2: the image was written, but without one or more map layers, which are named
+- 4: the image was written, but without one or more map layers, which are named
   on standard error
-- 3: a zoom or view center was given for a regional mesh, and nothing was
+- 5: a zoom or view center was given for a regional mesh, and nothing was
   written
-- anything else: the plot failed
+- anything else: the plot failed. argparse exits with 2, and Python with 1.
+
+Options are passed as ``--option=VALUE``, so a value starting with "-", such as
+a title or a negative number, is not read as an option.
 """
 
 import argparse
+import http.client
 import io
 import math
 import sys
@@ -43,11 +47,15 @@ import zipfile
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-EXIT_MISSING_MAP = 2
-EXIT_VIEW_OF_REGIONAL_MESH = 3
+# Unlike 1 and 2, which Python and argparse exit with
+EXIT_MISSING_MAP = 4
+EXIT_VIEW_OF_REGIONAL_MESH = 5
 
 # Radius of the sphere MPAS meshes are defined on, in km
 SPHERE_RADIUS_KM = 6371.229
+
+# A mesh whose cells cover less than this part of the sphere is regional
+GLOBAL_AREA_FRACTION = 0.999
 
 # Cells smaller than this many pixels across are drawn without edges
 MIN_CELL_PIXELS = 10.0
@@ -114,13 +122,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--title", help="title of the image")
     parser.add_argument("--zoom", type=float, help="zoom of a global mesh")
     parser.add_argument(
-        "--center",
-        type=float,
-        nargs=2,
-        metavar=("LAT", "LON"),
-        help="view center of a global mesh, in degrees",
+        "--center-lat", type=float, help="view center latitude of a global mesh"
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--center-lon", type=float, help="view center longitude of a global mesh"
+    )
+    args = parser.parse_args(argv)
+    if (args.center_lat is None) != (args.center_lon is None):
+        parser.error("--center-lat and --center-lon must be given together")
+    return args
 
 
 def default_title(mesh: Path) -> str:
@@ -150,33 +160,45 @@ def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) ->
     """Download the map layers to where cartopy finds them in ``map_data``.
 
     Each layer's shapefile parts are extracted from its zip file, and the
-    ``.shp`` file is written last, so a layer is complete once it exists.
+    ``.shp`` file is written last, so a layer is complete once it exists. A
+    layer already there is kept, so plots drawing it are not disturbed.
+    Failed downloads are tried again, except when the server answers that the
+    request itself is wrong (a 4xx status).
 
     Raises
     ------
     OSError
         If a layer cannot be downloaded after ``attempts`` tries.
+    http.client.HTTPException
+        If a layer's download keeps ending early.
     ValueError
         If a downloaded file is not a zip file holding the layer's shapefile.
     """
+    import urllib.error
     import urllib.request
 
     for layer in MAP_LAYERS:
         url = layer_url(layer)
+        target = layer_path(map_data, layer)
+        if target.is_file() and target.stat().st_size > 0:
+            print(f"Keeping {target}", flush=True)
+            continue
         for attempt in range(1, attempts + 1):
             try:
                 with urllib.request.urlopen(url, timeout=timeout) as response:
                     data = response.read()
                 break
-            except OSError:
+            except urllib.error.HTTPError as e:
+                if 400 <= e.code < 500 or attempt == attempts:
+                    raise
+            except (OSError, http.client.HTTPException):
                 if attempt == attempts:
                     raise
-                time.sleep(2**attempt)
+            time.sleep(2**attempt)
         try:
             archive = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile as e:
             raise ValueError(f"{url} is not a zip file") from e
-        target = layer_path(map_data, layer)
         stem = target.stem
         names = set(archive.namelist())
         if f"{stem}.shp" not in names:
@@ -235,9 +257,9 @@ def sphere_coastline(zoom: float) -> Tuple[str, str, str]:
     return COASTLINE if zoom > DETAILED_COASTLINE_ZOOM else GLOBE_COASTLINE
 
 
-def view_center(center: Optional[Sequence[float]]) -> Tuple[float, float]:
+def view_center(lat: Optional[float], lon: Optional[float]) -> Tuple[float, float]:
     """Return the view center of a global mesh, by default 0N 0E."""
-    return (0.0, 0.0) if center is None else (float(center[0]), float(center[1]))
+    return (0.0, 0.0) if lat is None else (float(lat), float(lon))
 
 
 def flat_map_inches(lon_span: float, lat_span: float) -> Tuple[float, float]:
@@ -295,7 +317,7 @@ def main(argv: Sequence[str]) -> int:
     args = parse_args(argv)
     title = args.title if args.title is not None else default_title(args.mesh)
     regional = is_regional(args.mesh)
-    if regional and (args.zoom is not None or args.center is not None):
+    if regional and (args.zoom is not None or args.center_lat is not None):
         print(
             "zoom and the view center apply only to global meshes, and "
             f"{args.mesh} is regional",
@@ -307,7 +329,12 @@ def main(argv: Sequence[str]) -> int:
     else:
         zoom = args.zoom if args.zoom is not None else DEFAULT_ZOOM
         missing = draw_sphere(
-            args.mesh, args.output, title, args.map_data, zoom, view_center(args.center)
+            args.mesh,
+            args.output,
+            title,
+            args.map_data,
+            zoom,
+            view_center(args.center_lat, args.center_lon),
         )
     if missing:
         print(
@@ -319,20 +346,45 @@ def main(argv: Sequence[str]) -> int:
     return 0
 
 
+# Cells and vertices are read this many at a time, to bound memory
+READ_STEP = 1_000_000
+
+
+def sphere_radius(ds) -> float:
+    """Return the radius of the sphere a mesh is defined on, in its units.
+
+    It is the ``sphere_radius`` attribute, or else the distance of the first
+    cell center from the center of the sphere.
+    """
+    import numpy as np
+
+    if "sphere_radius" in ds.ncattrs():
+        return float(ds.sphere_radius)
+    return float(np.linalg.norm([float(ds.variables[f"{a}Cell"][0]) for a in "xyz"]))
+
+
 def is_regional(mesh: Path) -> bool:
-    """Whether any cell of the mesh is in a boundary layer."""
+    """Whether the mesh is regional.
+
+    It is if any cell is in a boundary layer, or its cells cover less than
+    ``GLOBAL_AREA_FRACTION`` of the sphere, as a region cut without boundary
+    layers does. A mesh with neither ``bdyMaskCell`` nor ``areaCell`` is global.
+    """
     import numpy as np
     from netCDF4 import Dataset
 
     with Dataset(mesh) as ds:
-        if "bdyMaskCell" not in ds.variables:
+        n_cells = ds.dimensions["nCells"].size
+        pieces = range(0, n_cells, READ_STEP)
+        if "bdyMaskCell" in ds.variables:
+            mask = ds.variables["bdyMaskCell"]
+            if any(np.any(mask[start : start + READ_STEP] != 0) for start in pieces):
+                return True
+        if "areaCell" not in ds.variables:
             return False
-        mask = ds.variables["bdyMaskCell"]
-        step = 1_000_000
-        return any(
-            bool(np.any(mask[start : start + step] != 0))
-            for start in range(0, mask.shape[0], step)
-        )
+        area = ds.variables["areaCell"]
+        total = sum(float(np.sum(area[start : start + READ_STEP])) for start in pieces)
+        return total < GLOBAL_AREA_FRACTION * 4 * math.pi * sphere_radius(ds) ** 2
 
 
 def map_layer(
@@ -347,7 +399,11 @@ def map_layer(
 
 
 def draw_flat(mesh: Path, output: Path, title: str, map_data: Path) -> List[Path]:
-    """Draw a regional mesh on a flat map, and return the missing map layers."""
+    """Draw a regional mesh on a flat map, and return the missing map layers.
+
+    The whole region is read and drawn at once, which takes about 2.5 GB of
+    memory for each million cells.
+    """
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
     import cartopy.io.shapereader as shpreader
@@ -368,11 +424,10 @@ def draw_flat(mesh: Path, output: Path, title: str, map_data: Path) -> List[Path
         n_edges = ds.variables["nEdgesOnCell"][:]
         on_cell = ds.variables["verticesOnCell"][:] - 1
         layer = np.asarray(ds.variables["bdyMaskCell"][:], dtype=float)
-        # Areas are in square meters on the sphere the mesh is defined on
-        radius_km = float(getattr(ds, "sphere_radius", SPHERE_RADIUS_KM * 1000)) / 1000
+        # Areas are on the sphere the mesh is defined on, scaled to the Earth
         mean_area_km2 = (
             float(np.mean(ds.variables["areaCell"][:]))
-            * (SPHERE_RADIUS_KM / radius_km / 1000) ** 2
+            * (SPHERE_RADIUS_KM / sphere_radius(ds)) ** 2
         )
 
     # Longitudes relative to the region's center, so a region across the
@@ -391,7 +446,25 @@ def draw_flat(mesh: Path, output: Path, title: str, map_data: Path) -> List[Path
     offset = x_corner - x_cell[:, None]
     x_corner = np.where(offset > 180, x_corner - 360, x_corner)
     x_corner = np.where(offset < -180, x_corner + 360, x_corner)
-    polygons = np.stack((x_corner, lat_vertex[ids]), axis=-1)
+    polygons = list(np.stack((x_corner, lat_vertex[ids]), axis=-1))
+
+    # A cell around a pole has corners all the way around it, which on the map
+    # is a band along the top or bottom, closed at the pole. cartopy draws the
+    # part of a cell past the seam on the other side of the map.
+    lon_steps = wrap_longitude(
+        np.diff(lon_vertex[ids], axis=1, append=lon_vertex[ids][:, :1]), 0
+    )
+    for cell in np.where(np.abs(lon_steps.sum(axis=1)) > 180)[0]:
+        corner_ids = ids[cell, : int(n_edges[cell])]
+        lons = lon_vertex[corner_ids]
+        steps = wrap_longitude(np.diff(lons, append=lons[0]), 0)
+        start = wrap_longitude(lons[0], center_lon)
+        x = start + np.concatenate(([0], np.cumsum(steps)))
+        y = np.append(lat_vertex[corner_ids], lat_vertex[corner_ids[0]])
+        pole = 90.0 if lat_cell[cell] > 0 else -90.0
+        polygons[cell] = np.column_stack(
+            (np.append(x, [x[-1], x[0]]), np.append(y, [pole, pole]))
+        )
 
     x_pad = max(float(np.ptp(x_cell)) * 0.05, 0.1)
     y_pad = max(float(np.ptp(lat_cell)) * 0.05, 0.1)
@@ -464,6 +537,7 @@ def draw_flat(mesh: Path, output: Path, title: str, map_data: Path) -> List[Path
         ha="center",
         va="center",
         fontsize=14,
+        parse_math=False,
     )
     fig.savefig(output, dpi=FLAT_DPI)
     plt.close(fig)
@@ -514,33 +588,44 @@ def draw_sphere(
         ha="center",
         va="center",
         fontsize=16,
+        parse_math=False,
     )
 
     with Dataset(mesh) as ds:
         n_cells = ds.dimensions["nCells"].size
         if sphere_cell_pixels(global_cell_spacing_km(n_cells), zoom) >= MIN_CELL_PIXELS:
             # Coordinates are normalized to the unit sphere, whatever radius
-            # the file uses, and cells are read in pieces, keeping those in view
+            # the file uses. Edges are drawn only when cells are large in the
+            # image, so few are in view. Cells are read in pieces, keeping
+            # those in view, and then only the vertices they need.
             least = max(visible_dot(zoom), 0.05)
-            vertices = np.stack(
-                [ds.variables[f"{axis}Vertex"][:] for axis in "xyz"], axis=-1
-            )
-            vertices /= np.linalg.norm(vertices, axis=-1, keepdims=True)
-            polygons = []
-            step = 1_000_000
-            for start in range(0, n_cells, step):
-                piece = slice(start, start + step)
+            kept_edges, kept_on_cell = [], []
+            for start in range(0, n_cells, READ_STEP):
+                piece = slice(start, start + READ_STEP)
                 cells = np.stack(
                     [ds.variables[f"{axis}Cell"][piece] for axis in "xyz"], axis=-1
                 )
                 cells /= np.linalg.norm(cells, axis=-1, keepdims=True)
                 keep = np.where(cells @ view > least)[0]
-                if keep.size == 0:
-                    continue
-                n_edges = ds.variables["nEdgesOnCell"][piece][keep]
-                on_cell = ds.variables["verticesOnCell"][piece][keep]
-                for count, ids in zip(n_edges, on_cell):
-                    polygons.append(vertices[ids[:count] - 1])
+                kept_edges.append(ds.variables["nEdgesOnCell"][piece][keep])
+                kept_on_cell.append(ds.variables["verticesOnCell"][piece][keep] - 1)
+            n_edges = np.concatenate(kept_edges)
+            on_cell = np.concatenate(kept_on_cell)
+            corner = np.arange(on_cell.shape[1])[None, :] < n_edges[:, None]
+            needed = np.unique(on_cell[corner])
+            vertices = np.empty((needed.size, 3))
+            for start in range(0, ds.dimensions["nVertices"].size, READ_STEP):
+                low, high = np.searchsorted(needed, [start, start + READ_STEP])
+                if low < high:
+                    rows = needed[low:high] - start
+                    for column, axis in enumerate("xyz"):
+                        values = ds.variables[f"{axis}Vertex"][
+                            start : start + READ_STEP
+                        ]
+                        vertices[low:high, column] = values[rows]
+            vertices /= np.linalg.norm(vertices, axis=-1, keepdims=True)
+            rows = np.searchsorted(needed, on_cell)
+            polygons = [vertices[row[:count]] for count, row in zip(n_edges, rows)]
             ax.add_collection3d(
                 Poly3DCollection(
                     polygons,
