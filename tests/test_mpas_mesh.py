@@ -825,6 +825,86 @@ def test_validate_mesh_config_requires_every_project_hexes_key(behavior):
             behavior._validate_mesh_config(regional_config(**{key: ...}))
 
 
+@pytest.mark.parametrize("plot", [True, False])
+@pytest.mark.parametrize(
+    "config", [{}, PARTITIONED, "regional_config", "create_region_config"]
+)
+def test_validate_mesh_config_accepts_plot(behavior, config, plot):
+    base = {
+        "regional_config": regional_config,
+        "create_region_config": create_region_config,
+    }
+    config = base[config]() if isinstance(config, str) else config
+    behavior._validate_mesh_config({**config, "plot": plot})
+
+
+@pytest.mark.parametrize("plot", [1, 0, "true", None, "yes", [True]])
+def test_validate_mesh_config_rejects_non_boolean_plot(behavior, plot):
+    with pytest.raises(ValueError, match="plot must be True or False"):
+        behavior._validate_mesh_config({"plot": plot})
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        {},
+        {"title": "A mesh"},
+        {"title": ""},
+        {"zoom": 2},
+        {"zoom": 0.5},
+        {"zoom": 1e6},
+        {"center_lat": 50.0, "center_lon": 10.0},
+        {"center_lat": -90, "center_lon": 360},
+        {"title": "x", "zoom": 3.5, "center_lat": 0, "center_lon": -180},
+    ],
+)
+def test_validate_plot_view_accepts_valid(view):
+    settings = {"title": None, "zoom": None, "center_lat": None, "center_lon": None}
+    _MeshBehavior._validate_plot_view(**{**settings, **view})
+
+
+@pytest.mark.parametrize(
+    ("view", "message"),
+    [
+        ({"title": 5}, "title must be a string"),
+        ({"title": b"x"}, "title must be a string"),
+        ({"zoom": 0}, "zoom must be greater than 0"),
+        ({"zoom": -1}, "zoom must be greater than 0"),
+        ({"zoom": True}, "zoom must be a finite number"),
+        ({"zoom": "2"}, "zoom must be a finite number"),
+        ({"zoom": float("inf")}, "zoom must be a finite number"),
+        ({"zoom": float("nan")}, "zoom must be a finite number"),
+        ({"center_lat": 50.0}, "must be given together"),
+        ({"center_lon": 10.0}, "must be given together"),
+        ({"center_lat": 91, "center_lon": 0}, "center_lat must be between -90 and 90"),
+        ({"center_lat": 0, "center_lon": 361}, "center_lon must be between -180"),
+        ({"center_lat": "0", "center_lon": 0}, "center_lat must be a finite number"),
+        ({"center_lat": 0, "center_lon": None}, "must be given together"),
+    ],
+)
+def test_validate_plot_view_rejects_invalid(view, message):
+    settings = {"title": None, "zoom": None, "center_lat": None, "center_lon": None}
+    with pytest.raises(ValueError, match=message):
+        _MeshBehavior._validate_plot_view(**{**settings, **view})
+
+
+async def test_plotted_mesh_is_rejected_before_anything_is_created(tmp_path, behavior):
+    # Temporary until meshes can be plotted
+    output = tmp_path / "meshes"
+    with pytest.raises(RuntimeError, match="cannot be plotted yet"):
+        await behavior.generate_mesh({"resolution": "480km", "plot": True}, str(output))
+    assert not output.exists()
+
+
+async def test_plot_false_is_an_ordinary_request(mesh_download, behavior):
+    output, download = mesh_download
+    result = await behavior.generate_mesh(
+        {"resolution": "480km", "name": "g", "plot": False}, str(output)
+    )
+    assert set(result) == {"static", "graph"}
+    download.assert_called_once()
+
+
 @pytest.mark.parametrize("shape", list(SHAPES))
 def test_validate_mesh_config_accepts_each_create_region_shape(behavior, shape):
     behavior._validate_mesh_config(create_region_config(shape))

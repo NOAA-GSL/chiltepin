@@ -42,7 +42,7 @@ _MAX_MESH_NAME_BYTES = 200
 
 # Keys a mesh request may contain
 _MESH_CONFIG_KEYS = frozenset(
-    {"resolution", "name", "init_ranks", "forecast_ranks", "regional"}
+    {"resolution", "name", "init_ranks", "forecast_ranks", "regional", "plot"}
 )
 
 # Methods a regional request may name, and the keys of a project_hexes block
@@ -227,8 +227,8 @@ class _MeshBehavior:
         ------
         ValueError
             If ``mesh_config`` is not a dict, has an unknown key, or has an
-            invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``
-            or ``regional`` block. A name must be at most 200 bytes long, must
+            invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``,
+            ``regional`` block or ``plot``. A name must be at most 200 bytes long, must
             not contain control characters, and must not be that of a downloaded
             global mesh file.
         """
@@ -287,6 +287,9 @@ class _MeshBehavior:
                 continue
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{key} must be a positive integer, got {value!r}")
+        plot = mesh_config.get("plot", False)
+        if not isinstance(plot, bool):
+            raise ValueError(f"plot must be True or False, got {plot!r}")
 
     @staticmethod
     def _parse_resolution_km(resolution: Any) -> float:
@@ -410,6 +413,34 @@ class _MeshBehavior:
         if number <= 0:
             raise ValueError(f"{label} must be greater than 0")
         return number
+
+    @classmethod
+    def _validate_plot_view(
+        cls,
+        title: Any,
+        zoom: Any,
+        center_lat: Any,
+        center_lon: Any,
+    ) -> None:
+        """Check the optional view settings of ``plot_mesh()``.
+
+        ``zoom`` must be a finite number greater than 0, and ``center_lat`` and
+        ``center_lon`` must be given together, as a latitude and a longitude.
+
+        Raises
+        ------
+        ValueError
+            If any of them is invalid.
+        """
+        if title is not None and not isinstance(title, str):
+            raise ValueError(f"title must be a string, got {type(title).__name__}")
+        if zoom is not None:
+            cls._positive(zoom, "zoom")
+        if (center_lat is None) != (center_lon is None):
+            raise ValueError("center_lat and center_lon must be given together")
+        if center_lat is not None:
+            cls._latitude(center_lat, "center_lat")
+            cls._longitude(center_lon, "center_lon")
 
     @classmethod
     def _region_size(cls, value: Any, label: str) -> float:
@@ -1647,6 +1678,9 @@ class _MeshBehavior:
             fails.
         """
         self._validate_mesh_config(mesh_config)
+        if mesh_config.get("plot"):
+            # Removed once meshes can be plotted
+            raise RuntimeError("Meshes cannot be plotted yet")
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
