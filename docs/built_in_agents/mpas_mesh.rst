@@ -3,9 +3,9 @@ MPAS Mesh Agent
 
 ``chiltepin.agents.mpas.MeshAgent`` Generates MPAS meshes for use in NWP
 workflows. It downloads precomputed global MPAS meshes from UCAR, generates
-regional meshes with the MPAS-Tools ``project_hexes`` program, and can
-partition mesh graphs for MPI with Metis. Regional meshes made with
-``create_region`` are not yet supported.
+regional meshes with the MPAS-Tools ``project_hexes`` program or cuts them from
+a global mesh with the MPAS-Limited-Area ``create_region`` program, and can
+partition mesh graphs for MPI with Metis.
 
 For the API reference, see :doc:`../api/agents/mpas_mesh`.
 
@@ -13,20 +13,28 @@ Requirements
 ------------
 
 * Chiltepin installed in the agent and task execution environments; no extra
-  Python dependencies are required.
+  Python dependencies are required. The agent installs the ones
+  ``create_region`` needs for itself.
 * Authentication via ``chiltepin login`` before launching the agent.
 * Network access to the Academy Exchange from the agent and to UCAR and GitHub
   from the ``service`` resource.
 * For partitioning, ``git``, ``wget``, and ``tar`` on the ``service``
   resource, and ``cmake``, ``make``, and a C compiler on the ``compute``
   resource, to download and build Metis.
-* For regional meshes, ``git`` on the ``service`` resource, and ``make``, a
-  Fortran compiler, and the netCDF-C and netCDF-Fortran libraries on the
-  ``compute`` resource, to download and build the ``project_hexes`` and
-  ``grid_rotate`` programs from MPAS-Tools. The build finds netCDF through
-  ``nf-config`` and ``nc-config``, so these must be on the ``PATH`` of the
-  ``compute`` resource, for example by loading the netCDF-Fortran module in its
-  ``environment`` setting.
+* For ``project_hexes`` regional meshes, ``git`` on the ``service`` resource,
+  and ``make``, a Fortran compiler, and the netCDF-C and netCDF-Fortran
+  libraries on the ``compute`` resource, to download and build the
+  ``project_hexes`` and ``grid_rotate`` programs from MPAS-Tools. The build
+  finds netCDF through ``nf-config`` and ``nc-config``, so these must be on the
+  ``PATH`` of the ``compute`` resource, for example by loading the
+  netCDF-Fortran module in its ``environment`` setting.
+* For ``create_region`` regional meshes, ``git`` and network access to GitHub
+  and PyPI on the ``service`` resource, to clone MPAS-Limited-Area and install
+  numpy and netCDF4 in a virtual environment for it. The environment is created
+  on the ``service`` resource from the Python that runs chiltepin's tasks there,
+  and is then used on the ``compute`` resource, so that Python must also run on
+  the ``compute`` resource at the same path. This holds when both resources use
+  the same chiltepin installation on a shared filesystem.
 
 Launch Arguments
 ----------------
@@ -49,6 +57,11 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
    Optional agent argument. The MPAS-Tools tag to install for regional meshes,
    such as ``2.0.0``, written without a ``v`` prefix, since the MPAS-Tools tags
    have none. Defaults to ``2.0.0``. Anything else raises ``ValueError``.
+``kwargs={"limited_area_version": "2.2"}``
+   Optional agent argument. The MPAS-Limited-Area version to install for
+   ``create_region`` meshes, as it appears in the release tag without the
+   leading ``v``, such as ``2.2``. Defaults to ``2.2``. Anything else raises
+   ``ValueError``.
 
 ``executor``
    Resource in the launching workflow on which to deploy the agent.
@@ -75,14 +88,15 @@ The agent workflow configuration must contain these resources:
 
 ``service``
    Runs agent tasks that require internet access, such as downloading meshes,
-   Metis, and MPAS-Tools. It must have write access to the mesh output directory and to
+   Metis, MPAS-Tools, and MPAS-Limited-Area with its Python packages. It must
+   have write access to the mesh output directory and to
    ``work_dir``. The agent and this resource must share these directories at
    the same absolute paths.
 
 ``compute``
    Runs tasks that do not need the internet, such as building Metis and
-   MPAS-Tools, running ``project_hexes`` and ``grid_rotate``, and partitioning
-   meshes. It needs ``cmake``, ``make`` and a C compiler to build Metis, and
+   MPAS-Tools, running ``project_hexes``, ``grid_rotate`` and ``create_region``,
+   and partitioning meshes. It needs ``cmake``, ``make`` and a C compiler to build Metis, and
    ``make``, a Fortran compiler and netCDF-C and netCDF-Fortran to build and run
    the MPAS-Tools programs. It must have
    write access to ``work_dir`` and the mesh output directory at the same
@@ -139,9 +153,9 @@ Actions
      ``init_ranks`` and ``forecast_ranks``, and ``regional``. The rank entries
      are positive integers giving MPI rank counts to partition the mesh graph
      for. A count of 1 needs no partition. A name can be at most 200
-     bytes long, which is 200 characters unless it has non-ASCII characters, and
-     must not be that of a
-     downloaded global mesh file, such as ``x1.2562.graph.info``. Any other key
+     bytes long, which is 200 characters unless it has non-ASCII characters,
+     must not contain control characters such as a newline, and must not be
+     that of a downloaded global mesh file, such as ``x1.2562.graph.info``. Any other key
      raises ``ValueError``, so a misspelled key is not silently ignored.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
 
@@ -149,13 +163,16 @@ Actions
    Its ``resolution`` must be one of the supported global resolutions listed
    below.
 
-   With ``regional``, a regional mesh is generated, and ``resolution`` can be
-   any positive number of kilometers written as digits followed by ``km``, such
-   as ``"2km"`` or ``"7.5km"``. No limit is placed on the size of the mesh, so
-   a fine resolution over a large extent can ask for a very large mesh.
-   ``regional`` must be a dictionary with exactly one key, ``project_hexes``,
-   whose value is a dictionary with these numbers. They must be real numbers,
-   not strings, and finite:
+   With ``regional``, a regional mesh is generated. ``regional`` must be a
+   dictionary with exactly one key, ``project_hexes`` or ``create_region``,
+   which chooses how. All the numbers in either block must be real numbers, not
+   strings, and finite.
+
+   ``project_hexes`` generates a new rectangular mesh. Its ``resolution`` can
+   be any positive number of kilometers written as digits followed by ``km``,
+   such as ``"2km"`` or ``"7.5km"``. No limit is placed on the size of the
+   mesh, so a fine resolution over a large extent can ask for a very large
+   mesh. Its value is a dictionary with these numbers:
 
    * ``center_lat``: Latitude of the center, from -90 to 90 degrees.
    * ``center_lon``: Longitude of the center, from -180 to 360 degrees.
@@ -186,20 +203,67 @@ Actions
    and nothing is left behind, so give a region several cells across in each
    direction.
 
-   A ``create_region`` entry is recognized but not supported yet, and raises
-   ``ValueError``. The mesh directory of a regional mesh also keeps the inputs
-   the programs read, ``namelist.projections`` and, if rotated,
-   ``namelist.input``. The MPAS-Tools programs are installed first if they are
-   not already installed. Each run writes its own logs,
-   ``project_hexes.<id>.*`` and ``grid_rotate.<id>.*`` in ``work_dir/logs``, and
-   a failure names its ``.stderr`` file.
+   The mesh directory of a ``project_hexes`` mesh also keeps the inputs the
+   programs read, ``namelist.projections`` and, if rotated, ``namelist.input``.
+   The MPAS-Tools programs are installed first if they are not already
+   installed. Each run writes its own logs, ``project_hexes.<id>.*`` and
+   ``grid_rotate.<id>.*`` in ``work_dir/logs``, and a failure names its
+   ``.stderr`` file.
+
+   ``create_region`` cuts a region out of a global mesh, which is downloaded to
+   ``mesh_data_dir`` unless it is already there and is kept for reuse. The
+   region keeps the global mesh's cells, so its ``resolution`` must be one of
+   the supported global resolutions listed below. Its value is a dictionary
+   with exactly one shape, whose value holds that shape's numbers. Sizes are in
+   kilometers, latitudes from -90 to 90 degrees, and longitudes from -180 to 360
+   degrees:
+
+   * ``circle``: ``center_lat``, ``center_lon``, and ``radius_km``, greater
+     than 0.
+   * ``ellipse``: ``center_lat``, ``center_lon``, ``semi_major_axis_km`` and
+     ``semi_minor_axis_km``, each greater than 0 and the minor axis not longer
+     than the major one, and optionally ``orientation_degrees``, the clockwise
+     rotation of the major axis from due north, by default 0.
+   * ``polygon``: ``vertices``, a list of at least 3 ``[lat, lon]`` pairs in
+     order around the boundary, and ``inside_lat`` and ``inside_lon``, a point
+     inside the region. MPAS-Limited-Area warns that a concave polygon can give
+     wrong results when MPAS interpolates static fields, so keep it convex.
+   * ``channel``: ``upper_lat`` and ``lower_lat``, the latitudes of a band
+     around the globe, with ``upper_lat`` greater than ``lower_lat``.
+
+   For example:
+
+   .. code-block:: python
+
+      {
+          "resolution": "60km",
+          "name": "colorado",
+          "regional": {
+              "create_region": {
+                  "circle": {
+                      "center_lat": 39.0,
+                      "center_lon": -105.5,
+                      "radius_km": 400,
+                  }
+              }
+          },
+      }
+
+   The mesh holds the cells of the region and also 8 layers of cells around
+   it, which limited-area MPAS uses for its boundary, so it extends about 8
+   cells beyond the shape. A shape smaller than a cell makes ``create_region``
+   fail, and the request then raises ``RuntimeError`` naming the log file. The
+   mesh directory also keeps ``region.pts``, the points file the program read.
+   MPAS-Limited-Area is installed first if it is not already installed. Each
+   run writes its own logs, ``create_region.<id>.*`` in ``work_dir/logs``.
 
    If partitions are requested, the result also has ``"partitions"``, a
    dictionary mapping each rank count to its partition file in the mesh
    subdirectory. Metis is installed first if it is not already installed.
    Before it creates anything or downloads anything, the action checks that the
    workflow defines the resources the request needs: ``service`` for a global
-   mesh, and ``compute`` for a regional mesh or if partitions are requested. If
+   or ``create_region`` mesh, and ``compute`` for a regional mesh or if
+   partitions are requested. If
    one is missing it raises ``RuntimeError`` naming it. Installing a tool that
    is missing also needs both ``service`` and ``compute``, and checks for them
    when it runs.
@@ -252,7 +316,25 @@ Actions
    message saying so and leaves an existing install alone. Installing needs both
    the ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming
    a missing one before it starts any download. This runs automatically when a
-   regional request needs it, so calling it is optional.
+   ``project_hexes`` request needs it, so calling it is optional.
+``install_limited_area()``
+   Installs MPAS-Limited-Area, whose ``create_region`` program is a Python
+   script, in ``work_dir``, unless a finished install is already there. On the
+   ``service`` resource, the tag named by ``limited_area_version`` is cloned
+   into ``work_dir/limited-area/<limited_area_version>/src``, and a virtual
+   environment with numpy and netCDF4 from PyPI is created next to it in
+   ``venv``. A check on the ``compute`` resource then imports both packages and
+   runs the program, and only then writes the ``.installed`` marker. If the
+   environment cannot run there, the check fails with a message explaining why.
+   Like the other installs, an install counts only if the marker, the
+   environment's Python and the program exist, and this is checked on every
+   call, so a damaged install is replaced. An install starts from an empty
+   install directory, and requests that need it while it is being installed
+   wait for that install. The logs are ``limited_area_install.*`` and
+   ``limited_area_check.*`` in ``work_dir/logs``. Installing needs both the
+   ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming a
+   missing one before it starts. This runs automatically when a
+   ``create_region`` request needs it, so calling it is optional.
 ``partition_mesh(mesh_path, num_ranks)``
    Partitions a graph file with Metis, installing Metis first if needed.
    ``mesh_path`` must be a non-empty string. A relative path or one starting
@@ -282,7 +364,8 @@ default, which preserves them. If you configure the exchange to use JSON,
 integer keys arrive as strings, a tuple sent as ``num_ranks`` arrives as a
 list, and a set cannot be sent. Use a list of integers to be safe.
 
-Supported global resolutions, for meshes without ``regional``, are ``480km``, ``384km``, ``240km``, ``120km``, ``60km``,
+Supported global resolutions, for meshes without ``regional`` and for
+``create_region`` meshes, are ``480km``, ``384km``, ``240km``, ``120km``, ``60km``,
 ``48km``, ``30km``, ``24km``, ``15km``, ``12km``, ``10km``, ``7.5km``, ``5km``,
 ``4km``, ``3.75km``, and ``3km``.
 

@@ -957,16 +957,6 @@ def test_validate_mesh_config_rejects_control_characters_in_names(
         behavior._validate_mesh_config({**config, "name": name})
 
 
-async def test_create_region_mesh_is_rejected_before_anything_is_created(
-    tmp_path, behavior
-):
-    # Temporary until create_region meshes can be generated
-    output = tmp_path / "meshes"
-    with pytest.raises(RuntimeError, match="cannot be generated yet"):
-        await behavior.generate_mesh(create_region_config(), str(output))
-    assert not output.exists()
-
-
 async def test_invalid_regional_mesh_creates_nothing(tmp_path, behavior):
     output = tmp_path / "meshes"
     with pytest.raises(ValueError, match="missing required keys"):
@@ -2006,6 +1996,157 @@ async def test_each_create_region_run_has_its_own_logs(monkeypatch, behavior, re
             directory, directory.name, "480km", config, region.output
         )
     assert len({call.kwargs["stderr"] for call in task.call_args_list}) == 2
+
+
+# Generating create_region meshes through generate_mesh
+
+
+@pytest.fixture
+def cutting(monkeypatch, behavior, mesh_download):
+    """Provide cached global meshes, installed tools, and a fake create_region."""
+    output, download = mesh_download
+    mark_limited_area_installed(behavior)
+    task, seen = fake_create_region_task(behavior, monkeypatch)
+    return SimpleNamespace(output=output, download=download, task=task, seen=seen)
+
+
+@pytest.mark.parametrize("shape", list(SHAPES))
+async def test_generate_create_region_mesh(cutting, behavior, shape):
+    result = await behavior.generate_mesh(
+        create_region_config(shape), str(cutting.output)
+    )
+    mesh_dir = cutting.output / "cut"
+    assert result == {
+        "static": str(mesh_dir / "cut.static.nc"),
+        "graph": str(mesh_dir / "cut.graph.info"),
+    }
+    assert cutting.seen["points"] == POINTS[shape]
+    assert {path.name for path in mesh_dir.iterdir()} == {
+        "region.pts",
+        "cut.static.nc",
+        "cut.graph.info",
+    }
+    # The global mesh it was cut from stays shared in mesh_data_dir
+    cutting.download.assert_called_once()
+    assert cutting.download.call_args.args[0] == "480km"
+    assert {path.name for path in cutting.output.iterdir()} == {"cut"} | set(
+        mesh_files()
+    )
+
+
+async def test_generate_create_region_mesh_with_default_name(cutting, behavior):
+    config = create_region_config()
+    del config["name"]
+    result = await behavior.generate_mesh(config, str(cutting.output))
+    assert result["static"] == str(
+        cutting.output / "mesh_480km" / "mesh_480km.static.nc"
+    )
+
+
+async def test_generate_create_region_mesh_with_partitions(
+    monkeypatch, cutting, behavior
+):
+    mark_metis_installed(behavior)
+    task = fake_partition_task()
+    monkeypatch.setattr(behavior, "_partition_mesh", task)
+    config = {**create_region_config("polygon"), "init_ranks": 4, "forecast_ranks": 8}
+    result = await behavior.generate_mesh(config, str(cutting.output))
+    graph = result["graph"]
+    assert result["partitions"] == {4: f"{graph}.part.4", 8: f"{graph}.part.8"}
+    assert Path(f"{graph}.part.4").is_file()
+    assert {call.args[0] for call in task.call_args_list} == {graph}
+
+
+async def test_failed_create_region_mesh_is_removed_and_can_be_retried(
+    monkeypatch, cutting, behavior
+):
+    fake_create_region_task(behavior, monkeypatch, fail=BashExitFailure("task", 255))
+    with pytest.raises(RuntimeError, match="create_region failed"):
+        await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    # Nothing is left of the mesh, and the shared global mesh is untouched
+    assert {path.name for path in cutting.output.iterdir()} == set(mesh_files())
+    assert all((cutting.output / name).stat().st_size > 0 for name in mesh_files())
+
+    fake_create_region_task(behavior, monkeypatch)
+    result = await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    assert Path(result["static"]).is_file()
+
+
+async def test_failed_create_region_partition_removes_the_whole_mesh(
+    monkeypatch, cutting, behavior
+):
+    mark_metis_installed(behavior)
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    config = {**create_region_config(), "init_ranks": 4, "forecast_ranks": 8}
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh(config, str(cutting.output))
+    assert {path.name for path in cutting.output.iterdir()} == set(mesh_files())
+
+
+async def test_existing_create_region_mesh_name_fails_before_anything_runs(
+    cutting, behavior
+):
+    (cutting.output / "cut").mkdir()
+    with pytest.raises(FileExistsError):
+        await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    cutting.task.assert_not_called()
+    cutting.download.assert_not_called()
+    assert list((cutting.output / "cut").iterdir()) == []
+
+
+async def test_create_region_mesh_installs_before_downloading(
+    monkeypatch, behavior, mesh_download
+):
+    output, download = mesh_download
+    order = []
+    install, _ = mock_limited_area_tasks(monkeypatch, behavior)
+    install.side_effect = lambda **kwargs: (order.append("install"), done_future())[1]
+    download.side_effect = lambda *a, **k: (order.append("download"), done_future())[1]
+    fake_create_region_task(behavior, monkeypatch)
+    await behavior.generate_mesh(create_region_config(), str(output))
+    assert order == ["install", "download"]
+
+
+async def test_failed_install_leaves_no_create_region_mesh(
+    monkeypatch, behavior, mesh_download
+):
+    output, download = mesh_download
+    mock_limited_area_tasks(monkeypatch, behavior, check=BashExitFailure("task", 1))
+    task, _ = fake_create_region_task(behavior, monkeypatch)
+    with pytest.raises(RuntimeError, match="MPAS-Limited-Area check failed"):
+        await behavior.generate_mesh(create_region_config(), str(output))
+    task.assert_not_called()
+    download.assert_not_called()
+    assert {path.name for path in output.iterdir()} == set(mesh_files())
+
+
+@pytest.mark.parametrize(
+    ("config", "defined", "missing"),
+    [
+        (create_region_config(), ["compute"], "service"),
+        (create_region_config(), ["service"], "compute"),
+        ({**create_region_config(), "forecast_ranks": 4}, ["service"], "compute"),
+    ],
+)
+async def test_create_region_mesh_checks_resources_before_any_work(
+    monkeypatch, cutting, behavior, config, defined, missing
+):
+    define_resources(monkeypatch, *defined)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.generate_mesh(config, str(cutting.output))
+    cutting.task.assert_not_called()
+    cutting.download.assert_not_called()
+    assert not (cutting.output / "cut").exists()
+
+
+async def test_installed_create_region_mesh_needs_service_and_compute(
+    monkeypatch, cutting, behavior
+):
+    define_resources(monkeypatch, "service", "compute")
+    result = await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    assert Path(result["static"]).is_file()
 
 
 # Generating regional meshes through generate_mesh
