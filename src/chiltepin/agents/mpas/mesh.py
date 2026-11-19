@@ -1955,6 +1955,8 @@ class _MeshBehavior:
         downloaded. With one, a regional mesh is generated. Tools the request
         needs, such as Metis for partitioning or the program that makes a
         regional mesh, are installed first if they are not already installed.
+        A requested plot is drawn last, once the mesh and its partitions are
+        complete.
 
         Parameters
         ----------
@@ -1977,6 +1979,8 @@ class _MeshBehavior:
             ``semi_minor_axis_km``, optional ``orientation_degrees``),
             ``polygon`` (``vertices`` as ``[lat, lon]`` pairs, ``inside_lat``,
             ``inside_lon``) or ``channel`` (``upper_lat``, ``lower_lat``).
+            An optional ``plot`` of True draws an image of the mesh, as
+            ``plot_mesh()`` does with its defaults.
         mesh_data_dir : str
             Directory where this request's mesh files are written
 
@@ -1987,6 +1991,11 @@ class _MeshBehavior:
             - graph: path to graph.info file (in mesh_name subdirectory)
             - partitions: dict of {num_ranks: partition_file_path} (in mesh_name
               subdirectory), present only if a partition was requested
+            - plot: path to the PNG image of the mesh (in mesh_name
+              subdirectory), present only if a plot was requested and drawn
+            - plot_error: why the plot failed, or that it was drawn without
+              some map layers, present only then. A plot that fails does not
+              fail the request.
 
         Raises
         ------
@@ -2003,9 +2012,6 @@ class _MeshBehavior:
             fails.
         """
         self._validate_mesh_config(mesh_config)
-        if mesh_config.get("plot"):
-            # Removed once meshes can be plotted
-            raise RuntimeError("Meshes cannot be plotted yet")
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
@@ -2053,11 +2059,22 @@ class _MeshBehavior:
             if ranks:
                 result["partitions"] = await self.partition_mesh(result["graph"], ranks)
             complete = True
-            return result
         finally:
             # Remove the failed mesh completely so the name can be used again
             if not complete:
                 self._remove_mesh_dir(mesh_dir)
+
+        if mesh_config.get("plot"):
+            # The mesh is complete, so a plot that fails only reports why
+            try:
+                plot, warning = await self._plot(result["static"])
+            except Exception as e:
+                result["plot_error"] = str(e)
+            else:
+                result["plot"] = plot
+                if warning is not None:
+                    result["plot_error"] = warning
+        return result
 
 
 @chiltepin_agent()

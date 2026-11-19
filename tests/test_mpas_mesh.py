@@ -924,14 +924,6 @@ def test_validate_plot_view_rejects_invalid(view, message):
         _MeshBehavior._validate_plot_view(**{**settings, **view})
 
 
-async def test_plotted_mesh_is_rejected_before_anything_is_created(tmp_path, behavior):
-    # Temporary until meshes can be plotted
-    output = tmp_path / "meshes"
-    with pytest.raises(RuntimeError, match="cannot be plotted yet"):
-        await behavior.generate_mesh({"resolution": "480km", "plot": True}, str(output))
-    assert not output.exists()
-
-
 async def test_plot_false_is_an_ordinary_request(mesh_download, behavior):
     output, download = mesh_download
     result = await behavior.generate_mesh(
@@ -2155,6 +2147,139 @@ def test_plot_script_passes_the_exit_code_on(monkeypatch, tmp_path, behavior, co
     )
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert done.returncode == code
+
+
+# Plotting through generate_mesh
+
+
+async def test_generate_mesh_with_a_plot(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    mark_plotting_installed(behavior)
+    task = fake_plot_task(behavior, monkeypatch)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    mesh_dir = output / "g"
+    assert result == {
+        "static": str(mesh_dir / "g.static.nc"),
+        "graph": str(mesh_dir / "g.graph.info"),
+        "plot": str(mesh_dir / "g.png"),
+    }
+    assert (mesh_dir / "g.png").read_bytes() == b"\x89PNG new image"
+    # The mesh's own file is plotted, with the defaults
+    mesh_arg, _, options = task.call_args.args
+    assert mesh_arg == str(mesh_dir / "g.static.nc")
+    assert options == []
+
+
+async def test_plot_comes_after_the_partitions(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    mark_metis_installed(behavior)
+    mark_plotting_installed(behavior)
+    order = []
+    partition = fake_partition_task()
+    partition_run = partition.side_effect
+    partition.side_effect = lambda *a, **k: (
+        order.append("partition"),
+        partition_run(*a, **k),
+    )[1]
+    monkeypatch.setattr(behavior, "_partition_mesh", partition)
+    plot = fake_plot_task(behavior, monkeypatch)
+    plot_run = plot.side_effect
+    plot.side_effect = lambda *a, **k: (order.append("plot"), plot_run(*a, **k))[1]
+    result = await behavior.generate_mesh({**PARTITIONED, "plot": True}, str(output))
+    assert order == ["partition", "partition", "plot"]
+    assert set(result) == {"static", "graph", "partitions", "plot"}
+
+
+@pytest.mark.parametrize("code", [1, 139])
+async def test_failed_plot_does_not_fail_the_request(
+    monkeypatch, mesh_download, behavior, code
+):
+    output, _ = mesh_download
+    mark_plotting_installed(behavior)
+    fake_plot_task(behavior, monkeypatch, code=code)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    assert set(result) == {"static", "graph", "plot_error"}
+    assert f"Plotting failed (exit {code})" in result["plot_error"]
+    # The mesh is kept, and no image
+    assert {path.name for path in (output / "g").iterdir()} == {
+        "g.static.nc",
+        "g.graph.info",
+    }
+
+
+async def test_plot_without_some_map_layers_reports_it(
+    monkeypatch, mesh_download, behavior
+):
+    output, _ = mesh_download
+    mark_plotting_installed(behavior)
+    fake_plot_task(behavior, monkeypatch, code=2)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    assert result["plot"] == str(output / "g" / "g.png")
+    assert "without some map layers" in result["plot_error"]
+
+
+async def test_failed_plotting_install_does_not_fail_the_request(
+    monkeypatch, mesh_download, behavior
+):
+    output, _ = mesh_download
+    mock_plotting_tasks(monkeypatch, behavior, check=BashExitFailure("task", 1))
+    task = fake_plot_task(behavior, monkeypatch)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    assert "Plotting check failed" in result["plot_error"]
+    assert "plot" not in result
+    assert (output / "g" / "g.static.nc").is_symlink()
+    task.assert_not_called()
+
+
+async def test_plot_without_compute_does_not_fail_a_global_request(
+    monkeypatch, mesh_download, behavior
+):
+    # A global mesh without partitions needs only service, and a plot that
+    # cannot run reports why
+    output, _ = mesh_download
+    mark_plotting_installed(behavior)
+    define_resources(monkeypatch, "service")
+    task = fake_plot_task(behavior, monkeypatch)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    assert "Plotting needs the resource 'compute'" in result["plot_error"]
+    assert (output / "g" / "g.static.nc").is_symlink()
+    task.assert_not_called()
+
+
+async def test_failed_mesh_is_not_plotted(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    mark_metis_installed(behavior)
+    mark_plotting_installed(behavior)
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    task = fake_plot_task(behavior, monkeypatch)
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh({**PARTITIONED, "plot": True}, str(output))
+    task.assert_not_called()
+    assert not (output / "forecast").exists()
+
+
+async def test_regional_meshes_are_plotted(monkeypatch, regional, behavior, cutting):
+    mark_plotting_installed(behavior)
+    task = fake_plot_task(behavior, monkeypatch)
+    hexes = await behavior.generate_mesh(
+        {**regional_config(), "plot": True}, str(regional.output)
+    )
+    assert hexes["plot"] == str(regional.output / "region" / "region.png")
+    cut = await behavior.generate_mesh(
+        {**create_region_config(), "plot": True}, str(cutting.output)
+    )
+    assert cut["plot"] == str(cutting.output / "cut" / "cut.png")
+    assert [call.args[0] for call in task.call_args_list] == [
+        hexes["static"],
+        cut["static"],
+    ]
 
 
 # Generating project_hexes meshes
