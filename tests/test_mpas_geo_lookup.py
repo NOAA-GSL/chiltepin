@@ -56,6 +56,8 @@ STATES = [
     ("Punjab", "Punjab", "", "", "", "Beta", square(11, 1)),
     ("Georgia", "Georgia", "", "", "", "Beta", square(12, 2)),
     ("Québec", "Quebec", "", "", "Province of Quebec|Kebek", "Beta", square(13, 1)),
+    # Far overseas, and smaller than Beta's other states
+    ("Faraway", "Faraway", "", "", "", "Beta", square(60, 0, 0.5)),
 ]
 
 
@@ -220,13 +222,60 @@ def test_excluded_names_are_skipped(boundaries):
 
 
 def test_region_of_only_excluded_names(boundaries):
-    with pytest.raises(geo.RegionNotFound, match="Every name is excluded"):
+    with pytest.raises(geo.RegionNotFound, match="Every place is left out"):
         geo.lookup_region(["Alpha"], boundaries, exclude_names=["alpha"])
 
 
 def test_continent_of_only_excluded_countries(boundaries):
-    with pytest.raises(geo.RegionNotFound, match="'Farland'"):
+    with pytest.raises(geo.RegionNotFound, match="Every place is left out"):
         geo.lookup_region(["Farland"], boundaries, exclude_names=["Gamma", "Georgia"])
+
+
+def test_country_without_a_state_is_drawn_from_its_other_states(boundaries):
+    # Beta's states are Punjab, Georgia, Quebec and Faraway, which is far
+    # overseas and left out as Beta's own overseas part is
+    region = geo.lookup_region(["Beta"], boundaries, exclude_names=["Quebec"])
+    assert bounds(region) == [11, 1, 13, 3]
+
+
+def test_continent_without_a_state_of_one_country(boundaries):
+    # Alpha is drawn from its states without Rio, and Beta stays whole
+    region = geo.lookup_region(["Testland"], boundaries, exclude_names=["Rio"])
+    assert bounds(region) == [1, 0, 14, 4]
+    assert region.difference(geo.lookup_region(["Rio"], boundaries)).equals(region)
+
+
+def test_state_left_out_of_a_list_of_states(boundaries):
+    region = geo.lookup_region(
+        ["Rio", "Quebec", "Punjab, Alpha"], boundaries, exclude_names=["Quebec"]
+    )
+    assert bounds(region) == [0, 0, 2, 2]
+
+
+def test_exclusion_outside_the_region_is_an_error(boundaries):
+    # Leaving out a place the region does not have may mean it was not read
+    # as meant, so it is not ignored
+    with pytest.raises(geo.RegionNotFound, match="not in the region: 'Quebec'"):
+        geo.lookup_region(["Alpha"], boundaries, exclude_names=["Quebec"])
+
+
+def test_unknown_exclusion_is_an_error(boundaries):
+    with pytest.raises(
+        geo.RegionNotFound, match="to leave out is named 'Springfield'"
+    ) as error:
+        geo.lookup_region(["Alpha"], boundaries, exclude_names=["Springfield"])
+    assert "not in the region" not in str(error.value)
+
+
+def test_ambiguous_exclusion_is_an_error(boundaries):
+    with pytest.raises(geo.RegionNotFound, match=r"Punjab \(Alpha, Beta\)") as error:
+        geo.lookup_region(["Alpha"], boundaries, exclude_names=["Punjab"])
+    assert "not in the region" not in str(error.value)
+
+
+def test_ambiguous_exclusion_with_its_country(boundaries):
+    region = geo.lookup_region(["Alpha"], boundaries, exclude_names=["Punjab, Alpha"])
+    assert bounds(region) == [0, 0, 1, 1]
 
 
 def test_country_across_the_180th_meridian_is_one_piece(boundaries):

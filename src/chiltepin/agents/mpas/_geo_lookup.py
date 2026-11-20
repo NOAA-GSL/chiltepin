@@ -18,8 +18,13 @@ A name matches exactly, ignoring case, accents and extra spaces. It can be:
   country, such as "Punjab", must name its country, as "Punjab, India".
 - with Nominatim, any place with an outline, such as "Denver"
 
-The region is the union of the outlines, without places the exclusions name.
-Overseas parts, more than ``PROXIMITY_KM`` from the largest part, are left out.
+The region is the union of the outlines, without the places the exclusions
+name. A country of a continent, or a state or province of a country, can be
+left out, such as Russia from "Europe" or Alaska from "United States of
+America". A country losing a state is drawn from its other states. An
+exclusion that leaves nothing out of the region is an error, so none is lost.
+Overseas parts, more than ``PROXIMITY_KM`` from a place's largest part, are
+left out.
 Longitudes are made continuous around the region, so a region across the
 180th meridian has longitudes beyond 180 or -180.
 
@@ -120,8 +125,9 @@ class _Boundaries:
                 self.country_index.setdefault(name, []).append(i)
             continent = normalize_name(record[CONTINENT_FIELD])
             self.continent_index.setdefault(continent, []).append(i)
-        # name -> {country: [state records]}
+        # name -> {country: [state records]}, and country -> [state records]
         self.state_index: Dict[str, Dict[str, List[int]]] = {}
+        self.states_of: Dict[str, List[int]] = {}
         for i, record in enumerate(self.states.iterRecords()):
             names = {normalize_name(record[f]) for f in STATE_FIELDS if record[f]}
             names |= {
@@ -130,6 +136,7 @@ class _Boundaries:
                 if alt.strip()
             }
             country = normalize_name(record[STATE_COUNTRY_FIELD])
+            self.states_of.setdefault(country, []).append(i)
             for name in names:
                 self.state_index.setdefault(name, {}).setdefault(country, []).append(i)
 
@@ -143,46 +150,43 @@ class _Boundaries:
 
         return shape(self.states.shape(i).__geo_interface__)
 
+    def admin(self, i: int) -> str:
+        """Return the name states use for a country's record."""
+        return normalize_name(self.countries.record(i)["ADMIN"])
+
     def country_of(self, name: str) -> Optional[str]:
         """Return the name states use for the country a name stands for."""
         records = self.country_index.get(name)
-        if not records:
-            return None
-        return normalize_name(self.countries.record(records[0])["ADMIN"])
+        return self.admin(records[0]) if records else None
 
-    def lookup(self, name: str, excluded: set) -> Tuple[List[Any], Optional[str]]:
-        """Return the outlines a name stands for, and why it has none if so.
+    def resolve(self, name: str) -> Tuple[str, Any]:
+        """Return what a name stands for, as a kind and its records.
 
-        Each outline is one place, such as one country of a continent, whose
-        overseas parts are left out on their own. The reason is None when the name is found, "ambiguous: ..." when it
-        names states of several countries, and "missing" otherwise.
+        The kind is "countries" or "states", with their records, "ambiguous",
+        with the countries of the states it names, or "missing". A continent
+        stands for its countries.
         """
         key = normalize_name(name)
         if key in self.continent_index:
-            return [
-                self.country(i)
-                for i in self.continent_index[key]
-                if not self.country_names[i] & excluded
-            ], None
+            return "countries", list(self.continent_index[key])
         if key in self.country_index:
-            return [self.country(i) for i in self.country_index[key]], None
+            return "countries", list(self.country_index[key])
         if key in self.state_index:
             by_country = self.state_index[key]
             if len(by_country) > 1:
-                countries = sorted(
+                return "ambiguous", sorted(
                     self.states.record(records[0])[STATE_COUNTRY_FIELD]
                     for records in by_country.values()
                 )
-                return [], "ambiguous: " + ", ".join(countries)
             (records,) = by_country.values()
-            return [self.state(i) for i in records], None
+            return "states", list(records)
         if "," in key:
             place, _, country = (part.strip() for part in key.rpartition(","))
             country = self.country_of(country) or country
             records = self.state_index.get(place, {}).get(country)
             if records:
-                return [self.state(i) for i in records], None
-        return [], "missing"
+                return "states", list(records)
+        return "missing", None
 
 
 def query_nominatim(
@@ -302,7 +306,8 @@ def lookup_region(
     data_dir : Path
         Directory the Natural Earth layers were downloaded to.
     exclude_names : sequence of str, optional
-        Names of places left out, such as a country of a continent.
+        Names of places left out: continents, countries, states or provinces,
+        such as a country of a continent or a state of a country.
     nominatim_contact : str, optional
         Email address sent to Nominatim with each request. Without it, names
         Natural Earth lacks are not looked up.
@@ -314,8 +319,9 @@ def lookup_region(
     Raises
     ------
     RegionNotFound
-        If any name matches no place or more than one, or every name is
-        excluded. The message names them.
+        If any name matches no place or more than one, an exclusion leaves
+        nothing out of the region, or everything is left out. The message
+        names them.
     """
     from shapely.geometry import shape
     from shapely.ops import unary_union
@@ -323,26 +329,74 @@ def lookup_region(
     if nominatim_contact and cache_dir is None:
         raise ValueError("cache_dir is needed with nominatim_contact")
     boundaries = _Boundaries(Path(data_dir))
-    excluded = {normalize_name(name) for name in exclude_names}
+
+    # The records each exclusion names, and the exclusions naming each record
+    left_out: Dict[Tuple[str, int], set] = {}
+    excluded_states: Dict[str, set] = {}
+    unknown_exclusions: List[str] = []
+    ambiguous: List[str] = []
+    unresolved: set = set()
+    for name in exclude_names:
+        kind, records = boundaries.resolve(name)
+        if kind == "ambiguous":
+            ambiguous.append(f"{name} ({', '.join(records)})")
+            unresolved.add(name)
+        elif kind == "missing":
+            unknown_exclusions.append(name)
+            unresolved.add(name)
+        else:
+            for i in records:
+                left_out.setdefault((kind, i), set()).add(name)
+                if kind == "states":
+                    country = normalize_name(
+                        boundaries.states.record(i)[STATE_COUNTRY_FIELD]
+                    )
+                    excluded_states.setdefault(country, set()).add(i)
+    excluded_keys = {normalize_name(name): name for name in exclude_names}
+    used: set = set()
+
+    def outlines_of(kind: str, records: List[int]) -> List[Any]:
+        """Return the outlines of records, without the excluded places."""
+        outlines = []
+        for i in records:
+            if (kind, i) in left_out:
+                used.update(left_out[kind, i])
+            elif kind == "states":
+                outlines.append(boundaries.state(i))
+            elif boundaries.admin(i) in excluded_states:
+                # A country losing a state is drawn from its other states
+                cut = excluded_states[boundaries.admin(i)]
+                used.update(*(left_out["states", j] for j in cut))
+                states = boundaries.states_of[boundaries.admin(i)]
+                kept = [j for j in states if j not in cut]
+                if kept:
+                    outlines.append(unary_union([boundaries.state(j) for j in kept]))
+            else:
+                outlines.append(boundaries.country(i))
+        return outlines
+
     places: List[List[Any]] = []
     missing: List[str] = []
-    ambiguous: List[str] = []
     for name in names:
-        if normalize_name(name) in excluded:
+        if normalize_name(name) in excluded_keys:
+            used.add(excluded_keys[normalize_name(name)])
             continue
-        outlines, problem = boundaries.lookup(name, excluded)
-        if problem == "missing" and nominatim_contact:
-            geometry = query_nominatim(name, nominatim_contact, Path(cache_dir))
-            outlines = [shape(geometry)] if geometry else []
-            problem = None if outlines else "missing"
-        found = [_polygons(outline) for outline in outlines]
-        found = [polygons for polygons in found if polygons]
-        if problem and problem.startswith("ambiguous"):
-            ambiguous.append(f"{name} ({problem.split(': ', 1)[1]})")
-        elif not found:
-            missing.append(name)
-        else:
-            places.extend(found)
+        kind, records = boundaries.resolve(name)
+        if kind == "ambiguous":
+            ambiguous.append(f"{name} ({', '.join(records)})")
+            continue
+        if kind == "missing":
+            geometry = None
+            if nominatim_contact:
+                geometry = query_nominatim(name, nominatim_contact, Path(cache_dir))
+            found = [_polygons(shape(geometry))] if geometry else []
+            if not any(found):
+                missing.append(name)
+            places.extend(polygons for polygons in found if polygons)
+            continue
+        found = [_polygons(outline) for outline in outlines_of(kind, records)]
+        places.extend(polygons for polygons in found if polygons)
+
     problems = []
     if missing:
         problems.append(
@@ -358,10 +412,23 @@ def lookup_region(
             "These names are used in several countries, so name one, as "
             "'Name, Country': " + "; ".join(ambiguous)
         )
+    # An exclusion that is also a name asked for leaves that name out
+    unknown_exclusions = [name for name in unknown_exclusions if name not in used]
+    if unknown_exclusions:
+        problems.append(
+            "No continent, country, state or province to leave out is named "
+            + ", ".join(map(repr, unknown_exclusions))
+        )
+    unused = [name for name in exclude_names if name not in used | unresolved]
+    if unused:
+        problems.append(
+            "These places to leave out are not in the region: "
+            + ", ".join(map(repr, unused))
+        )
     if problems:
         raise RegionNotFound(". ".join(problems))
     if not places:
-        raise RegionNotFound("Every name is excluded, so there is no region")
+        raise RegionNotFound("Every place is left out, so there is no region")
 
     # Each place keeps its parts near its largest part, as one piece around
     # the 180th meridian, and the places are put near the largest place
