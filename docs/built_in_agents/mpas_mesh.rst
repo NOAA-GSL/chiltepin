@@ -4,17 +4,23 @@ MPAS Mesh Agent
 ``chiltepin.agents.mpas.MeshAgent`` Generates MPAS meshes for use in NWP
 workflows. It downloads precomputed global MPAS meshes from UCAR, generates
 regional meshes with the MPAS-Tools ``project_hexes`` program or cuts them from
-a global mesh with the MPAS-Limited-Area ``create_region`` program, and can
-partition mesh graphs for MPI with Metis.
+a global mesh with the MPAS-Limited-Area ``create_region`` program, can
+partition mesh graphs for MPI with Metis, and can draw images of meshes.
 
 For the API reference, see :doc:`../api/agents/mpas_mesh`.
 
 Requirements
 ------------
 
-* Chiltepin installed in the agent and task execution environments; no extra
-  Python dependencies are required. The agent installs the ones
-  ``create_region`` needs for itself.
+* Chiltepin installed in the agent and task execution environments. Plotting
+  also needs the ``mpas`` extra where the agent's tasks run on the ``compute``
+  resource, which installs numpy, netCDF4, matplotlib and cartopy:
+
+  .. code-block:: console
+
+     $ pip install "chiltepin[mpas]"
+
+  The agent installs the Python packages ``create_region`` needs for itself.
 * Authentication via ``chiltepin login`` before launching the agent.
 * Network access to the Academy Exchange from the agent and to UCAR and GitHub
   from the ``service`` resource.
@@ -38,6 +44,11 @@ Requirements
   be able to create virtual environments with ``python -m venv``. Some Linux
   distributions leave this out of their Python package, so it may need a
   separate package such as ``python3-venv``.
+* For plotting, network access to Natural Earth on the ``service`` resource,
+  to download the map layers the plots draw. cartopy publishes Linux wheels for
+  Python 3.10 only for x86_64, so on an ARM machine with Python 3.10 the
+  ``mpas`` extra tries to build cartopy, which needs the GEOS and PROJ
+  libraries. Use Python 3.11 or newer there.
 
 Launch Arguments
 ----------------
@@ -91,7 +102,8 @@ The agent workflow configuration must contain these resources:
 
 ``service``
    Runs agent tasks that require internet access, such as downloading meshes,
-   Metis, MPAS-Tools, and MPAS-Limited-Area with its Python packages. It must
+   Metis, MPAS-Tools, MPAS-Limited-Area with its Python packages, and the map
+   layers plots draw. It must
    have write access to the mesh output directory and to
    ``work_dir``. The agent and this resource must share these directories at
    the same absolute paths.
@@ -99,7 +111,8 @@ The agent workflow configuration must contain these resources:
 ``compute``
    Runs tasks that do not need the internet, such as building Metis and
    MPAS-Tools, running ``project_hexes``, ``grid_rotate`` and ``create_region``,
-   and partitioning meshes. It needs ``cmake``, ``make`` and a C compiler to build Metis, and
+   partitioning meshes, and plotting them, for which it needs the ``mpas``
+   extra. It needs ``cmake``, ``make`` and a C compiler to build Metis, and
    ``make``, a Fortran compiler and netCDF-C and netCDF-Fortran to build and run
    the MPAS-Tools programs. It must have
    write access to ``work_dir`` and the mesh output directory at the same
@@ -153,13 +166,15 @@ Actions
 
    * ``mesh_config``: Dictionary with optional ``resolution`` (default
      ``"120km"``), mesh ``name`` (default ``"mesh_<resolution>"``),
-     ``init_ranks`` and ``forecast_ranks``, and ``regional``. The rank entries
+     ``init_ranks`` and ``forecast_ranks``, ``regional``, and ``plot``. The
+     rank entries
      are positive integers giving MPI rank counts to partition the mesh graph
      for. A count of 1 needs no partition. A name can be at most 200
      bytes long, which is 200 characters unless it has non-ASCII characters,
      must not contain control characters such as a newline, and must not be
      that of a downloaded global mesh file, such as ``x1.2562.graph.info``. Any other key
      raises ``ValueError``, so a misspelled key is not silently ignored.
+     ``plot`` is ``True`` or ``False``, by default ``False``.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
 
    Without ``regional``, the request is for a global mesh, which is downloaded.
@@ -275,6 +290,15 @@ Actions
    If partitions are requested, the result also has ``"partitions"``, a
    dictionary mapping each rank count to its partition file in the mesh
    subdirectory. Metis is installed first if it is not already installed.
+
+   With ``"plot": True``, an image of the mesh is drawn as ``plot_mesh`` draws
+   it with its defaults, once the mesh and its partitions are complete. The
+   result then also has ``"plot"``, the path of ``<name>.png`` in the mesh
+   subdirectory. A plot that fails does not fail the request, which returns the
+   mesh with ``"plot_error"`` saying why instead of ``"plot"``. That includes a
+   missing ``compute`` resource, a missing ``mpas`` extra, or a failed plotting
+   install. A plot drawn without some map layers has both ``"plot"`` and
+   ``"plot_error"``.
    Before it creates anything or downloads anything, the action checks that the
    workflow defines the resources the request needs: ``service`` for a global
    or ``create_region`` mesh, and ``compute`` for a regional mesh or if
@@ -350,6 +374,67 @@ Actions
    ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming a
    missing one before it starts. This runs automatically when a
    ``create_region`` request needs it, so calling it is optional.
+``install_plotting()``
+   Prepares plotting, unless it is already prepared. The Natural Earth map
+   layers the plots draw, coastlines, country borders, and state and province
+   lines, are downloaded to ``work_dir/plot/natural_earth`` on the ``service``
+   resource, since the ``compute`` resource may have no internet access. A check
+   on the ``compute`` resource then confirms that the Python of its tasks has the
+   ``mpas`` extra and that every layer has its ``.shp``, ``.shx`` and ``.dbf``
+   files, and only then writes the
+   ``work_dir/plot/.installed`` marker, so a restarted agent reuses it. The logs
+   are ``plot_download.*`` and ``plot_check.*`` in ``work_dir/logs``. If the
+   extra is missing, the check fails with a message saying to install it.
+   Requests that need plotting while it is being prepared wait for that
+   install. Installing needs both the ``service`` and ``compute`` resources, and
+   raises ``RuntimeError`` naming a missing one before it starts. This runs
+   automatically when a plot is requested, so calling it is optional.
+``plot_mesh(mesh_path, title=None, zoom=None, center_lat=None, center_lon=None)``
+   Draws a PNG image of a mesh on the ``compute`` resource, and returns its
+   absolute path. The image is written next to the mesh as ``<name>.png``, for
+   example ``conus.png`` for ``conus.static.nc``, and replaces an earlier one. It
+   is written under a temporary name and renamed when complete, so a failed plot
+   keeps an earlier image. Plotting is prepared first if it is not already.
+   Meshes whose names differ only by ``.static`` or ``.nc``, such as ``a.nc``
+   and ``a.static.nc`` in one directory, are drawn to the same ``a.png``.
+
+   * ``mesh_path``: Path to a mesh's static or grid file. A relative path or one
+     starting with ``~`` is made absolute on the agent.
+   * ``title``: Title of the image, by default ``"MPAS mesh: <name>"``.
+   * ``zoom``, ``center_lat`` and ``center_lon``: The view of a global mesh, as
+     described below. Giving any of them for a regional mesh raises
+     ``ValueError``, without drawing.
+
+   A mesh is regional if any of its cells is in a boundary layer, as every
+   ``project_hexes`` and ``create_region`` mesh is, or if its cells cover less
+   than 99.9% of the sphere, and global otherwise. A region without boundary
+   layers is drawn with every cell as interior.
+
+   * A regional mesh is drawn on a flat map shaped like the region, with its
+     cells colored by boundary layer, from white for the interior to purple for
+     layer 7, on a fixed scale with a color bar. Coastlines and country borders
+     are drawn over it, and state and province lines too on a map less than 60
+     degrees across over North America, or 30 degrees elsewhere. A region
+     across the 180th meridian is drawn in one piece, and one around a pole as
+     a band up to the pole. The whole region is drawn at once, which takes
+     about 2.5 GB of memory on the ``compute`` resource for each million
+     cells, so the largest regional meshes may not fit.
+   * A global mesh is drawn on a sphere with coastlines, seen from above
+     ``center_lat`` and ``center_lon``, by default 0N 0E. ``zoom`` is greater
+     than 0. The default makes the globe fill the image, and a larger zoom shows
+     less of the globe, with larger cells. Above a zoom of 2, the coastlines
+     come from the detailed layer.
+
+   Cell edges are drawn only when cells come out at least 10 pixels across in
+   the image, since smaller ones blur together. At the default zoom that means
+   global meshes of 120km and coarser. A finer global mesh is drawn as a plain
+   sphere unless zoomed in, and a 60km mesh shows its cells from a zoom of
+   about 2.4.
+
+   If a map layer is missing, the image is drawn without it, and a warning
+   naming the log is logged. Each plot writes its own logs, ``plot_mesh.<id>.*``
+   in ``work_dir/logs``, and a failure raises ``RuntimeError`` naming both.
+   ``FileNotFoundError`` is raised for a mesh file that does not exist.
 ``partition_mesh(mesh_path, num_ranks)``
    Partitions a graph file with Metis, installing Metis first if needed.
    ``mesh_path`` must be a non-empty string. A relative path or one starting
@@ -364,7 +449,10 @@ Actions
 
 ``ensure_tools_installed(mesh_config)``
    Installs the tools that a ``generate_mesh`` request with this configuration
-   needs, so installation can overlap with other work. It checks the
+   needs, so installation can overlap with other work. That includes preparing
+   plotting for a request with ``"plot": True``, and a failure to prepare it is
+   raised here, though ``generate_mesh`` would only report it in
+   ``"plot_error"``. It checks the
    configuration first, exactly as ``generate_mesh`` does, and raises
    ``ValueError`` if it is invalid.
 

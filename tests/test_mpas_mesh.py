@@ -26,7 +26,13 @@ from parsl.errors import NoDataFlowKernelError
 from chiltepin import AgentRuntime, Workflow
 from chiltepin.agents import mpas
 from chiltepin.agents.mpas import MeshAgent
+from chiltepin.agents.mpas import _plot_mesh as plot_script
 from chiltepin.agents.mpas import mesh as mesh_module
+from chiltepin.agents.mpas._plot_mesh import (
+    EXIT_MISSING_MAP,
+    EXIT_VIEW_OF_REGIONAL_MESH,
+    REQUIRED_PARTS,
+)
 from chiltepin.agents.mpas.mesh import _MeshBehavior
 
 RESOLUTIONS = {
@@ -509,6 +515,43 @@ def mock_limited_area_tasks(monkeypatch, behavior, install=None, check=None):
     )
 
 
+def mark_plotting_installed(behavior):
+    """Create what a finished plotting install leaves in work_dir."""
+    prefix = behavior.work_dir / "plot"
+    for path in behavior._map_layer_paths():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in REQUIRED_PARTS:
+            path.with_suffix(suffix).write_bytes(b"shapefile")
+    (prefix / ".installed").touch()
+    return prefix
+
+
+def mock_plotting_tasks(monkeypatch, behavior, download=None, check=None):
+    """Replace the map download and plotting check tasks with mocks."""
+    return mock_install_tasks(
+        monkeypatch,
+        behavior,
+        "plotting",
+        mark_plotting_installed,
+        download,
+        check,
+        names=("_download_{}", "_check_{}"),
+    )
+
+
+def fake_python(monkeypatch, tmp_path, body):
+    """Make the tasks' Python a shell script running ``body``.
+
+    Scripts the tasks build name the Python running them, so this stands in for
+    the Python of a resource.
+    """
+    path = tmp_path / "fake-python"
+    path.write_text("#!/bin/sh\n" + body + "\n")
+    path.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(path))
+    return path
+
+
 def mock_metis_tasks(monkeypatch, behavior, download=None, build=None):
     """Replace the Metis download and build tasks with mocks."""
     return mock_install_tasks(
@@ -825,6 +868,78 @@ def test_validate_mesh_config_requires_every_project_hexes_key(behavior):
             behavior._validate_mesh_config(regional_config(**{key: ...}))
 
 
+@pytest.mark.parametrize("plot", [True, False])
+@pytest.mark.parametrize(
+    "config", [{}, PARTITIONED, "regional_config", "create_region_config"]
+)
+def test_validate_mesh_config_accepts_plot(behavior, config, plot):
+    base = {
+        "regional_config": regional_config,
+        "create_region_config": create_region_config,
+    }
+    config = base[config]() if isinstance(config, str) else config
+    behavior._validate_mesh_config({**config, "plot": plot})
+
+
+@pytest.mark.parametrize("plot", [1, 0, "true", None, "yes", [True]])
+def test_validate_mesh_config_rejects_non_boolean_plot(behavior, plot):
+    with pytest.raises(ValueError, match="plot must be True or False"):
+        behavior._validate_mesh_config({"plot": plot})
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        {},
+        {"title": "A mesh"},
+        {"title": ""},
+        {"zoom": 2},
+        {"zoom": 0.5},
+        {"zoom": 1e6},
+        {"center_lat": 50.0, "center_lon": 10.0},
+        {"center_lat": -90, "center_lon": 360},
+        {"title": "x", "zoom": 3.5, "center_lat": 0, "center_lon": -180},
+    ],
+)
+def test_validate_plot_view_accepts_valid(view):
+    settings = {"title": None, "zoom": None, "center_lat": None, "center_lon": None}
+    _MeshBehavior._validate_plot_view(**{**settings, **view})
+
+
+@pytest.mark.parametrize(
+    ("view", "message"),
+    [
+        ({"title": 5}, "title must be a string"),
+        ({"title": b"x"}, "title must be a string"),
+        ({"zoom": 0}, "zoom must be greater than 0"),
+        ({"zoom": -1}, "zoom must be greater than 0"),
+        ({"zoom": True}, "zoom must be a finite number"),
+        ({"zoom": "2"}, "zoom must be a finite number"),
+        ({"zoom": float("inf")}, "zoom must be a finite number"),
+        ({"zoom": float("nan")}, "zoom must be a finite number"),
+        ({"center_lat": 50.0}, "must be given together"),
+        ({"center_lon": 10.0}, "must be given together"),
+        ({"center_lat": 91, "center_lon": 0}, "center_lat must be between -90 and 90"),
+        ({"center_lat": 0, "center_lon": 361}, "center_lon must be between -180"),
+        ({"center_lat": "0", "center_lon": 0}, "center_lat must be a finite number"),
+        ({"center_lat": 0, "center_lon": None}, "must be given together"),
+    ],
+)
+def test_validate_plot_view_rejects_invalid(view, message):
+    settings = {"title": None, "zoom": None, "center_lat": None, "center_lon": None}
+    with pytest.raises(ValueError, match=message):
+        _MeshBehavior._validate_plot_view(**{**settings, **view})
+
+
+async def test_plot_false_is_an_ordinary_request(mesh_download, behavior):
+    output, download = mesh_download
+    result = await behavior.generate_mesh(
+        {"resolution": "480km", "name": "g", "plot": False}, str(output)
+    )
+    assert set(result) == {"static", "graph"}
+    download.assert_called_once()
+
+
 @pytest.mark.parametrize("shape", list(SHAPES))
 def test_validate_mesh_config_accepts_each_create_region_shape(behavior, shape):
     behavior._validate_mesh_config(create_region_config(shape))
@@ -1035,6 +1150,114 @@ def test_metis_scripts(tmp_path):
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
 
 
+def test_plotting_scripts(tmp_path):
+    behavior = _MeshBehavior(str(tmp_path / "work dir"))
+    download = _MeshBehavior._download_plotting.func(behavior)
+    check = _MeshBehavior._check_plotting.func(behavior)
+    prefix = f"{behavior.work_dir}/plot"
+    assert f"prefix='{prefix}'" in download
+    assert f"prefix='{prefix}'" in check
+    # The map layers are downloaded by the plotting script, with the Python of
+    # the task, after the install's marker is removed. Nothing else is removed,
+    # so plots running meanwhile keep their map layers.
+    fetch = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(behavior._plot_script))} "
+        f"--download-map-data {shlex.quote(str(behavior._map_data_dir))}"
+    )
+    assert fetch in download
+    assert download.index('rm -f "$prefix/.installed"') < download.index(fetch)
+    assert "rm -rf" not in download
+    assert download.rstrip().endswith('echo "Completed download at $(date)"')
+    # The install is marked only after the imports and every layer are checked,
+    # with the Python of the task
+    lines = [line.strip() for line in check.splitlines()]
+    marker = lines.index('touch "$prefix/.installed"')
+    imports = next(i for i, line in enumerate(lines) if "import cartopy" in line)
+    assert shlex.quote(sys.executable) in lines[imports]
+    layers = next(i for i, line in enumerate(lines) if line.startswith("for layer"))
+    assert imports < layers < marker
+    for path in behavior._map_layer_paths():
+        for suffix in REQUIRED_PARTS:
+            assert shlex.quote(str(path.with_suffix(suffix))) in check
+    assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
+
+
+def test_plotting_download_writes_the_layers(monkeypatch, tmp_path, behavior):
+    """Run the download script with a stand-in Python that writes the layers."""
+    record = tmp_path / "record"
+    fake_python(
+        monkeypatch,
+        tmp_path,
+        f'printf "%s\\n" "$@" > {shlex.quote(str(record))}',
+    )
+    prefix = behavior.work_dir / "plot"
+    (prefix / "matplotlib").mkdir(parents=True)
+    (prefix / ".installed").touch()
+    script = _MeshBehavior._download_plotting.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert record.read_text().splitlines() == [
+        str(behavior._plot_script),
+        "--download-map-data",
+        str(behavior._map_data_dir),
+    ]
+    # The earlier install no longer counts, but its files are kept
+    assert not (prefix / ".installed").exists()
+    assert (prefix / "matplotlib").is_dir()
+
+
+@pytest.mark.parametrize(
+    "problem", [None, "imports", "missing_layer", "empty_layer", "missing_dbf"]
+)
+def test_plotting_check_marks_only_a_working_install(
+    monkeypatch, tmp_path, behavior, problem
+):
+    prefix = mark_plotting_installed(behavior)
+    (prefix / ".installed").unlink()
+    fake_python(monkeypatch, tmp_path, "exit 1" if problem == "imports" else "exit 0")
+    layer = behavior._map_layer_paths()[2]
+    if problem == "missing_dbf":
+        layer = layer.with_suffix(".dbf")
+    if problem in ("missing_layer", "missing_dbf"):
+        layer.unlink()
+    elif problem == "empty_layer":
+        layer.write_bytes(b"")
+    script = _MeshBehavior._check_plotting.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert (done.returncode == 0) == (problem is None)
+    assert (prefix / ".installed").is_file() == (problem is None)
+    if problem == "imports":
+        assert "Install chiltepin[mpas]" in done.stderr
+    elif problem is not None:
+        assert f"Map layer {layer} is missing" in done.stderr
+
+
+def test_plotting_check_imports_with_the_real_packages(monkeypatch, tmp_path, behavior):
+    # The tests have the chiltepin[mpas] extra, so the real check passes
+    prefix = mark_plotting_installed(behavior)
+    (prefix / ".installed").unlink()
+    script = _MeshBehavior._check_plotting.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert (prefix / ".installed").is_file()
+
+
+def test_map_layers_are_where_cartopy_stores_them(behavior):
+    data_dir = behavior.work_dir / "plot" / "natural_earth" / "shapefiles"
+    assert behavior._map_layer_paths() == [
+        data_dir / "natural_earth" / "physical" / "ne_10m_coastline.shp",
+        data_dir
+        / "natural_earth"
+        / "cultural"
+        / "ne_10m_admin_0_boundary_lines_land.shp",
+        data_dir
+        / "natural_earth"
+        / "cultural"
+        / "ne_10m_admin_1_states_provinces_lines.shp",
+        data_dir / "natural_earth" / "physical" / "ne_110m_coastline.shp",
+    ]
+
+
 def test_limited_area_scripts(tmp_path):
     behavior = _MeshBehavior(str(tmp_path / "work dir"), limited_area_version="2.1")
     install = _MeshBehavior._install_limited_area.func(behavior)
@@ -1052,6 +1275,8 @@ def test_limited_area_scripts(tmp_path):
     assert '"$prefix/venv/bin/python" -m pip install' in install
     assert install.rstrip().endswith('echo "Completed install at $(date)"')
     assert "numpy netCDF4" in install
+    # pip keeps no download cache in the home directory
+    assert "--no-cache-dir" in install
     # A failed earlier install is removed before anything is cloned
     assert install.index('rm -rf "$prefix"') < install.index("git ")
     # The install is marked only after the imports and the script are checked
@@ -1527,6 +1752,565 @@ async def test_install_limited_area_shares_the_lock_with_other_installs(
     pending.set_result(None)
     await asyncio.gather(tools, limited)
     install.assert_called_once()
+
+
+# Installing plotting
+
+
+async def test_install_plotting_reuses_a_finished_install(monkeypatch, behavior):
+    mark_plotting_installed(behavior)
+    install, check = mock_plotting_tasks(monkeypatch, behavior)
+    await behavior.install_plotting()
+    assert behavior.plotting_built
+    install.assert_not_called()
+    check.assert_not_called()
+
+
+async def test_install_plotting_replaces_an_unfinished_install(monkeypatch, behavior):
+    prefix = mark_plotting_installed(behavior)
+    (prefix / ".installed").unlink()
+    install, check = mock_plotting_tasks(monkeypatch, behavior)
+    await behavior.install_plotting()
+    install.assert_called_once()
+    check.assert_called_once()
+    assert behavior.plotting_built
+
+
+async def test_install_plotting_runs_on_service_and_checks_on_compute(
+    monkeypatch, behavior
+):
+    install, check = mock_plotting_tasks(monkeypatch, behavior)
+    await behavior.install_plotting()
+    install.assert_called_once_with(
+        executor=["service"],
+        stdout=str(behavior.log_dir / "plot_download.stdout"),
+        stderr=str(behavior.log_dir / "plot_download.stderr"),
+    )
+    check.assert_called_once_with(
+        executor=["compute"],
+        stdout=str(behavior.log_dir / "plot_check.stdout"),
+        stderr=str(behavior.log_dir / "plot_check.stderr"),
+        inputs=[install.return_value],
+    )
+
+
+async def test_concurrent_plotting_installs_run_once(monkeypatch, behavior):
+    pending, check_pending = Future(), Future()
+    install, check = mock_plotting_tasks(monkeypatch, behavior)
+    install.return_value = pending
+    check.side_effect = lambda **kwargs: check_pending
+    requests = [asyncio.create_task(behavior.install_plotting()) for _ in range(3)]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert install.call_count == 1
+    pending.set_result(None)
+    mark_plotting_installed(behavior)
+    check_pending.set_result(None)
+    await asyncio.gather(*requests)
+    assert install.call_count == 1
+    assert check.call_count == 1
+
+
+@pytest.mark.parametrize("stage", ["download", "check"])
+async def test_failed_plotting_install_is_reported_and_retried(
+    monkeypatch, behavior, stage
+):
+    failure = BashExitFailure("task", 3)
+    install, check = mock_plotting_tasks(
+        monkeypatch,
+        behavior,
+        download=failure if stage == "download" else None,
+        check=failure if stage == "check" else None,
+    )
+    with pytest.raises(
+        RuntimeError, match=f"Plotting {stage} failed \\(exit 3\\)"
+    ) as info:
+        await behavior.install_plotting()
+    assert f"plot_{stage}.stderr" in str(info.value)
+    assert info.value.__cause__ is failure
+    assert not behavior.plotting_built
+
+    install.return_value = done_future()
+    check.side_effect = lambda **kwargs: (
+        mark_plotting_installed(behavior),
+        done_future(),
+    )[1]
+    await behavior.install_plotting()
+    assert behavior.plotting_built
+
+
+async def test_plotting_check_that_leaves_no_install_is_an_error(monkeypatch, behavior):
+    monkeypatch.setattr(
+        behavior, "_download_plotting", Mock(return_value=done_future())
+    )
+    monkeypatch.setattr(behavior, "_check_plotting", Mock(return_value=done_future()))
+    with pytest.raises(RuntimeError, match="is not usable"):
+        await behavior.install_plotting()
+    assert not behavior.plotting_built
+
+
+@pytest.mark.parametrize(
+    ("defined", "missing"),
+    [(["compute"], "service"), (["service"], "compute"), ([], "service")],
+)
+async def test_install_plotting_checks_resources_before_submitting(
+    monkeypatch, behavior, defined, missing
+):
+    define_resources(monkeypatch, "_parsl_internal", *defined)
+    install, check = mock_plotting_tasks(monkeypatch, behavior)
+    with pytest.raises(RuntimeError, match=f"'{missing}'"):
+        await behavior.install_plotting()
+    install.assert_not_called()
+    check.assert_not_called()
+
+
+async def test_install_plotting_shares_the_lock_with_other_installs(
+    monkeypatch, behavior
+):
+    pending = Future()
+    limited_install, _ = mock_limited_area_tasks(monkeypatch, behavior)
+    limited_install.return_value = pending
+    install, _ = mock_plotting_tasks(monkeypatch, behavior)
+    limited = asyncio.create_task(behavior.install_limited_area())
+    plotting = asyncio.create_task(behavior.install_plotting())
+    for _ in range(10):
+        await asyncio.sleep(0)
+    install.assert_not_called()
+    pending.set_result(None)
+    await asyncio.gather(limited, plotting)
+    install.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("config", "plotting"),
+    [
+        ({"resolution": "480km", "plot": True}, True),
+        ({"resolution": "480km", "plot": False}, False),
+        ({"resolution": "480km"}, False),
+        ({**regional_config(), "plot": True}, True),
+    ],
+)
+async def test_ensure_tools_installed_installs_plotting_for_plots(
+    monkeypatch, behavior, config, plotting
+):
+    mark_mpas_tools_installed(behavior)
+    install, _ = mock_plotting_tasks(monkeypatch, behavior)
+    await behavior.ensure_tools_installed(config)
+    assert install.called == plotting
+
+
+async def test_mesh_requests_leave_plotting_to_the_plot_step(monkeypatch, behavior):
+    # generate_mesh installs tools with plotting=False, so a failed plotting
+    # install cannot fail the request
+    install, _ = mock_plotting_tasks(monkeypatch, behavior)
+    await behavior._install_tools({"resolution": "480km", "plot": True}, plotting=False)
+    install.assert_not_called()
+
+
+# Plotting
+
+
+def fake_plot_task(behavior, monkeypatch, code=0, writes=True):
+    """Replace the plotting task with a fake that acts like the script.
+
+    It writes a PNG to the path it is given unless ``writes`` is false, and
+    exits with ``code``.
+    """
+
+    def run(mesh_path, output_path, options, **kwargs):
+        assert Path(mesh_path).is_file()
+        if writes and code != EXIT_VIEW_OF_REGIONAL_MESH:
+            Path(output_path).write_bytes(b"\x89PNG new image")
+        if code:
+            return done_future(error=BashExitFailure("plot", code))
+        return done_future()
+
+    task = Mock(side_effect=run)
+    monkeypatch.setattr(behavior, "_run_plot_mesh", task)
+    return task
+
+
+@pytest.fixture
+def plotting(behavior, tmp_path):
+    """Provide installed plotting and a mesh file to plot."""
+    mark_plotting_installed(behavior)
+    mesh = tmp_path / "meshes" / "cut" / "cut.static.nc"
+    mesh.parent.mkdir(parents=True)
+    mesh.write_bytes(b"CDF mesh")
+    return mesh
+
+
+@pytest.mark.parametrize(
+    ("name", "image"),
+    [
+        ("conus.static.nc", "conus.png"),
+        ("x1.2562.static.nc", "x1.2562.png"),
+        ("x1.2562.grid.nc", "x1.2562.grid.png"),
+        ("mesh", "mesh.png"),
+        # An image never replaces its mesh
+        ("picture.png", "picture.png.png"),
+    ],
+)
+def test_plot_path(name, image):
+    assert _MeshBehavior._plot_path(Path("/m") / name) == Path("/m") / image
+
+
+def test_plot_script_is_next_to_the_mesh_module(behavior):
+    assert behavior._plot_script == Path(mesh_module.__file__).with_name(
+        "_plot_mesh.py"
+    )
+    assert behavior._plot_script.is_file()
+
+
+async def test_plot_mesh(monkeypatch, behavior, plotting):
+    task = fake_plot_task(behavior, monkeypatch)
+    image = await behavior.plot_mesh(str(plotting))
+    assert image == str(plotting.with_name("cut.png"))
+    assert Path(image).read_bytes() == b"\x89PNG new image"
+    # Only the image is added, under its final name
+    assert {path.name for path in plotting.parent.iterdir()} == {
+        "cut.static.nc",
+        "cut.png",
+    }
+    task.assert_called_once()
+    mesh_arg, partial, options = task.call_args.args
+    assert mesh_arg == str(plotting)
+    assert Path(partial).parent == plotting.parent
+    assert Path(partial).name.startswith(".cut.") and partial.endswith(".png")
+    assert options == []
+    assert task.call_args.kwargs["executor"] == ["compute"]
+    assert task.call_args.kwargs["stderr"].startswith(
+        str(behavior.log_dir / "plot_mesh.")
+    )
+
+
+async def test_plot_mesh_passes_the_view(monkeypatch, behavior, plotting):
+    task = fake_plot_task(behavior, monkeypatch)
+    await behavior.plot_mesh(
+        str(plotting), title="A title", zoom=4, center_lat=50, center_lon=-10.5
+    )
+    assert task.call_args.args[2] == [
+        "--title=A title",
+        "--zoom=4.0",
+        "--center-lat=50.0",
+        "--center-lon=-10.5",
+    ]
+
+
+async def test_plot_mesh_passes_values_starting_with_a_dash(
+    monkeypatch, behavior, plotting
+):
+    task = fake_plot_task(behavior, monkeypatch)
+    await behavior.plot_mesh(
+        str(plotting), title="-t --zoom 3", center_lat=-1e-05, center_lon=-0.0
+    )
+    options = task.call_args.args[2]
+    assert options == [
+        "--title=-t --zoom 3",
+        "--center-lat=-1e-05",
+        "--center-lon=-0.0",
+    ]
+    # As the script reads them
+    args = plot_script.parse_args(["m.nc", "o.png", "--map-data", "/d", *options])
+    assert (args.title, args.center_lat, args.center_lon) == ("-t --zoom 3", -1e-05, 0)
+
+
+async def test_plot_mesh_makes_relative_paths_absolute(monkeypatch, behavior, plotting):
+    fake_plot_task(behavior, monkeypatch)
+    monkeypatch.chdir(plotting.parent)
+    assert await behavior.plot_mesh("cut.static.nc") == str(
+        plotting.with_name("cut.png")
+    )
+
+
+async def test_plot_mesh_replaces_an_earlier_image(monkeypatch, behavior, plotting):
+    plotting.with_name("cut.png").write_bytes(b"old")
+    fake_plot_task(behavior, monkeypatch)
+    await behavior.plot_mesh(str(plotting))
+    assert plotting.with_name("cut.png").read_bytes() == b"\x89PNG new image"
+
+
+@pytest.mark.parametrize("code", [1, 139])
+async def test_failed_plot_names_its_logs_and_keeps_an_earlier_image(
+    monkeypatch, behavior, plotting, code
+):
+    plotting.with_name("cut.png").write_bytes(b"old")
+    task = fake_plot_task(behavior, monkeypatch, code=code)
+    with pytest.raises(
+        RuntimeError, match=f"Plotting failed \\(exit {code}\\)"
+    ) as info:
+        await behavior.plot_mesh(str(plotting))
+    assert task.call_args.kwargs["stdout"] in str(info.value)
+    assert task.call_args.kwargs["stderr"] in str(info.value)
+    # The partial image is removed, and the earlier one kept
+    assert {path.name for path in plotting.parent.iterdir()} == {
+        "cut.static.nc",
+        "cut.png",
+    }
+    assert plotting.with_name("cut.png").read_bytes() == b"old"
+
+
+async def test_unexpected_plot_error_becomes_a_runtime_error(
+    monkeypatch, behavior, plotting
+):
+    failure = OSError("worker lost")
+    monkeypatch.setattr(
+        behavior, "_run_plot_mesh", Mock(return_value=done_future(error=failure))
+    )
+    with pytest.raises(RuntimeError, match="Plotting failed: worker lost") as info:
+        await behavior.plot_mesh(str(plotting))
+    assert info.value.__cause__ is failure
+
+
+async def test_plot_without_some_map_layers_still_gives_an_image(
+    monkeypatch, behavior, plotting
+):
+    warning = Mock()
+    monkeypatch.setattr(mesh_module.logger, "warning", warning)
+    task = fake_plot_task(behavior, monkeypatch, code=EXIT_MISSING_MAP)
+    image = await behavior.plot_mesh(str(plotting))
+    assert Path(image).read_bytes() == b"\x89PNG new image"
+    warning.assert_called_once()
+    assert "without some map layers" in warning.call_args.args[2]
+    assert task.call_args.kwargs["stderr"] in warning.call_args.args[2]
+    path, message = await behavior._plot(str(plotting))
+    assert path == image
+    assert "without some map layers" in message
+
+
+async def test_view_of_a_regional_mesh_is_rejected(monkeypatch, behavior, plotting):
+    plotting.with_name("cut.png").write_bytes(b"old")
+    fake_plot_task(behavior, monkeypatch, code=EXIT_VIEW_OF_REGIONAL_MESH)
+    with pytest.raises(ValueError, match="apply only to global meshes, and .* is"):
+        await behavior.plot_mesh(str(plotting), zoom=2)
+    assert plotting.with_name("cut.png").read_bytes() == b"old"
+    assert len(list(plotting.parent.iterdir())) == 2
+
+
+async def test_plot_that_writes_nothing_is_an_error(monkeypatch, behavior, plotting):
+    task = fake_plot_task(behavior, monkeypatch, writes=False)
+    with pytest.raises(RuntimeError, match="plot_mesh did not write") as info:
+        await behavior.plot_mesh(str(plotting))
+    assert task.call_args.kwargs["stdout"] in str(info.value)
+    assert not plotting.with_name("cut.png").exists()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error", "message"),
+    [
+        ({"mesh_path": ""}, ValueError, "non-empty string"),
+        ({"mesh_path": None}, ValueError, "non-empty string"),
+        ({"zoom": 0}, ValueError, "zoom must be greater than 0"),
+        ({"center_lat": 10}, ValueError, "must be given together"),
+        ({"title": 5}, ValueError, "title must be a string"),
+        ({"mesh_path": "missing.static.nc"}, FileNotFoundError, "No mesh file"),
+    ],
+)
+async def test_plot_mesh_rejects_invalid_input_before_any_work(
+    monkeypatch, tmp_path, behavior, plotting, arguments, error, message
+):
+    monkeypatch.chdir(tmp_path)
+    install, _ = mock_plotting_tasks(monkeypatch, behavior)
+    task = fake_plot_task(behavior, monkeypatch)
+    arguments = {"mesh_path": str(plotting), **arguments}
+    with pytest.raises(error, match=message):
+        await behavior.plot_mesh(**arguments)
+    task.assert_not_called()
+    install.assert_not_called()
+
+
+async def test_plot_mesh_installs_plotting_first(monkeypatch, tmp_path, behavior):
+    mesh = tmp_path / "m.static.nc"
+    mesh.write_bytes(b"CDF")
+    install, check = mock_plotting_tasks(monkeypatch, behavior)
+    fake_plot_task(behavior, monkeypatch)
+    await behavior.plot_mesh(str(mesh))
+    install.assert_called_once()
+    check.assert_called_once()
+
+
+async def test_plot_mesh_needs_compute(monkeypatch, behavior, plotting):
+    define_resources(monkeypatch, "service")
+    task = fake_plot_task(behavior, monkeypatch)
+    with pytest.raises(RuntimeError, match="Plotting needs the resource 'compute'"):
+        await behavior.plot_mesh(str(plotting))
+    task.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME", "a b"]
+)
+def test_plot_script_runs_without_expansion(monkeypatch, tmp_path, behavior, name):
+    pwned = tmp_path / "PWNED"
+    directory = tmp_path / name.format(pwn=pwned)
+    directory.mkdir(parents=True)
+    record = tmp_path / "record"
+    prefix = mark_plotting_installed(behavior)
+    fake_python(
+        monkeypatch,
+        tmp_path,
+        f'{{ echo "$MPLBACKEND $MPLCONFIGDIR"; for a in "$@"; do printf "%s\\n" "$a"; done; }}'
+        f" > {shlex.quote(str(record))}",
+    )
+    mesh, output = str(directory / "m.static.nc"), str(directory / ".m.1.png")
+    options = [f"--title={name}", "--zoom=2.0"]
+    script = _MeshBehavior._run_plot_mesh.func(behavior, mesh, output, options)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert not pwned.exists()
+    assert record.read_text().splitlines() == [
+        f"Agg {prefix / 'matplotlib'}",
+        str(behavior._plot_script),
+        mesh,
+        output,
+        "--map-data",
+        str(prefix / "natural_earth"),
+        *options,
+    ]
+
+
+@pytest.mark.parametrize("code", [1, 2, EXIT_MISSING_MAP, EXIT_VIEW_OF_REGIONAL_MESH])
+def test_plot_script_passes_the_exit_code_on(monkeypatch, tmp_path, behavior, code):
+    mark_plotting_installed(behavior)
+    fake_python(monkeypatch, tmp_path, f"exit {code}")
+    script = _MeshBehavior._run_plot_mesh.func(
+        behavior, str(tmp_path / "m.nc"), str(tmp_path / ".m.png"), []
+    )
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == code
+
+
+# Plotting through generate_mesh
+
+
+async def test_generate_mesh_with_a_plot(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    mark_plotting_installed(behavior)
+    task = fake_plot_task(behavior, monkeypatch)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    mesh_dir = output / "g"
+    assert result == {
+        "static": str(mesh_dir / "g.static.nc"),
+        "graph": str(mesh_dir / "g.graph.info"),
+        "plot": str(mesh_dir / "g.png"),
+    }
+    assert (mesh_dir / "g.png").read_bytes() == b"\x89PNG new image"
+    # The mesh's own file is plotted, with the defaults
+    mesh_arg, _, options = task.call_args.args
+    assert mesh_arg == str(mesh_dir / "g.static.nc")
+    assert options == []
+
+
+async def test_plot_comes_after_the_partitions(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    mark_metis_installed(behavior)
+    mark_plotting_installed(behavior)
+    order = []
+    partition = fake_partition_task()
+    partition_run = partition.side_effect
+    partition.side_effect = lambda *a, **k: (
+        order.append("partition"),
+        partition_run(*a, **k),
+    )[1]
+    monkeypatch.setattr(behavior, "_partition_mesh", partition)
+    plot = fake_plot_task(behavior, monkeypatch)
+    plot_run = plot.side_effect
+    plot.side_effect = lambda *a, **k: (order.append("plot"), plot_run(*a, **k))[1]
+    result = await behavior.generate_mesh({**PARTITIONED, "plot": True}, str(output))
+    assert order == ["partition", "partition", "plot"]
+    assert set(result) == {"static", "graph", "partitions", "plot"}
+
+
+@pytest.mark.parametrize("code", [1, 139])
+async def test_failed_plot_does_not_fail_the_request(
+    monkeypatch, mesh_download, behavior, code
+):
+    output, _ = mesh_download
+    mark_plotting_installed(behavior)
+    fake_plot_task(behavior, monkeypatch, code=code)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    assert set(result) == {"static", "graph", "plot_error"}
+    assert f"Plotting failed (exit {code})" in result["plot_error"]
+    # The mesh is kept, and no image
+    assert {path.name for path in (output / "g").iterdir()} == {
+        "g.static.nc",
+        "g.graph.info",
+    }
+
+
+async def test_plot_without_some_map_layers_reports_it(
+    monkeypatch, mesh_download, behavior
+):
+    output, _ = mesh_download
+    mark_plotting_installed(behavior)
+    fake_plot_task(behavior, monkeypatch, code=EXIT_MISSING_MAP)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    assert result["plot"] == str(output / "g" / "g.png")
+    assert "without some map layers" in result["plot_error"]
+
+
+async def test_failed_plotting_install_does_not_fail_the_request(
+    monkeypatch, mesh_download, behavior
+):
+    output, _ = mesh_download
+    mock_plotting_tasks(monkeypatch, behavior, check=BashExitFailure("task", 1))
+    task = fake_plot_task(behavior, monkeypatch)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    assert "Plotting check failed" in result["plot_error"]
+    assert "plot" not in result
+    assert (output / "g" / "g.static.nc").is_symlink()
+    task.assert_not_called()
+
+
+async def test_plot_without_compute_does_not_fail_a_global_request(
+    monkeypatch, mesh_download, behavior
+):
+    # A global mesh without partitions needs only service, and a plot that
+    # cannot run reports why
+    output, _ = mesh_download
+    mark_plotting_installed(behavior)
+    define_resources(monkeypatch, "service")
+    task = fake_plot_task(behavior, monkeypatch)
+    config = {"resolution": "480km", "name": "g", "plot": True}
+    result = await behavior.generate_mesh(config, str(output))
+    assert "Plotting needs the resource 'compute'" in result["plot_error"]
+    assert (output / "g" / "g.static.nc").is_symlink()
+    task.assert_not_called()
+
+
+async def test_failed_mesh_is_not_plotted(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    mark_metis_installed(behavior)
+    mark_plotting_installed(behavior)
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    task = fake_plot_task(behavior, monkeypatch)
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh({**PARTITIONED, "plot": True}, str(output))
+    task.assert_not_called()
+    assert not (output / "forecast").exists()
+
+
+async def test_regional_meshes_are_plotted(monkeypatch, regional, behavior, cutting):
+    mark_plotting_installed(behavior)
+    task = fake_plot_task(behavior, monkeypatch)
+    hexes = await behavior.generate_mesh(
+        {**regional_config(), "plot": True}, str(regional.output)
+    )
+    assert hexes["plot"] == str(regional.output / "region" / "region.png")
+    cut = await behavior.generate_mesh(
+        {**create_region_config(), "plot": True}, str(cutting.output)
+    )
+    assert cut["plot"] == str(cutting.output / "cut" / "cut.png")
+    assert [call.args[0] for call in task.call_args_list] == [
+        hexes["static"],
+        cut["static"],
+    ]
 
 
 # Generating project_hexes meshes

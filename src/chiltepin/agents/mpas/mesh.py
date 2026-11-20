@@ -19,6 +19,13 @@ from parsl.app.errors import BashExitFailure
 from parsl.errors import NoDataFlowKernelError
 
 from chiltepin.agents import agent_action, chiltepin_agent
+from chiltepin.agents.mpas._plot_mesh import (
+    EXIT_MISSING_MAP,
+    EXIT_VIEW_OF_REGIONAL_MESH,
+    MAP_LAYERS,
+    REQUIRED_PARTS,
+    layer_path,
+)
 from chiltepin.tasks import bash_task, python_task
 
 logger = logging.getLogger(__name__)
@@ -42,7 +49,7 @@ _MAX_MESH_NAME_BYTES = 200
 
 # Keys a mesh request may contain
 _MESH_CONFIG_KEYS = frozenset(
-    {"resolution", "name", "init_ranks", "forecast_ranks", "regional"}
+    {"resolution", "name", "init_ranks", "forecast_ranks", "regional", "plot"}
 )
 
 # Methods a regional request may name, and the keys of a project_hexes block
@@ -138,6 +145,9 @@ class _MeshBehavior:
         self.limited_area_version = limited_area_version
         self.limited_area_built = False
 
+        # Plotting state (the Python environment and map layers plots use)
+        self.plotting_built = False
+
         # Serializes tool installs, so concurrent requests that need a tool wait
         # for one install instead of each starting their own
         self._install_lock = asyncio.Lock()
@@ -227,8 +237,8 @@ class _MeshBehavior:
         ------
         ValueError
             If ``mesh_config`` is not a dict, has an unknown key, or has an
-            invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``
-            or ``regional`` block. A name must be at most 200 bytes long, must
+            invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``,
+            ``regional`` block or ``plot``. A name must be at most 200 bytes long, must
             not contain control characters, and must not be that of a downloaded
             global mesh file.
         """
@@ -287,6 +297,9 @@ class _MeshBehavior:
                 continue
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{key} must be a positive integer, got {value!r}")
+        plot = mesh_config.get("plot", False)
+        if not isinstance(plot, bool):
+            raise ValueError(f"plot must be True or False, got {plot!r}")
 
     @staticmethod
     def _parse_resolution_km(resolution: Any) -> float:
@@ -410,6 +423,34 @@ class _MeshBehavior:
         if number <= 0:
             raise ValueError(f"{label} must be greater than 0")
         return number
+
+    @classmethod
+    def _validate_plot_view(
+        cls,
+        title: Any,
+        zoom: Any,
+        center_lat: Any,
+        center_lon: Any,
+    ) -> None:
+        """Check the optional view settings of ``plot_mesh()``.
+
+        ``zoom`` must be a finite number greater than 0, and ``center_lat`` and
+        ``center_lon`` must be given together, as a latitude and a longitude.
+
+        Raises
+        ------
+        ValueError
+            If any of them is invalid.
+        """
+        if title is not None and not isinstance(title, str):
+            raise ValueError(f"title must be a string, got {type(title).__name__}")
+        if zoom is not None:
+            cls._positive(zoom, "zoom")
+        if (center_lat is None) != (center_lon is None):
+            raise ValueError("center_lat and center_lon must be given together")
+        if center_lat is not None:
+            cls._latitude(center_lat, "center_lat")
+            cls._longitude(center_lon, "center_lon")
 
     @classmethod
     def _region_size(cls, value: Any, label: str) -> float:
@@ -771,6 +812,33 @@ class _MeshBehavior:
             and self._create_region.is_file()
         )
 
+    @property
+    def _plot_prefix(self) -> Path:
+        """Directory the map layers and matplotlib's settings are kept in."""
+        return self.work_dir / "plot"
+
+    @property
+    def _map_data_dir(self) -> Path:
+        """Directory cartopy reads the Natural Earth map layers from."""
+        return self._plot_prefix / "natural_earth"
+
+    def _map_layer_paths(self) -> List[Path]:
+        """Paths of the map layer files, where cartopy stores and finds them."""
+        return [layer_path(self._map_data_dir, layer) for layer in MAP_LAYERS]
+
+    @property
+    def _plot_script(self) -> Path:
+        """Path of the plotting script, next to this module.
+
+        Tasks read this on the worker, so it is the script of the chiltepin
+        installation the worker runs, which the compute resource can read.
+        """
+        return Path(__file__).with_name("_plot_mesh.py")
+
+    def _plotting_usable(self) -> bool:
+        """Whether the map layers are installed and plotting was checked."""
+        return (self._plot_prefix / ".installed").is_file()
+
     def _mpas_tools_usable(self) -> bool:
         """Whether a finished MPAS-Tools install with runnable programs exists."""
         return (self._mpas_tools_prefix / ".installed").is_file() and all(
@@ -929,7 +997,7 @@ class _MeshBehavior:
             # Clone only the requested tag, giving up if the transfer stalls
             git -c advice.detachedHead=false -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 clone --depth 1 --branch {self._q("v" + self.limited_area_version)} https://github.com/MPAS-Dev/MPAS-Limited-Area.git src
             {self._q(sys.executable)} -m venv "$prefix/venv"
-            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-input --timeout 60 --retries 5 numpy netCDF4
+            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --no-input --timeout 60 --retries 5 numpy netCDF4
             echo "Completed install at $(date)"
             """
         )
@@ -954,6 +1022,102 @@ class _MeshBehavior:
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
             echo "Completed check at $(date)"
+            """
+        )
+
+    # -------------------------------------------------------------------------
+    # Private bash tasks — Plotting
+    # -------------------------------------------------------------------------
+
+    @bash_task
+    def _download_plotting(self) -> str:
+        """Download the map layers the plots draw, on ``service``.
+
+        The plotting script downloads them with only the standard library, so
+        the ``service`` resource does not need the ``chiltepin[mpas]`` extra.
+        Layers already downloaded are kept, and nothing is removed, so plots
+        running while plotting is installed again keep their map layers and
+        matplotlib settings. Removing ``work_dir/plot`` downloads every layer
+        again.
+        """
+        import sys
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started download at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._plot_prefix)}
+            # The install counts again only once the check passes
+            mkdir -p "$prefix"
+            rm -f "$prefix/.installed"
+            {self._q(sys.executable)} {self._q(self._plot_script)} --download-map-data {self._q(self._map_data_dir)}
+            echo "Completed download at $(date)"
+            """
+        )
+
+    @bash_task
+    def _check_plotting(self) -> str:
+        """Check that plotting can run on ``compute``, and mark the install.
+
+        Plotting runs with the Python of the tasks on ``compute``, which must
+        have the ``chiltepin[mpas]`` extra.
+        """
+        import sys
+        import textwrap
+
+        # Every part each layer needs, as the plotting script checks
+        layers = " ".join(
+            self._q(path.with_suffix(suffix))
+            for path in self._map_layer_paths()
+            for suffix in REQUIRED_PARTS
+        )
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started check at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._plot_prefix)}
+            if ! MPLBACKEND=Agg {self._q(sys.executable)} -c "import cartopy, matplotlib, netCDF4, numpy"; then
+                echo "The Python of the compute resource cannot import the plotting packages. Install chiltepin[mpas] in the environment of the compute resource." >&2
+                exit 1
+            fi
+            for layer in {layers}; do
+                if [ ! -s "$layer" ]; then
+                    echo "Map layer $layer is missing" >&2
+                    exit 1
+                fi
+            done
+            # Mark the install complete. The agent only uses a marked install.
+            touch "$prefix/.installed"
+            echo "Completed check at $(date)"
+            """
+        )
+
+    @bash_task
+    def _run_plot_mesh(
+        self, mesh_path: str, output_path: str, options: List[str]
+    ) -> str:
+        """Run the plotting script with the Python of the task.
+
+        matplotlib keeps its configuration and font cache in ``work_dir/plot``,
+        not in the home directory.
+        """
+        import sys
+        import textwrap
+
+        arguments = " ".join(self._q(option) for option in options)
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started plot at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._plot_prefix)}
+            export MPLBACKEND=Agg
+            export MPLCONFIGDIR="$prefix/matplotlib"
+            {self._q(sys.executable)} {self._q(self._plot_script)} {self._q(mesh_path)} {self._q(output_path)} --map-data {self._q(self._map_data_dir)} {arguments}
+            echo "Completed plot at $(date)"
             """
         )
 
@@ -1300,6 +1464,198 @@ class _MeshBehavior:
             self.limited_area_built = True
 
     # -------------------------------------------------------------------------
+    # Public agent actions — Plotting
+    # -------------------------------------------------------------------------
+
+    @agent_action
+    async def install_plotting(self) -> None:
+        """Download the map layers plots need and check plotting, unless done.
+
+        Plots are drawn on the ``compute`` resource with numpy, netCDF4,
+        matplotlib and cartopy, which the ``chiltepin[mpas]`` extra installs
+        there. The Natural Earth map layers the plots draw are downloaded to
+        ``work_dir/plot/natural_earth`` on the ``service`` resource, since the
+        ``compute`` resource may have no internet access. A check on the
+        ``compute`` resource then confirms that its Python has the extra and the
+        layers are in place. It counts as installed once that check has passed,
+        so a restarted agent reuses it. Requests that need it while it is being
+        installed wait for that install. If it fails, each waiting request tries
+        again in turn. Called automatically when a plot is requested, but can be
+        called earlier to have it ready.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` or ``compute`` resource is not defined, or the
+            download or check fails. The message names the log file.
+        """
+        async with self._install_lock:
+            # Check the install on disk each time, so a removed or damaged
+            # install is replaced instead of failing every later plot
+            if not self._plotting_usable():
+                self.plotting_built = False
+                self._require_resources("Installing plotting", "service", "compute")
+                await self._run_install(
+                    "Plotting",
+                    "plot",
+                    self._download_plotting,
+                    self._check_plotting,
+                    stages=("download", "check"),
+                )
+                if not self._plotting_usable():
+                    raise RuntimeError(
+                        "Plotting check finished but the install in "
+                        f"{self._plot_prefix} is not usable, see "
+                        f"{self.log_dir}/plot_check.stderr"
+                    )
+            self.plotting_built = True
+
+    @staticmethod
+    def _plot_path(mesh: Path) -> Path:
+        """Return the image path of a mesh: ``<name>.png`` next to it.
+
+        ``conus.static.nc`` gives ``conus.png``, and ``x1.2562.grid.nc`` gives
+        ``x1.2562.grid.png``. Meshes whose names differ only by these endings,
+        such as ``a.nc`` and ``a.static.nc`` in one directory, share an image.
+        """
+        name = mesh.name.removesuffix(".nc").removesuffix(".static")
+        return mesh.with_name(f"{name}.png")
+
+    async def _plot(
+        self,
+        mesh_path: str,
+        title: Optional[str] = None,
+        zoom: Optional[float] = None,
+        center_lat: Optional[float] = None,
+        center_lon: Optional[float] = None,
+    ) -> Tuple[str, Optional[str]]:
+        """Draw a mesh, and return the image's path and any warning about it.
+
+        The image is written under a temporary name and renamed when it is
+        complete, so a failed plot leaves an earlier image of the mesh alone.
+        The warning names the log of a plot drawn without some map layers.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or the view settings are given for a
+            regional mesh.
+        FileNotFoundError
+            If the mesh file does not exist.
+        RuntimeError
+            If plotting cannot be installed, the ``compute`` resource is not
+            defined, or the plot fails. The message names the log files.
+        """
+        if not isinstance(mesh_path, str) or not mesh_path:
+            raise ValueError("mesh_path must be a non-empty string")
+        self._validate_plot_view(title, zoom, center_lat, center_lon)
+        mesh = Path(os.path.abspath(os.path.expanduser(mesh_path)))
+        output = self._plot_path(mesh)
+        if not mesh.is_file():
+            raise FileNotFoundError(f"No mesh file at {mesh}")
+
+        await self.install_plotting()
+        self._require_resources("Plotting", "compute")
+        call_id = uuid.uuid4().hex[:8]
+        log = self.log_dir / f"plot_mesh.{call_id}"
+        partial = output.with_name(f".{output.stem}.{call_id}.png")
+        # One argument per option, so values starting with "-" stay values
+        options: List[str] = []
+        if title is not None:
+            options.append(f"--title={title}")
+        if zoom is not None:
+            options.append(f"--zoom={float(zoom)!r}")
+        if center_lat is not None:
+            options.append(f"--center-lat={float(center_lat)!r}")
+            options.append(f"--center-lon={float(center_lon)!r}")
+
+        warning = None
+        future = self._run_plot_mesh(
+            str(mesh),
+            str(partial),
+            options,
+            executor=["compute"],
+            stdout=f"{log}.stdout",
+            stderr=f"{log}.stderr",
+        )
+        try:
+            try:
+                await asyncio.wrap_future(future)
+            except BashExitFailure as e:
+                if e.exitcode == EXIT_VIEW_OF_REGIONAL_MESH:
+                    raise ValueError(
+                        "zoom, center_lat and center_lon apply only to global "
+                        f"meshes, and {mesh} is regional"
+                    ) from e
+                if e.exitcode != EXIT_MISSING_MAP:
+                    raise RuntimeError(
+                        f"Plotting failed (exit {e.exitcode}), "
+                        f"see {log}.stdout and {log}.stderr"
+                    ) from e
+                warning = f"Plotted without some map layers, see {log}.stderr"
+                logger.warning("%s: %s", output, warning)
+            except Exception as e:
+                raise RuntimeError(f"Plotting failed: {e}") from e
+            self._require_output(partial, "plot_mesh", call_id)
+            partial.replace(output)
+        finally:
+            partial.unlink(missing_ok=True)
+        return str(output), warning
+
+    @agent_action
+    async def plot_mesh(
+        self,
+        mesh_path: str,
+        title: Optional[str] = None,
+        zoom: Optional[float] = None,
+        center_lat: Optional[float] = None,
+        center_lon: Optional[float] = None,
+    ) -> str:
+        """Draw a PNG image of a mesh, and return its path.
+
+        The image is written next to the mesh as ``<name>.png``, replacing an
+        earlier one. A regional mesh is drawn on a flat map, with its cells
+        colored by boundary layer. A global mesh is drawn on a sphere. Cell
+        edges are drawn when cells come out large enough in the image to tell
+        apart. Plotting is installed first if it is not already installed, and
+        runs on the ``compute`` resource.
+
+        Parameters
+        ----------
+        mesh_path : str
+            Path to the mesh's static or grid file. A relative path or one
+            starting with ``~`` is made absolute on the agent.
+        title : str, optional
+            Title of the image, by default "MPAS mesh: <name>"
+        zoom : float, optional
+            Zoom of a global mesh's sphere, greater than 0. The default makes
+            the globe fill the image, and a larger zoom shows less of it, with
+            larger cells.
+        center_lat, center_lon : float, optional
+            Point of a global mesh to center the view on, given together, by
+            default 0N 0E.
+
+        Returns
+        -------
+        str
+            Absolute path of the image. If some map layers are missing, it is
+            drawn without them, and a warning naming the log is logged.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or ``zoom``, ``center_lat`` or
+            ``center_lon`` is given for a regional mesh.
+        FileNotFoundError
+            If the mesh file does not exist.
+        RuntimeError
+            If plotting cannot be installed, a resource it needs is not defined,
+            or the plot fails. The message names the log files.
+        """
+        path, _ = await self._plot(mesh_path, title, zoom, center_lat, center_lon)
+        return path
+
+    # -------------------------------------------------------------------------
     # Public agent actions — Tools
     # -------------------------------------------------------------------------
 
@@ -1307,9 +1663,11 @@ class _MeshBehavior:
     async def ensure_tools_installed(self, mesh_config: Dict[str, Any]) -> None:
         """Install the tools a mesh request needs.
 
-        Can be called early to overlap tool installation with other work. Also
-        called by ``generate_mesh()`` before it downloads the mesh, so a failed
-        install does not waste a download.
+        Can be called early to overlap tool installation with other work.
+        ``generate_mesh()`` installs the same tools before it downloads the
+        mesh, so a failed install does not waste a download, except that it
+        installs plotting only when it plots, so a failed plotting install
+        cannot fail the request.
 
         Parameters
         ----------
@@ -1322,6 +1680,15 @@ class _MeshBehavior:
             If the configuration is invalid.
         """
         self._validate_mesh_config(mesh_config)
+        await self._install_tools(mesh_config, plotting=True)
+
+    async def _install_tools(self, mesh_config: Dict[str, Any], plotting: bool) -> None:
+        """Install the tools a validated mesh request needs.
+
+        ``generate_mesh()`` passes ``plotting=False`` and installs plotting only
+        when it plots, so that a plotting install that fails cannot fail the
+        request.
+        """
         if self._partition_ranks(mesh_config):
             await self.install_metis()
         regional = mesh_config.get("regional") or {}
@@ -1329,6 +1696,8 @@ class _MeshBehavior:
             await self.install_mpas_tools()
         if "create_region" in regional:
             await self.install_limited_area()
+        if plotting and mesh_config.get("plot"):
+            await self.install_plotting()
 
     # -------------------------------------------------------------------------
     # Private mesh generation
@@ -1599,6 +1968,8 @@ class _MeshBehavior:
         downloaded. With one, a regional mesh is generated. Tools the request
         needs, such as Metis for partitioning or the program that makes a
         regional mesh, are installed first if they are not already installed.
+        A requested plot is drawn last, once the mesh and its partitions are
+        complete.
 
         Parameters
         ----------
@@ -1621,6 +1992,8 @@ class _MeshBehavior:
             ``semi_minor_axis_km``, optional ``orientation_degrees``),
             ``polygon`` (``vertices`` as ``[lat, lon]`` pairs, ``inside_lat``,
             ``inside_lon``) or ``channel`` (``upper_lat``, ``lower_lat``).
+            An optional ``plot`` of True draws an image of the mesh, as
+            ``plot_mesh()`` does with its defaults.
         mesh_data_dir : str
             Directory where this request's mesh files are written
 
@@ -1631,6 +2004,11 @@ class _MeshBehavior:
             - graph: path to graph.info file (in mesh_name subdirectory)
             - partitions: dict of {num_ranks: partition_file_path} (in mesh_name
               subdirectory), present only if a partition was requested
+            - plot: path to the PNG image of the mesh (in mesh_name
+              subdirectory), present only if a plot was requested and drawn
+            - plot_error: why the plot failed, or that it was drawn without
+              some map layers, present only then. A plot that fails does not
+              fail the request.
 
         Raises
         ------
@@ -1668,7 +2046,7 @@ class _MeshBehavior:
         complete = False
         try:
             # Install tools before downloading so a failure wastes no download
-            await self.ensure_tools_installed(mesh_config)
+            await self._install_tools(mesh_config, plotting=False)
             if regional is None:
                 # Global mesh, downloaded precomputed from UCAR
                 paths = await self.download_global_mesh(
@@ -1694,11 +2072,22 @@ class _MeshBehavior:
             if ranks:
                 result["partitions"] = await self.partition_mesh(result["graph"], ranks)
             complete = True
-            return result
         finally:
             # Remove the failed mesh completely so the name can be used again
             if not complete:
                 self._remove_mesh_dir(mesh_dir)
+
+        if mesh_config.get("plot"):
+            # The mesh is complete, so a plot that fails only reports why
+            try:
+                plot, warning = await self._plot(result["static"])
+            except Exception as e:
+                result["plot_error"] = str(e)
+            else:
+                result["plot"] = plot
+                if warning is not None:
+                    result["plot_error"] = warning
+        return result
 
 
 @chiltepin_agent()
