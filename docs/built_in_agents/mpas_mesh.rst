@@ -5,7 +5,9 @@ MPAS Mesh Agent
 workflows. It downloads precomputed global MPAS meshes from UCAR, generates
 regional meshes with the MPAS-Tools ``project_hexes`` program or cuts them from
 a global mesh with the MPAS-Limited-Area ``create_region`` program, can
-partition mesh graphs for MPI with Metis, and can draw images of meshes.
+partition mesh graphs for MPI with Metis, and can draw images of meshes. It
+can also make a mesh from a prompt such as "a 15 km mesh over Texas", read by
+an LLM, as described in `Meshes from Prompts`_.
 
 For the API reference, see :doc:`../api/agents/mpas_mesh`.
 
@@ -42,6 +44,14 @@ Requirements
   Python 3.10 only for x86_64, so on an ARM machine with Python 3.10 the
   ``mpas`` extra tries to build cartopy, which needs the GEOS and PROJ
   libraries. Use Python 3.11 or newer there.
+* For meshes from prompts, the ``mpas`` and ``llm`` extras on the ``service``
+  resource, where prompts are read, network access there to the model's
+  provider and to Natural Earth, and the model's credentials in its
+  environment, as described in `Meshes from Prompts`_:
+
+  .. code-block:: console
+
+     $ pip install "chiltepin[mpas,llm]"
 
 Launch Arguments
 ----------------
@@ -70,6 +80,13 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
    leading ``v``, such as ``2.2``. Defaults to ``2.2``. Anything else raises
    ``ValueError``.
 
+``kwargs={"nominatim_contact": "you@example.org"}``
+   Optional agent argument. The email address of whoever runs the agent, sent
+   to OpenStreetMap's Nominatim service with each request when a prompt names
+   a place Natural Earth lacks, such as a city or county, as Nominatim's usage
+   policy asks. Without it, such places are not looked up and the prompt fails
+   naming them. Anything but an email address raises ``ValueError``.
+
 ``executor``
    Resource in the launching workflow on which to deploy the agent.
 
@@ -96,7 +113,7 @@ The agent workflow configuration must contain these resources:
 ``service``
    Runs agent tasks that require internet access, such as downloading meshes,
    Metis, MPAS-Tools, MPAS-Limited-Area, and the map
-   layers plots draw. It must
+   layers plots draw, and reading prompts with an LLM. It must
    have write access to the mesh output directory and to
    ``work_dir``. The agent and this resource must share these directories at
    the same absolute paths.
@@ -445,6 +462,24 @@ Actions
    naming the log is logged. Each plot writes its own logs, ``plot_mesh.<id>.*``
    in ``work_dir/logs``, and a failure raises ``RuntimeError`` naming both.
    ``FileNotFoundError`` is raised for a mesh file that does not exist.
+``install_prompting()``
+   Prepares reading prompts, unless it is already prepared. On the ``service``
+   resource, the Natural Earth countries and states or provinces are
+   downloaded to ``work_dir/geo/natural_earth``, and a check confirms that the
+   Python of the agent's tasks has the ``mpas`` and ``llm`` extras and that the
+   boundaries are complete, and only then writes the ``work_dir/geo/.installed``
+   marker. The logs are ``prompt_download.*`` and ``prompt_check.*`` in
+   ``work_dir/logs``. Installing needs the ``service`` resource, and raises
+   ``RuntimeError`` if it is not defined. This runs automatically when a prompt
+   is read, so calling it is optional.
+``mesh_config_from_prompt(prompt, model, buffer_km=50.0)``
+   Returns the mesh request a prompt describes, in the form ``generate_mesh``
+   takes, without making the mesh. See `Meshes from Prompts`_.
+``create_mesh_from_prompt(prompt, mesh_data_dir, model, mesh_name=None, plot=False, buffer_km=50.0)``
+   Makes the mesh a prompt describes, and returns a dictionary of
+   ``mesh_config``, the request it was made into, and ``mesh_result``, what
+   ``generate_mesh`` returned for it. ``mesh_name`` replaces the name the model
+   gives, and ``plot`` draws an image of the mesh. See `Meshes from Prompts`_.
 ``partition_mesh(mesh_path, num_ranks)``
    Partitions a graph file with Metis, installing Metis first if needed.
    ``mesh_path`` must be a non-empty string. A relative path or one starting
@@ -482,6 +517,85 @@ Supported global resolutions, for meshes without ``regional`` and for
 ``48km``, ``30km``, ``24km``, ``15km``, ``12km``, ``10km``, ``7.5km``, ``5km``,
 ``4km``, ``3.75km``, and ``3km``.
 
+
+Meshes from Prompts
+-------------------
+
+``mesh_config_from_prompt`` and ``create_mesh_from_prompt`` read a prompt, such
+as "a 3 km CONUS mesh" or "a 60 km limited area ellipse over Europe without
+Russia", with an LLM on the ``service`` resource:
+
+1. The model answers in fixed fields: the resolution, a name, the places the
+   mesh covers and those it leaves out, and, if the prompt names them, a shape
+   and a method, and a channel's latitudes. The model never writes a mesh
+   request, so its answer can only name places and choices, which are checked.
+   Answers written in different ways, such as ``"15 km"`` or ``"limited area"``,
+   are normalized, and an answer that cannot be is sent back to the model with
+   the reason, up to three times.
+2. The method follows from the answer. A prompt naming no places asks for a
+   global mesh, which is downloaded, so its resolution must be one of the
+   supported global resolutions. A circle, ellipse, polygon or channel is cut
+   from a global mesh with ``create_region``, so it needs a global resolution
+   too. A rectangle, or a region of no shape, is made with ``project_hexes`` at
+   any resolution, unless the prompt asks for ``create_region``, which then
+   cuts a polygon around the region.
+3. The places are looked up in Natural Earth's countries, continents, and
+   states or provinces. A continent stands for its countries, a country can
+   leave out states, and a state used in several countries is named with its
+   country, as ``"Punjab, India"``. A place Natural Earth lacks is looked up
+   with Nominatim, only if ``nominatim_contact`` is given. Answers are kept in
+   ``work_dir/geo/nominatim``, so each place is asked for once, at most once a
+   second. Parts of a place far overseas are left out.
+4. The region is fitted to the shape in the frame its tool draws it in, with a
+   margin of ``buffer_km`` and at least a tenth of the region's diameter, so
+   the shape holds the whole region. The boundary layers both tools add are
+   outside the shape. A shape must reach at least two cells from its center,
+   since the tools cannot make a mesh of one about a cell across, so a small
+   region needs small cells.
+
+A prompt that asks for a mesh that cannot be made raises ``ValueError`` saying
+why, such as a place that is not found, a ``create_region`` shape at a
+resolution that cannot be downloaded, or a ``project_hexes`` rectangle around
+a pole. A model that cannot be reached, or gives no valid answer, raises
+``RuntimeError``. The request is then checked as any other is.
+
+``model`` is a litellm model string, such as
+``"bedrock/us.anthropic.claude-sonnet-5-5"`` for Amazon Bedrock or
+``"ollama_chat/qwen2.5:3b"`` for Ollama. Models that cannot be made to answer
+in the fields, as some Bedrock models cannot, are asked to instead.
+
+Credentials
+~~~~~~~~~~~
+
+The model's provider reads its credentials from the environment of the
+``service`` resource, such as ``AWS_BEARER_TOKEN_BEDROCK`` and
+``AWS_REGION_NAME`` for a Bedrock API key, ``OPENAI_API_KEY``, or
+``OLLAMA_API_BASE``. They are never arguments of an action, which would send
+them with the request, and are removed from error messages.
+
+Do not write a credential into a resource's ``environment`` setting, which
+Parsl writes into the scripts it runs, in the workflow's run directory. Keep it
+in a file only you can read on the ``service`` resource's system, and have the
+setting read it:
+
+.. code-block:: console
+
+   $ mkdir -p ~/.config/chiltepin && chmod 700 ~/.config/chiltepin
+   $ cat > ~/.config/chiltepin/bedrock.env
+   export AWS_BEARER_TOKEN_BEDROCK="..."
+   export AWS_REGION_NAME="us-east-1"
+   $ chmod 600 ~/.config/chiltepin/bedrock.env
+
+.. code-block:: python
+
+   "service": {
+       "provider": "localhost",
+       "environment": ["source ~/.config/chiltepin/bedrock.env"],
+   },
+
+Credentials that the provider reads from files, such as AWS access keys in
+``~/.aws/credentials``, need no setting. Prefer short-lived credentials, with
+only the permissions the model needs.
 
 Deployment Example
 ------------------

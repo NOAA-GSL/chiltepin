@@ -330,3 +330,127 @@ def test_errors_hold_no_credentials(model, monkeypatch):
     # The original error, which can hold the request, is not kept
     assert error.value.__cause__ is None
     assert error.value.__suppress_context__
+
+
+# Choosing the method
+
+
+DOWNLOADABLE = ["480km", "120km", "60km", "15km"]
+
+
+@pytest.mark.parametrize(
+    ("fields", "choice"),
+    [
+        # A global mesh is downloaded
+        ({"region_names": []}, (None, None)),
+        # A region of no shape is a project_hexes rectangle, at any resolution
+        ({}, ("project_hexes", "rectangle")),
+        ({"resolution": "7km"}, ("project_hexes", "rectangle")),
+        ({"shape": "rectangle"}, ("project_hexes", "rectangle")),
+        # Other shapes are cut from a global mesh
+        ({"shape": "circle"}, ("create_region", "circle")),
+        ({"shape": "ellipse"}, ("create_region", "ellipse")),
+        ({"shape": "polygon", "method": "create_region"}, ("create_region", "polygon")),
+        (
+            {"shape": "channel", "upper_lat": 10, "lower_lat": -10},
+            ("create_region", "channel"),
+        ),
+        # create_region without a shape cuts a polygon around the region
+        ({"method": "create_region"}, ("create_region", "polygon")),
+        (
+            {"method": "create_region", "shape": "rectangle"},
+            ("create_region", "rectangle"),
+        ),
+    ],
+)
+def test_choose_method(fields, choice):
+    assert prompt.choose_method(response(**fields), DOWNLOADABLE) == choice
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"region_names": [], "resolution": "7km"}, "Global meshes are available at"),
+        ({"region_names": [], "shape": "circle"}, "name the places it covers"),
+        (
+            {"region_names": [], "method": "project_hexes"},
+            "name the places it covers",
+        ),
+        (
+            {"shape": "circle", "method": "project_hexes"},
+            "project_hexes makes only rectangles, not a circle",
+        ),
+        ({"shape": "ellipse", "resolution": "7km"}, "create_region cuts a downloaded"),
+        ({"method": "create_region", "resolution": "7km"}, "or for a rectangle"),
+    ],
+)
+def test_choose_method_rejects(fields, message):
+    with pytest.raises(ValueError, match=message):
+        prompt.choose_method(response(**fields), DOWNLOADABLE)
+
+
+# Building the request
+
+
+@pytest.fixture
+def region_tools(monkeypatch):
+    """Replace the lookup and the fit, recording what they are asked."""
+    from chiltepin.agents.mpas import _geo_lookup, _region_shapes
+
+    calls = {}
+
+    def lookup(names, data_dir, exclude_names, nominatim_contact, cache_dir):
+        calls["lookup"] = (names, data_dir, exclude_names, nominatim_contact, cache_dir)
+        return "the region"
+
+    def fit(region, method, shape, resolution_km, buffer_km):
+        calls["fit"] = (region, method, shape, resolution_km, buffer_km)
+        return {method: {"fitted": shape}}
+
+    monkeypatch.setattr(_geo_lookup, "lookup_region", lookup)
+    monkeypatch.setattr(_region_shapes, "regional_config", fit)
+    return calls
+
+
+def test_mesh_config_of_a_global_mesh(region_tools):
+    answer = response(region_names=[], resolution="120km", name="global")
+    config = prompt.mesh_config(answer, DOWNLOADABLE, "/data", 50)
+    assert config == {"resolution": "120km", "name": "global"}
+    assert region_tools == {}
+
+
+def test_mesh_config_of_a_channel(region_tools):
+    answer = response(shape="channel", upper_lat=-20, lower_lat=20, name="band")
+    config = prompt.mesh_config(answer, DOWNLOADABLE, "/data", 50)
+    assert config == {
+        "resolution": "15km",
+        "name": "band",
+        "regional": {
+            "create_region": {"channel": {"upper_lat": 20.0, "lower_lat": -20.0}}
+        },
+    }
+    assert region_tools == {}
+
+
+def test_mesh_config_of_a_region(region_tools):
+    answer = response(
+        resolution="7.5km",
+        region_names=["United States of America"],
+        exclude_names=["Alaska"],
+    )
+    config = prompt.mesh_config(
+        answer, DOWNLOADABLE, "/data", 80, "me@example.org", "/cache"
+    )
+    assert config == {
+        "resolution": "7.5km",
+        "name": "texas",
+        "regional": {"project_hexes": {"fitted": "rectangle"}},
+    }
+    assert region_tools["lookup"] == (
+        ["United States of America"],
+        "/data",
+        ["Alaska"],
+        "me@example.org",
+        "/cache",
+    )
+    assert region_tools["fit"] == ("the region", "project_hexes", "rectangle", 7.5, 80)

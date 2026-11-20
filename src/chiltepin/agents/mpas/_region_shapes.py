@@ -33,6 +33,11 @@ PROJECT_HEXES_BOUNDARY_LAYERS = 7
 # The margin around a region is at least this part of its diameter
 MARGIN_FRACTION = 0.1
 
+# A shape reaches at least this many cells from its center in every direction.
+# create_region fills the whole globe, and project_hexes fails, for shapes
+# about one cell across or less.
+MIN_HALF_CELLS = 2.0
+
 # Points this many directions around each corner of the region carry its margin
 MARGIN_DIRECTIONS = 16
 
@@ -67,6 +72,10 @@ SHAPES = ("circle", "ellipse", "polygon", "rectangle")
 
 class RegionTooLarge(ValueError):
     """The region does not fit the shape asked for."""
+
+
+class RegionTooSmall(ValueError):
+    """The shape is too small for the mesh's cells."""
 
 
 # Points on the sphere
@@ -592,6 +601,9 @@ def regional_config(
     ------
     RegionTooLarge
         If the region does not fit the shape.
+    RegionTooSmall
+        If the shape reaches less than ``MIN_HALF_CELLS`` cells from its
+        center, which the tools cannot make a mesh of.
     ValueError
         If the method or shape is unknown, or they do not go together.
     """
@@ -603,13 +615,48 @@ def regional_config(
     if method == "project_hexes":
         if shape != "rectangle":
             raise ValueError(f"project_hexes makes only rectangles, not a {shape}")
-        return {
+        regional = {
             "project_hexes": fit_project_hexes(region, margin, float(resolution_km))
         }
-    fit = {
-        "circle": fit_circle,
-        "ellipse": fit_ellipse,
-        "polygon": fit_polygon,
-        "rectangle": fit_rectangle,
-    }[shape]
-    return {"create_region": fit(region, margin)}
+    else:
+        fit = {
+            "circle": fit_circle,
+            "ellipse": fit_ellipse,
+            "polygon": fit_polygon,
+            "rectangle": fit_rectangle,
+        }[shape]
+        regional = {"create_region": fit(region, margin)}
+    half = half_size_km(regional)
+    least = MIN_HALF_CELLS * float(resolution_km)
+    if half < least:
+        raise RegionTooSmall(
+            f"The {shape} reaches only {half:.0f} km from its center, and with "
+            f"{float(resolution_km):g} km cells a mesh must reach at least "
+            f"{least:.0f} km. Ask for smaller cells or a larger region."
+        )
+    return regional
+
+
+def half_size_km(regional: Dict[str, Any]) -> float:
+    """Return how far a regional block's shape reaches from its center, at least.
+
+    It is a circle's radius, an ellipse's semi-minor axis, half a rectangle's
+    shorter side, or the distance from a polygon's inside point to its nearest
+    side.
+    """
+    import numpy as np
+    from shapely.geometry import Point, Polygon
+
+    ((method, block),) = regional.items()
+    if method == "project_hexes":
+        return min(block["extent_x_km"], block["extent_y_km"]) / 2
+    ((shape, values),) = block.items()
+    if shape == "circle":
+        return values["radius_km"]
+    if shape == "ellipse":
+        return values["semi_minor_axis_km"]
+    center = _unit(values["inside_lon"], values["inside_lat"])
+    vertices = np.asarray(values["vertices"], dtype=float)
+    x, y = gnomonic(_unit(vertices[:, 1], vertices[:, 0]), center)
+    # The gnomonic frame is the sphere's own scale at its center
+    return Polygon(zip(x, y)).exterior.distance(Point(0, 0)) * EARTH_RADIUS_KM

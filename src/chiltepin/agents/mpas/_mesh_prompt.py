@@ -23,7 +23,7 @@ import os
 import re
 import time
 import unicodedata
-from typing import Any, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -349,3 +349,98 @@ def ask(
             raise RuntimeError(
                 f"The LLM request failed: {type(e).__name__}: {message}"
             ) from None
+
+
+def choose_method(
+    answer: MeshPromptResponse, downloadable: Sequence[str]
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return the method and shape to make a mesh with, or None and None.
+
+    A global mesh is downloaded, so it has neither. A circle, an ellipse, a
+    polygon and a channel are cut from a global mesh with ``create_region``,
+    so their resolution must be one of ``downloadable``. A rectangle, or a
+    region of no shape, is made with ``project_hexes`` unless the prompt asks
+    for ``create_region``, which cuts a polygon around it.
+
+    Raises
+    ------
+    ValueError
+        If the method, shape and resolution do not go together. The message
+        says what to ask for instead.
+    """
+    available = ", ".join(downloadable)
+    if answer.is_global:
+        if answer.shape or answer.method:
+            raise ValueError(
+                "A shape or method is for a regional mesh, so name the places it covers"
+            )
+        if answer.resolution not in downloadable:
+            raise ValueError(
+                f"Global meshes are available at {available}, not "
+                f"{answer.resolution}. Name a region to make a mesh at another "
+                "resolution."
+            )
+        return None, None
+    method, shape = answer.method, answer.shape
+    if shape in ("circle", "ellipse", "polygon", "channel"):
+        if method == "project_hexes":
+            raise ValueError(
+                f"project_hexes makes only rectangles, not a {shape}. Ask for a "
+                "rectangle, or for create_region."
+            )
+        method = "create_region"
+    elif method is None:
+        method = "project_hexes"
+    if method == "create_region" and answer.resolution not in downloadable:
+        raise ValueError(
+            f"create_region cuts a downloaded global mesh, which is available at "
+            f"{available}, not {answer.resolution}. Ask for one of those, or for "
+            "a rectangle made with project_hexes."
+        )
+    if shape is None:
+        shape = "rectangle" if method == "project_hexes" else "polygon"
+    return method, shape
+
+
+def mesh_config(
+    answer: MeshPromptResponse,
+    downloadable: Sequence[str],
+    data_dir,
+    buffer_km: float,
+    nominatim_contact: Optional[str] = None,
+    cache_dir=None,
+) -> Dict[str, Any]:
+    """Return the mesh request an answer describes, as ``generate_mesh`` takes.
+
+    The places are looked up in ``data_dir``, and Nominatim with a contact,
+    and the region is fitted to the shape with a margin of ``buffer_km``.
+
+    Raises
+    ------
+    ValueError
+        If the method, shape and resolution do not go together, the places
+        are not found, or the region does not fit the shape.
+    """
+    from chiltepin.agents.mpas._geo_lookup import lookup_region
+    from chiltepin.agents.mpas._region_shapes import regional_config
+
+    method, shape = choose_method(answer, downloadable)
+    config: Dict[str, Any] = {"resolution": answer.resolution, "name": answer.name}
+    if method is None:
+        return config
+    if shape == "channel":
+        block = {"upper_lat": answer.upper_lat, "lower_lat": answer.lower_lat}
+        config["regional"] = {"create_region": {"channel": block}}
+        return config
+    region = lookup_region(
+        answer.region_names,
+        data_dir,
+        exclude_names=answer.exclude_names,
+        nominatim_contact=nominatim_contact,
+        cache_dir=cache_dir,
+    )
+    resolution_km = float(answer.resolution[:-2])
+    config["regional"] = regional_config(
+        region, method, shape, resolution_km, buffer_km
+    )
+    return config

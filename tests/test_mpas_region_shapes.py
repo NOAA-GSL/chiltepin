@@ -474,7 +474,10 @@ def test_project_hexes_gets_the_margin_and_the_cell_spacing(monkeypatch):
     monkeypatch.setattr(
         shapes,
         "fit_project_hexes",
-        lambda region, margin, resolution: calls.append((margin, resolution)),
+        lambda region, margin, resolution: (
+            calls.append((margin, resolution)),
+            {"extent_x_km": 500, "extent_y_km": 400},
+        )[1],
     )
     region = cap(-100, 40, 100)
     shapes.regional_config(region, "project_hexes", "rectangle", 15, 50)
@@ -492,3 +495,39 @@ def test_project_hexes_gets_the_margin_and_the_cell_spacing(monkeypatch):
 def test_regional_config_rejects(method, shape, message):
     with pytest.raises(ValueError, match=message):
         shapes.regional_config(cap(0, 40, 100), method, shape, 15, 50)
+
+
+@pytest.mark.parametrize(
+    ("method", "shape"),
+    [
+        ("create_region", "circle"),
+        ("create_region", "ellipse"),
+        ("create_region", "polygon"),
+        ("create_region", "rectangle"),
+        ("project_hexes", "rectangle"),
+    ],
+)
+def test_shape_too_small_for_its_cells(method, shape):
+    # Colorado, about 750 km across, reaches about 450 km from its center with
+    # its margin, less than two 480 km cells, and more than two 60 km cells
+    region = Polygon([(-109.05, 37), (-102.05, 37), (-102.05, 41), (-109.05, 41)])
+    with pytest.raises(shapes.RegionTooSmall, match="Ask for smaller cells"):
+        shapes.regional_config(region, method, shape, 480, 50)
+    shapes.regional_config(region, method, shape, 60, 50)
+
+
+def test_half_size():
+    assert shapes.half_size_km({"create_region": {"circle": {"radius_km": 7}}}) == 7
+    ellipse = {"semi_major_axis_km": 9, "semi_minor_axis_km": 4}
+    assert shapes.half_size_km({"create_region": {"ellipse": ellipse}}) == 4
+    hexes = {"extent_x_km": 300, "extent_y_km": 100}
+    assert shapes.half_size_km({"project_hexes": hexes}) == 50
+    # A square 2 degrees on a side at the equator reaches a degree from its
+    # middle, about 111 km
+    square = {
+        "vertices": [[-1, -1], [-1, 1], [1, 1], [1, -1]],
+        "inside_lat": 0,
+        "inside_lon": 0,
+    }
+    half = shapes.half_size_km({"create_region": {"polygon": square}})
+    assert half == pytest.approx(math.pi / 180 * R, rel=1e-3)
