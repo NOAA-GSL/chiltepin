@@ -141,11 +141,11 @@ class _MeshBehavior:
         self.mpas_tools_version = mpas_tools_version
         self.mpas_tools_built = False
 
-        # MPAS-Limited-Area state (the create_region program and its Python)
+        # MPAS-Limited-Area state (the create_region program)
         self.limited_area_version = limited_area_version
         self.limited_area_built = False
 
-        # Plotting state (the Python environment and map layers plots use)
+        # Plotting state (the map layers plots use)
         self.plotting_built = False
 
         # Serializes tool installs, so concurrent requests that need a tool wait
@@ -791,13 +791,8 @@ class _MeshBehavior:
 
     @property
     def _limited_area_prefix(self) -> Path:
-        """Directory MPAS-Limited-Area and its Python environment are installed in."""
+        """Directory MPAS-Limited-Area is installed in."""
         return self.work_dir / "limited-area" / self.limited_area_version
-
-    @property
-    def _limited_area_python(self) -> Path:
-        """Python of the environment that runs create_region."""
-        return self._limited_area_prefix / "venv" / "bin" / "python"
 
     @property
     def _create_region(self) -> Path:
@@ -805,11 +800,16 @@ class _MeshBehavior:
         return self._limited_area_prefix / "src" / "create_region"
 
     def _limited_area_usable(self) -> bool:
-        """Whether a finished MPAS-Limited-Area install exists."""
+        """Whether a finished MPAS-Limited-Area install exists.
+
+        An install made when create_region ran in its own environment, in
+        ``venv``, was checked with that environment's Python, not the tasks'
+        Python, so it is replaced.
+        """
         return (
             (self._limited_area_prefix / ".installed").is_file()
-            and self._is_executable(self._limited_area_python)
             and self._create_region.is_file()
+            and not (self._limited_area_prefix / "venv").exists()
         )
 
     @property
@@ -974,14 +974,11 @@ class _MeshBehavior:
 
     @bash_task
     def _install_limited_area(self) -> str:
-        """Clone MPAS-Limited-Area and create its Python environment.
+        """Clone MPAS-Limited-Area, on ``service``, which can reach GitHub.
 
-        Runs on ``service``, which can reach GitHub and PyPI. A virtual
-        environment only works at the path it was created at, so it is created
-        in its final place. It is built from the Python running this task, and
-        the check on ``compute`` confirms that it runs there too.
+        create_region runs with the Python of the tasks on ``compute``, whose
+        ``chiltepin[mpas]`` extra has the numpy and netCDF4 it needs.
         """
-        import sys
         import textwrap
 
         return textwrap.dedent(
@@ -996,15 +993,18 @@ class _MeshBehavior:
             cd "$prefix"
             # Clone only the requested tag, giving up if the transfer stalls
             git -c advice.detachedHead=false -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 clone --depth 1 --branch {self._q("v" + self.limited_area_version)} https://github.com/MPAS-Dev/MPAS-Limited-Area.git src
-            {self._q(sys.executable)} -m venv "$prefix/venv"
-            "$prefix/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --no-input --timeout 60 --retries 5 numpy netCDF4
             echo "Completed install at $(date)"
             """
         )
 
     @bash_task
     def _check_limited_area(self) -> str:
-        """Check that create_region runs on ``compute``, and mark the install."""
+        """Check that create_region runs on ``compute``, and mark the install.
+
+        It runs with the Python of the tasks on ``compute``, which must have the
+        ``chiltepin[mpas]`` extra.
+        """
+        import sys
         import textwrap
 
         return textwrap.dedent(
@@ -1013,9 +1013,9 @@ class _MeshBehavior:
             echo "Started check at $(date)"
             echo "Executing on $(hostname)"
             prefix={self._q(self._limited_area_prefix)}
-            python="$prefix/venv/bin/python"
+            python={self._q(sys.executable)}
             if ! "$python" -c "import numpy, netCDF4"; then
-                echo "The Python environment in $prefix/venv cannot import numpy and netCDF4 on this resource. It was created from the Python of the service resource, which must also run on the compute resource." >&2
+                echo "The Python of the compute resource cannot import numpy and netCDF4, which create_region needs. Install chiltepin[mpas] in the environment of the compute resource." >&2
                 exit 1
             fi
             "$python" "$prefix/src/create_region" --help > /dev/null
@@ -1123,7 +1123,12 @@ class _MeshBehavior:
 
     @bash_task
     def _run_create_region(self, mesh_dir: str) -> str:
-        """Run create_region in a mesh directory holding the points and parent."""
+        """Run create_region in a mesh directory holding the points and parent.
+
+        It runs with the Python of the task, which has the ``chiltepin[mpas]``
+        extra.
+        """
+        import sys
         import textwrap
 
         return textwrap.dedent(
@@ -1132,7 +1137,7 @@ class _MeshBehavior:
             echo "Started create_region at $(date)"
             echo "Executing on $(hostname)"
             cd {self._q(mesh_dir)}
-            {self._q(self._limited_area_python)} {self._q(self._create_region)} {self._q(_REGION_POINTS)} {self._q(_REGION_PARENT)}
+            {self._q(sys.executable)} {self._q(self._create_region)} {self._q(_REGION_POINTS)} {self._q(_REGION_PARENT)}
             echo "Completed create_region at $(date)"
             """
         )
@@ -1422,17 +1427,18 @@ class _MeshBehavior:
 
     @agent_action
     async def install_limited_area(self) -> None:
-        """Install MPAS-Limited-Area and the Python it needs, unless installed.
+        """Install MPAS-Limited-Area, unless installed.
 
         The ``create_region`` program of MPAS-Limited-Area is a Python script
-        that needs numpy and netCDF4. The tag is cloned and a virtual
-        environment with those two packages is created in ``work_dir`` on the
-        ``service`` resource, and a check on the ``compute`` resource confirms
-        that it runs there. It counts as installed once that check has passed,
-        so a restarted agent reuses it. Requests that need it while it is being
-        installed wait for that install. If it fails, each waiting request tries
-        again in turn. Called automatically when a request needs it, but can be
-        called earlier to have it ready.
+        that needs numpy and netCDF4, which the ``chiltepin[mpas]`` extra
+        installs on the ``compute`` resource, where it runs. The tag is cloned
+        into ``work_dir`` on the ``service`` resource, and a check on the
+        ``compute`` resource confirms that the Python of its tasks runs it. It
+        counts as installed once that check has passed, so a restarted agent
+        reuses it. Requests that need it while it is being installed wait for
+        that install. If it fails, each waiting request tries again in turn.
+        Called automatically when a request needs it, but can be called earlier
+        to have it ready.
 
         Raises
         ------

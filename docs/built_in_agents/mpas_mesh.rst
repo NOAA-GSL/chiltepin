@@ -12,15 +12,15 @@ For the API reference, see :doc:`../api/agents/mpas_mesh`.
 Requirements
 ------------
 
-* Chiltepin installed in the agent and task execution environments. Plotting
-  also needs the ``mpas`` extra where the agent's tasks run on the ``compute``
-  resource, which installs numpy, netCDF4, matplotlib and cartopy:
+* Chiltepin installed in the agent and task execution environments.
+  ``create_region`` regional meshes and plotting also need the ``mpas`` extra
+  where the agent's tasks run on the ``compute`` resource, which installs
+  numpy, netCDF4, matplotlib and cartopy:
 
   .. code-block:: console
 
      $ pip install "chiltepin[mpas]"
 
-  The agent installs the Python packages ``create_region`` needs for itself.
 * Authentication via ``chiltepin login`` before launching the agent.
 * Network access to the Academy Exchange from the agent and to UCAR and GitHub
   from the ``service`` resource.
@@ -34,16 +34,9 @@ Requirements
   finds netCDF through ``nf-config`` and ``nc-config``, so these must be on the
   ``PATH`` of the ``compute`` resource, for example by loading the
   netCDF-Fortran module in its ``environment`` setting.
-* For ``create_region`` regional meshes, ``git`` and network access to GitHub
-  and PyPI on the ``service`` resource, to clone MPAS-Limited-Area and install
-  numpy and netCDF4 in a virtual environment for it. The environment is created
-  on the ``service`` resource from the Python that runs chiltepin's tasks there,
-  and is then used on the ``compute`` resource, so that Python must also run on
-  the ``compute`` resource at the same path. This holds when both resources use
-  the same chiltepin installation on a shared filesystem. That Python must also
-  be able to create virtual environments with ``python -m venv``. Some Linux
-  distributions leave this out of their Python package, so it may need a
-  separate package such as ``python3-venv``.
+* For ``create_region`` regional meshes, ``git`` on the ``service`` resource,
+  to clone MPAS-Limited-Area, and the ``mpas`` extra on the ``compute``
+  resource, whose Python runs the ``create_region`` program.
 * For plotting, network access to Natural Earth on the ``service`` resource,
   to download the map layers the plots draw. cartopy publishes Linux wheels for
   Python 3.10 only for x86_64, so on an ARM machine with Python 3.10 the
@@ -102,7 +95,7 @@ The agent workflow configuration must contain these resources:
 
 ``service``
    Runs agent tasks that require internet access, such as downloading meshes,
-   Metis, MPAS-Tools, MPAS-Limited-Area with its Python packages, and the map
+   Metis, MPAS-Tools, MPAS-Limited-Area, and the map
    layers plots draw. It must
    have write access to the mesh output directory and to
    ``work_dir``. The agent and this resource must share these directories at
@@ -111,8 +104,8 @@ The agent workflow configuration must contain these resources:
 ``compute``
    Runs tasks that do not need the internet, such as building Metis and
    MPAS-Tools, running ``project_hexes``, ``grid_rotate`` and ``create_region``,
-   partitioning meshes, and plotting them, for which it needs the ``mpas``
-   extra. It needs ``cmake``, ``make`` and a C compiler to build Metis, and
+   partitioning meshes, and plotting them. ``create_region`` and plotting need
+   the ``mpas`` extra. It needs ``cmake``, ``make`` and a C compiler to build Metis, and
    ``make``, a Fortran compiler and netCDF-C and netCDF-Fortran to build and run
    the MPAS-Tools programs. It must have
    write access to ``work_dir`` and the mesh output directory at the same
@@ -360,14 +353,16 @@ Actions
    Installs MPAS-Limited-Area, whose ``create_region`` program is a Python
    script, in ``work_dir``, unless a finished install is already there. On the
    ``service`` resource, the tag named by ``limited_area_version`` is cloned
-   into ``work_dir/limited-area/<limited_area_version>/src``, and a virtual
-   environment with numpy and netCDF4 from PyPI is created next to it in
-   ``venv``. A check on the ``compute`` resource then imports both packages and
-   runs the program, and only then writes the ``.installed`` marker. If the
-   environment cannot run there, the check fails with a message explaining why.
-   Like the other installs, an install counts only if the marker, the
-   environment's Python and the program exist, and this is checked on every
-   call, so a damaged install is replaced. An install starts from an empty
+   into ``work_dir/limited-area/<limited_area_version>/src``. A check on the
+   ``compute`` resource then imports numpy and netCDF4 with the Python of the
+   agent's tasks and runs the program with it, and only then writes the
+   ``.installed`` marker. If the ``mpas`` extra is missing, the check fails with
+   a message saying to install it. Like the other installs, an install counts
+   only if the marker and the program exist, and this is checked on every call,
+   so a damaged install is replaced. An install made by an earlier chiltepin,
+   which ran ``create_region`` in its own virtual environment in ``venv``, is
+   replaced too, so stop agents of that chiltepin sharing ``work_dir`` before
+   upgrading. An install starts from an empty
    install directory, and requests that need it while it is being installed
    wait for that install. The logs are ``limited_area_install.*`` and
    ``limited_area_check.*`` in ``work_dir/logs``. Installing needs both the

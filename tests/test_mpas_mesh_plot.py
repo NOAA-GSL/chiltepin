@@ -2,7 +2,7 @@
 """Real plots of MPAS meshes through the MPAS mesh agent.
 
 Runs only with ``--config=<platform config>``. The config's ``service`` resource
-needs internet access to UCAR, GitHub, PyPI and Natural Earth, and its
+needs internet access to UCAR, GitHub and Natural Earth, and its
 ``compute`` resource needs chiltepin with the ``mpas`` extra, which the test
 extra includes. The regional meshes also build MPAS-Tools, which needs make, a
 Fortran compiler and netCDF on ``compute``, and install MPAS-Limited-Area.

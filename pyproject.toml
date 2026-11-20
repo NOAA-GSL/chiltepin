@@ -62,8 +62,8 @@ test = [
     # The MPAS mesh agent's tests run its plotting script
     "chiltepin[mpas]",
 ]
-# Packages the MPAS mesh agent's tasks use to read and plot meshes. Install them
-# where its tasks run on the compute resource.
+# Packages the MPAS mesh agent's tasks use to read, cut and plot meshes. Install
+# them where its tasks run on the compute resource.
 mpas = [
     "numpy>=1.24",
     "netCDF4>=1.6",
