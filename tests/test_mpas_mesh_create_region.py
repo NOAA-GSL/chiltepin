@@ -2,9 +2,9 @@
 """Real create_region meshes cut from a global mesh through the MPAS mesh agent.
 
 Runs only with ``--config=<platform config>``. The config's ``service`` resource
-needs git and internet access to GitHub, PyPI and UCAR, and the Python that runs
-chiltepin's tasks there must also run on the ``compute`` resource, which runs
-the create_region program. Partitioning also builds Metis, which needs git,
+needs git and internet access to GitHub and UCAR, and its ``compute`` resource,
+which runs the create_region program, needs chiltepin with the ``mpas`` extra,
+which the test extra includes. Partitioning also builds Metis, which needs git,
 wget, tar and internet access on ``service``, and cmake and a C compiler on
 ``compute``.
 

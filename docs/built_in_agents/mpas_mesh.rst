@@ -361,7 +361,8 @@ Actions
    only if the marker and the program exist, and this is checked on every call,
    so a damaged install is replaced. An install made by an earlier chiltepin,
    which ran ``create_region`` in its own virtual environment in ``venv``, is
-   replaced too. An install starts from an empty
+   replaced too, so stop agents of that chiltepin sharing ``work_dir`` before
+   upgrading. An install starts from an empty
    install directory, and requests that need it while it is being installed
    wait for that install. The logs are ``limited_area_install.*`` and
    ``limited_area_check.*`` in ``work_dir/logs``. Installing needs both the
