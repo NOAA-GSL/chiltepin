@@ -490,13 +490,13 @@ def mock_install_tasks(
 
 
 def mark_limited_area_installed(behavior):
-    """Create what a finished MPAS-Limited-Area install leaves in work_dir."""
+    """Create what a finished MPAS-Limited-Area install leaves in work_dir.
+
+    Like the install, it starts from an empty install directory.
+    """
     prefix = behavior.work_dir / "limited-area" / behavior.limited_area_version
-    (prefix / "venv" / "bin").mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(prefix, ignore_errors=True)
     (prefix / "src").mkdir(parents=True, exist_ok=True)
-    python = prefix / "venv" / "bin" / "python"
-    python.write_text("#!/bin/sh\n")
-    python.chmod(0o755)
     (prefix / "src" / "create_region").write_text("#!/usr/bin/env python\n")
     (prefix / ".installed").touch()
     return prefix
@@ -1270,13 +1270,12 @@ def test_limited_area_scripts(tmp_path):
         install
     )
     assert "MPAS-Limited-Area.git src" in install
-    # The environment is made from the Python running the task
-    assert f'{shlex.quote(sys.executable)} -m venv "$prefix/venv"' in install
-    assert '"$prefix/venv/bin/python" -m pip install' in install
+    # Only the source is installed. create_region runs with the Python of the
+    # tasks, which has the chiltepin[mpas] extra.
+    assert "venv" not in install
+    assert "pip install" not in install
     assert install.rstrip().endswith('echo "Completed install at $(date)"')
-    assert "numpy netCDF4" in install
-    # pip keeps no download cache in the home directory
-    assert "--no-cache-dir" in install
+    assert f"python={shlex.quote(sys.executable)}" in check
     # A failed earlier install is removed before anything is cloned
     assert install.index('rm -rf "$prefix"') < install.index("git ")
     # The install is marked only after the imports and the script are checked
@@ -1288,13 +1287,13 @@ def test_limited_area_scripts(tmp_path):
     assert all(line.startswith("echo ") for line in lines[marker + 1 :] if line)
 
 
-def test_limited_area_check_fails_if_create_region_does_not_run(tmp_path, behavior):
+def test_limited_area_check_fails_if_create_region_does_not_run(
+    monkeypatch, tmp_path, behavior
+):
     prefix = mark_limited_area_installed(behavior)
     (prefix / ".installed").unlink()
     # Imports work, and running the script fails
-    (prefix / "venv" / "bin" / "python").write_text(
-        '#!/bin/sh\n[ "$1" = "-c" ] && exit 0\nexit 3\n'
-    )
+    fake_python(monkeypatch, tmp_path, '[ "$1" = "-c" ] && exit 0\nexit 3')
     script = _MeshBehavior._check_limited_area.func(behavior)
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert done.returncode == 3
@@ -1302,19 +1301,34 @@ def test_limited_area_check_fails_if_create_region_does_not_run(tmp_path, behavi
 
 
 @pytest.mark.parametrize("works", [True, False])
-def test_limited_area_check_marks_only_a_working_install(tmp_path, behavior, works):
+def test_limited_area_check_marks_only_a_working_install(
+    monkeypatch, tmp_path, behavior, works
+):
     prefix = mark_limited_area_installed(behavior)
     (prefix / ".installed").unlink()
     # A fake Python that either runs everything or fails every import
-    (prefix / "venv" / "bin" / "python").write_text(
-        "#!/bin/sh\nexit 0\n" if works else "#!/bin/sh\nexit 1\n"
-    )
+    fake_python(monkeypatch, tmp_path, "exit 0" if works else "exit 1")
     script = _MeshBehavior._check_limited_area.func(behavior)
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert (done.returncode == 0) == works
     assert (prefix / ".installed").is_file() == works
     if not works:
         assert "cannot import numpy and netCDF4" in done.stderr
+        assert "Install chiltepin[mpas]" in done.stderr
+
+
+def test_limited_area_check_imports_with_the_real_packages(
+    monkeypatch, tmp_path, behavior
+):
+    # The tests have the chiltepin[mpas] extra, so the imports pass, and a stand-in
+    # create_region shows the script is run with the tasks' Python
+    prefix = mark_limited_area_installed(behavior)
+    (prefix / ".installed").unlink()
+    (prefix / "src" / "create_region").write_text("import netCDF4, numpy\n")
+    script = _MeshBehavior._check_limited_area.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert (prefix / ".installed").is_file()
 
 
 def test_mpas_tools_scripts(tmp_path):
@@ -1623,19 +1637,18 @@ async def test_install_limited_area_reuses_a_finished_install(monkeypatch, behav
     check.assert_not_called()
 
 
-@pytest.mark.parametrize("damage", ["marker", "python", "not_executable", "script"])
+@pytest.mark.parametrize("damage", ["marker", "script", "old_venv"])
 async def test_install_limited_area_replaces_a_damaged_install(
     monkeypatch, behavior, damage
 ):
     prefix = mark_limited_area_installed(behavior)
     if damage == "marker":
         (prefix / ".installed").unlink()
-    elif damage == "python":
-        (prefix / "venv" / "bin" / "python").unlink()
-    elif damage == "not_executable":
-        (prefix / "venv" / "bin" / "python").chmod(0o644)
-    else:
+    elif damage == "script":
         (prefix / "src" / "create_region").unlink()
+    else:
+        # An install from when create_region ran in its own environment
+        (prefix / "venv" / "bin").mkdir(parents=True)
     install, check = mock_limited_area_tasks(monkeypatch, behavior)
     await behavior.install_limited_area()
     install.assert_called_once()
@@ -2637,17 +2650,18 @@ def test_create_region_points_default_orientation_and_precision():
     "name", ["m$(touch {pwn})", "b`touch {pwn}`", 'q"$(touch {pwn})', "$HOME", "a b"]
 )
 def test_create_region_script_runs_in_the_mesh_directory_without_expansion(
-    tmp_path, behavior, name
+    monkeypatch, tmp_path, behavior, name
 ):
     pwned = tmp_path / "PWNED"
     mesh_dir = tmp_path / name.format(pwn=pwned)
     mesh_dir.mkdir(parents=True)
     record = tmp_path / "record"
     prefix = mark_limited_area_installed(behavior)
-    (prefix / "venv" / "bin" / "python").write_text(
-        "#!/bin/sh\n"
+    fake_python(
+        monkeypatch,
+        tmp_path,
         f'{{ pwd; for a in "$@"; do printf "%s\\n" "$a"; done; }} '
-        f"> {shlex.quote(str(record))}\n"
+        f"> {shlex.quote(str(record))}",
     )
     script = _MeshBehavior._run_create_region.func(behavior, str(mesh_dir))
     done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)

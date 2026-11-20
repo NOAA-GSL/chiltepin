@@ -110,7 +110,7 @@ async def test_real_create_region_mesh(mesh_test_directory, launch_mesh_agent):
     mesh_data_dir = str(directory / "init_runs" / "meshes")
     work = directory / "work"
     prefix = work / "limited-area" / LIMITED_AREA_VERSION
-    python = prefix / "venv" / "bin" / "python"
+    program = prefix / "src" / "create_region"
     install_log = work / "logs" / "limited_area_install.stdout"
 
     async with launch_mesh_agent("first", **versions) as agent:
@@ -128,7 +128,9 @@ async def test_real_create_region_mesh(mesh_test_directory, launch_mesh_agent):
             result = await agent.generate_mesh(cut(shape, shape), mesh_data_dir)
             assert_valid_mesh(result, mesh_data_dir, shape, shape)
         assert (prefix / ".installed").is_file()
-        assert python.is_file()
+        assert program.is_file()
+        # create_region runs with the tasks' Python, from the chiltepin[mpas] extra
+        assert not (prefix / "venv").exists()
 
         # The global mesh was downloaded once and is shared by every cut
         assert {path.name for path in Path(mesh_data_dir).iterdir()} == {
@@ -157,14 +159,14 @@ async def test_real_create_region_mesh(mesh_test_directory, launch_mesh_agent):
         )
 
         # An explicit install does not change the installation
-        installed = (python.stat().st_mtime_ns, install_log.stat().st_mtime_ns)
+        installed = (program.stat().st_mtime_ns, install_log.stat().st_mtime_ns)
         await agent.install_limited_area()
 
     # A new agent has no memory of the install, and finds it on disk
     async with launch_mesh_agent("restart", **versions) as agent:
         again = await agent.generate_mesh(cut("again", "circle"), mesh_data_dir)
         assert_valid_mesh(again, mesh_data_dir, "again", "circle")
-    assert (python.stat().st_mtime_ns, install_log.stat().st_mtime_ns) == installed
+    assert (program.stat().st_mtime_ns, install_log.stat().st_mtime_ns) == installed
 
     # Every run wrote its own logs: seven runs of create_region, including the
     # one that failed and the two that asked at the same time
