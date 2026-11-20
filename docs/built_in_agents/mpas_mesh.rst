@@ -209,6 +209,21 @@ Actions
           },
       }
 
+   The mesh holds the cells of the region and also 7 layers of cells around
+   it, which limited-area MPAS uses for its boundary, so it extends about 8
+   cells beyond ``extent_x_km`` and ``extent_y_km`` on each side.
+
+   ``project_hexes`` draws the rectangle on a Lambert conformal cone touching
+   the sphere at ``center_lat``. The cone's apex is at the pole, and cells at or
+   past it are misplaced, so a mesh, with its boundary layers, must not reach
+   the pole: ``extent_y_km / 2`` plus 8 cells must be less than ``6371.229 /
+   tan(|center_lat|)`` km. A request that reaches it raises ``ValueError``
+   giving the largest ``extent_y_km`` for its center and cell size. Use
+   ``create_region`` for a region around a pole. A center on the equator is
+   allowed: the cone then touches 0.0001 degrees north of it, since
+   ``project_hexes`` divides by the sine of the latitude it touches at. This
+   moves cells by at most about 40 m on a mesh 10000 km across.
+
    A region that covers only a few cells can make ``project_hexes`` crash or
    write no mesh. The request then raises ``RuntimeError`` naming the log file,
    and nothing is left behind, so give a region several cells across in each

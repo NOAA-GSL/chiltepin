@@ -15,7 +15,9 @@ at a time, and the mocked tests in ``test_mpas_mesh.py`` keep one loaded.
 import asyncio
 from pathlib import Path
 
+import numpy as np
 import pytest
+from netCDF4 import Dataset
 
 # Versions the tests install, passed to the agent so the test and the agent agree
 METIS_VERSION = "5.2.1"
@@ -125,6 +127,17 @@ async def test_real_regional_mesh(mesh_test_directory, launch_mesh_agent):
             "small",
         )
 
+        # A mesh centered on the equator, where project_hexes would divide by
+        # the sine of the latitude its cone touches at, and write every cell
+        # as NaN, if the agent did not move the cone off it
+        equator = await agent.generate_mesh(
+            regional("equator", center_lat=0.0), mesh_data_dir
+        )
+        assert assert_valid_mesh(equator, mesh_data_dir, "equator") > 100
+        with Dataset(equator["static"]) as ds:
+            lat = np.degrees(ds["latCell"][:])
+        assert np.isfinite(lat).all()
+        assert abs(float(lat.mean())) < 0.5
         # An explicit install does not change the installation
         installed = [program.stat().st_mtime_ns for program in programs]
         installed.append(download_log.stat().st_mtime_ns)
@@ -140,9 +153,9 @@ async def test_real_regional_mesh(mesh_test_directory, launch_mesh_agent):
     after.append(download_log.stat().st_mtime_ns)
     assert after == installed
 
-    # Every run wrote its own logs: five runs of project_hexes, including the
+    # Every run wrote its own logs: six runs of project_hexes, including the
     # one that failed and the two that asked at the same time, and one rotation
     logs = work / "logs"
-    assert len(list(logs.glob("project_hexes.*.stderr"))) == 5
+    assert len(list(logs.glob("project_hexes.*.stderr"))) == 6
     assert len(list(logs.glob("grid_rotate.*.stderr"))) == 1
     assert (logs / "mpas_tools_build.stdout").is_file()

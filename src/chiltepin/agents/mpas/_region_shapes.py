@@ -26,8 +26,8 @@ from typing import Any, Dict, Tuple
 
 EARTH_RADIUS_KM = 6371.229
 
-# Boundary layers project_hexes makes inside its rectangle. create_region makes
-# its own outside the shape, so the region needs room only for them here.
+# Boundary layers project_hexes adds outside its rectangle, as create_region
+# adds its own outside its shape
 PROJECT_HEXES_BOUNDARY_LAYERS = 7
 
 # The margin around a region is at least this part of its diameter
@@ -54,10 +54,13 @@ MAX_EDGE_DEGREES = 1.0
 # sphere surrounds the globe, and has no center
 MIN_CENTER_NORM = 0.01
 
-# project_hexes divides by the sine of its center latitude, and cannot use the
-# poles, so a rectangle's center keeps this far from the equator and the poles
-MIN_CENTER_LAT = 1e-4
+# A project_hexes rectangle's center keeps this far from the poles, where its
+# frame has no size
 MAX_CENTER_LAT = 89.9
+
+# project_hexes divides by the sine of its standard parallels, which the agent
+# puts at the center. A center on the equator gets parallels this far north.
+EQUATOR_PARALLEL_DEGREES = 1e-4
 
 SHAPES = ("circle", "ellipse", "polygon", "rectangle")
 
@@ -172,27 +175,44 @@ def gnomonic_inverse(x, y, center):
     return points / np.linalg.norm(points, axis=-1, keepdims=True)
 
 
+def standard_parallel(center_lat: float) -> float:
+    """Return the latitude project_hexes' cone touches the sphere at."""
+    return center_lat if center_lat != 0 else EQUATOR_PARALLEL_DEGREES
+
+
 def lambert_apex_km(center_lat: float) -> float:
     """Return how far north or south of the center project_hexes can reach, in km.
 
-    project_hexes finds a point's angle about the cone's apex with ``atan``, so
-    its rectangle must stay on the center's side of the apex.
+    The apex of its cone is the pole, and project_hexes finds a point's angle
+    about it with ``atan``, so its rectangle must stay on the center's side of
+    the apex. A center on the equator can reach any distance.
     """
-    phi0 = math.radians(center_lat)
-    return abs(EARTH_RADIUS_KM / math.tan(phi0))
+    if center_lat == 0:
+        return math.inf
+    return abs(EARTH_RADIUS_KM / math.tan(math.radians(center_lat)))
+
+
+def project_hexes_reach_km(extent_y_km: float, resolution_km: float) -> float:
+    """Return how far north or south of its center a project_hexes mesh reaches.
+
+    It reaches half its height, and then its boundary layers, and a cell more
+    for the offset rows of its hexagons.
+    """
+    return extent_y_km / 2 + (PROJECT_HEXES_BOUNDARY_LAYERS + 1) * resolution_km
 
 
 def lambert(points, center_lat: float, center_lon: float):
     """Return x (east) and y (north) of points in km, as project_hexes draws them.
 
-    The frame is Lambert conformal with both standard parallels at the center,
-    and the center at the origin.
+    The frame is Lambert conformal with both standard parallels at
+    ``standard_parallel(center_lat)``, and the center at the origin.
     """
     import numpy as np
 
+    phi1 = math.radians(standard_parallel(center_lat))
     phi0 = math.radians(center_lat)
-    n = math.sin(phi0)
-    factor = math.cos(phi0) * math.tan(math.pi / 4 + phi0 / 2) ** n / n
+    n = math.sin(phi1)
+    factor = math.cos(phi1) * math.tan(math.pi / 4 + phi1 / 2) ** n / n
     rho0 = EARTH_RADIUS_KM * factor / math.tan(math.pi / 4 + phi0 / 2) ** n
     lat = np.arcsin(np.clip(points[:, 2], -1.0, 1.0))
     lon = np.arctan2(points[:, 1], points[:, 0])
@@ -432,11 +452,9 @@ def fit_rectangle(region, margin_km: float) -> Dict[str, Any]:
 
 
 def _clamp_lat(center):
-    """Keep a center latitude away from the equator and the poles."""
+    """Keep a center latitude away from the poles."""
     lon, lat = _lonlat(center)
-    sign = 1.0 if lat >= 0 else -1.0
-    lat = sign * min(max(abs(lat), MIN_CENTER_LAT), MAX_CENTER_LAT)
-    return _unit(lon, lat)
+    return _unit(lon, max(-MAX_CENTER_LAT, min(MAX_CENTER_LAT, lat)))
 
 
 def _lambert_frame(points, center, rotation: float):
@@ -452,7 +470,7 @@ def _lambert_frame(points, center, rotation: float):
     x, y = lambert(turned, lat, lon)
     lons = np.degrees(np.arctan2(turned[:, 1], turned[:, 0]))
     dlon = (lons - lon + 180.0) % 360.0 - 180.0
-    return x, y, math.sin(math.radians(lat)) * dlon
+    return x, y, math.sin(math.radians(standard_parallel(lat))) * dlon
 
 
 def _half_extents(points, center, rotation: float) -> Tuple[float, float]:
@@ -480,8 +498,13 @@ def _best_rotation(points, center) -> float:
     return best
 
 
-def fit_project_hexes(region, margin_km: float) -> Dict[str, Any]:
+def fit_project_hexes(
+    region, margin_km: float, resolution_km: float = 0.0
+) -> Dict[str, Any]:
     """Return the ``project_hexes`` rectangle holding a region and its margin.
+
+    ``resolution_km`` is the cell spacing, which sets how far the mesh's
+    boundary layers reach past the rectangle.
 
     The rectangle is rotated, with ``rotation_degrees``, only if that makes it
     ``MIN_ROTATION_GAIN`` smaller. Its center starts at the middle of the
@@ -523,19 +546,17 @@ def fit_project_hexes(region, margin_km: float) -> Dict[str, Any]:
     # The rectangle is sized about the center and rotation as they are written
     rotation_degrees = round((math.degrees(rotation) + 90.0) % 180.0 - 90.0, 1)
     written, center = _rounded(_clamp_lat(center))
-    if written["center_lat"] == 0:
-        written["center_lat"] = MIN_CENTER_LAT
-        center = _unit(written["center_lon"], MIN_CENTER_LAT)
     rotation = math.radians(rotation_degrees)
     x, y, angle = _lambert_frame(points, center, rotation)
     half_x, half_y = float(np.abs(x).max()), float(np.abs(y).max())
     lat = written["center_lat"]
     apex = lambert_apex_km(lat)
-    if float(np.abs(angle).max()) >= 90.0 or half_y >= apex:
+    reach = project_hexes_reach_km(2 * half_y, resolution_km)
+    if float(np.abs(angle).max()) >= 90.0 or reach >= apex:
         raise RegionTooLarge(
             f"The region reaches around or past the pole on project_hexes' cone at "
-            f"{lat:.1f} degrees, which reaches {apex:.0f} km north or south of its "
-            "center. Use create_region."
+            f"{lat:.1f} degrees, where a mesh can reach less than {apex:.0f} km "
+            "north or south of its center. Use create_region."
         )
     block = {
         **written,
@@ -564,8 +585,8 @@ def regional_config(
         Cell spacing of the mesh.
     buffer_km : float
         Margin around the region. It is at least ``MARGIN_FRACTION`` of the
-        region's diameter, and ``project_hexes`` adds room for its boundary
-        layers, which are inside its rectangle.
+        region's diameter. Both tools add their boundary layers outside the
+        shape, so the margin needs no room for them.
 
     Raises
     ------
@@ -582,8 +603,9 @@ def regional_config(
     if method == "project_hexes":
         if shape != "rectangle":
             raise ValueError(f"project_hexes makes only rectangles, not a {shape}")
-        margin += PROJECT_HEXES_BOUNDARY_LAYERS * float(resolution_km)
-        return {"project_hexes": fit_project_hexes(region, margin)}
+        return {
+            "project_hexes": fit_project_hexes(region, margin, float(resolution_km))
+        }
     fit = {
         "circle": fit_circle,
         "ellipse": fit_ellipse,

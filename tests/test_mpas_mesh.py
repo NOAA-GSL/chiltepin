@@ -764,7 +764,9 @@ def regional_config(**changes):
     "resolution", ["15km", "7.5km", "2km", "0.5km", "100km", "12345km"]
 )
 def test_validate_mesh_config_accepts_any_regional_resolution(behavior, resolution):
-    config = regional_config()
+    # On the equator, where no pole limits how far coarse cells' boundary
+    # layers reach
+    config = regional_config(center_lat=0.0)
     config["resolution"] = resolution
     behavior._validate_mesh_config(config)
 
@@ -773,7 +775,8 @@ def test_validate_mesh_config_accepts_regional_defaults_and_rotation(behavior):
     behavior._validate_mesh_config(
         {"regional": {"project_hexes": {**HEXES, "rotation_degrees": -30.5}}}
     )
-    behavior._validate_mesh_config(regional_config(center_lon=270, center_lat=-90))
+    # Far south, short of the pole, which project_hexes cannot reach
+    behavior._validate_mesh_config(regional_config(center_lon=270, center_lat=-80))
 
 
 def test_global_resolutions_stay_limited_to_the_available_meshes(behavior):
@@ -860,6 +863,42 @@ def test_validate_mesh_config_rejects_out_of_range_project_hexes(
 ):
     with pytest.raises(ValueError, match=message):
         behavior._validate_mesh_config(regional_config(**{key: value}))
+
+
+# The cone's apex is the pole, R cot(lat) from the center: 1123.4 km at 80
+# degrees, and R / sqrt(3) = 3678.4 km at 60. A 15km mesh reaches 120 km past
+# half its height, with its 7 boundary layers and a cell for its offset rows.
+@pytest.mark.parametrize(
+    ("center_lat", "extent_y_km", "resolution", "limit"),
+    [
+        (90, 1, "15km", "0.0"),
+        (-90, 1, "15km", "0.0"),
+        (80, 2007, "15km", "2006.8"),
+        (-60, 7117, "15km", "7116.9"),
+        # Coarser cells have wider boundary layers
+        (80, 1500, "60km", "1286.8"),
+    ],
+)
+def test_validate_mesh_config_rejects_project_hexes_reaching_a_pole(
+    behavior, center_lat, extent_y_km, resolution, limit
+):
+    config = regional_config(center_lat=center_lat, extent_y_km=extent_y_km)
+    config["resolution"] = resolution
+    with pytest.raises(
+        ValueError, match=f"reaches the pole.*less than {limit}. Use create_region"
+    ):
+        behavior._validate_mesh_config(config)
+
+
+@pytest.mark.parametrize(
+    ("center_lat", "extent_y_km"),
+    [(80, 2006), (-60, 7116), (0, 20000), (1e-6, 9000)],
+)
+def test_validate_mesh_config_accepts_project_hexes_short_of_a_pole(
+    behavior, center_lat, extent_y_km
+):
+    config = regional_config(center_lat=center_lat, extent_y_km=extent_y_km)
+    behavior._validate_mesh_config(config)
 
 
 def test_validate_mesh_config_requires_every_project_hexes_key(behavior):
@@ -2364,6 +2403,17 @@ def test_project_hexes_namelist():
         _MeshBehavior._project_hexes_namelist(15.0, 500, 400, 40, -105)
         == PROJECT_HEXES_NAMELIST
     )
+
+
+def test_project_hexes_namelist_on_the_equator():
+    # project_hexes would divide by the sine of a parallel on the equator
+    text = _MeshBehavior._project_hexes_namelist(15.0, 500, 400, 0, -105)
+    assert "reference_latitude_degrees = 0.0\n" in text
+    assert "standard_parallel_1_degrees = 0.0001\n" in text
+    assert "standard_parallel_2_degrees = 0.0001\n" in text
+    # A center just off the equator keeps its own parallels
+    text = _MeshBehavior._project_hexes_namelist(15.0, 500, 400, -1e-6, -105)
+    assert "standard_parallel_1_degrees = -1e-06\n" in text
 
 
 def test_rotate_namelist():

@@ -26,6 +26,11 @@ from chiltepin.agents.mpas._plot_mesh import (
     REQUIRED_PARTS,
     layer_path,
 )
+from chiltepin.agents.mpas._region_shapes import (
+    lambert_apex_km,
+    project_hexes_reach_km,
+    standard_parallel,
+)
 from chiltepin.tasks import bash_task, python_task
 
 logger = logging.getLogger(__name__)
@@ -240,7 +245,7 @@ class _MeshBehavior:
             invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``,
             ``regional`` block or ``plot``. A name must be at most 200 bytes long, must
             not contain control characters, and must not be that of a downloaded
-            global mesh file.
+            global mesh file. A ``project_hexes`` mesh must not reach a pole.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
@@ -268,7 +273,8 @@ class _MeshBehavior:
                     f"Available: {list(self.resolution_cells.keys())}"
                 )
         else:
-            self._parse_resolution_km(resolution)
+            spacing = self._parse_resolution_km(resolution)
+            self._check_project_hexes_reach(regional["project_hexes"], spacing)
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
         if (
             not isinstance(mesh_name, str)
@@ -399,6 +405,31 @@ class _MeshBehavior:
             cls._positive(config[key], f"{where}.{key}")
         if "rotation_degrees" in config:
             cls._number(config, "rotation_degrees", where)
+
+    @staticmethod
+    def _check_project_hexes_reach(config: Dict[str, Any], spacing_km: float) -> None:
+        """Check that a valid ``project_hexes`` block's mesh does not reach a pole.
+
+        project_hexes' cone has its apex at the pole, and cells at or past it
+        are misplaced. The mesh reaches past ``extent_y_km`` by its boundary
+        layers, whose size is set by the cell spacing.
+
+        Raises
+        ------
+        ValueError
+            If the mesh reaches the pole.
+        """
+        center_lat = float(config["center_lat"])
+        apex = lambert_apex_km(center_lat)
+        reach = project_hexes_reach_km(float(config["extent_y_km"]), spacing_km)
+        if reach >= apex:
+            limit = 2 * (apex - project_hexes_reach_km(0.0, spacing_km))
+            raise ValueError(
+                "regional.project_hexes reaches the pole, which project_hexes "
+                f"cannot make a mesh around. At center_lat {center_lat} with "
+                f"{spacing_km:g} km cells, extent_y_km must be less than "
+                f"{max(limit, 0.0):.1f}. Use create_region instead."
+            )
 
     @classmethod
     def _latitude(cls, value: Any, label: str) -> float:
@@ -568,8 +599,15 @@ class _MeshBehavior:
         center_lat: float,
         center_lon: float,
     ) -> str:
-        """Return the ``namelist.projections`` text that project_hexes reads."""
+        """Return the ``namelist.projections`` text that project_hexes reads.
+
+        The Lambert conformal cone touches the sphere at the center, unless the
+        center is on the equator, where project_hexes would divide by zero. Its
+        cone then touches 0.0001 degrees north, which moves its cells by at
+        most about 40 m on a mesh 10000 km across.
+        """
         r = cls._real
+        parallel = standard_parallel(center_lat)
         return (
             "&mesh\n"
             f"  cell_spacing_km = {r(cell_spacing_km)}\n"
@@ -584,8 +622,8 @@ class _MeshBehavior:
             f"  reference_longitude_degrees = {r(center_lon)}\n"
             f"  standard_longitude_degrees = {r(center_lon)}\n"
             f"  reference_latitude_degrees = {r(center_lat)}\n"
-            f"  standard_parallel_1_degrees = {r(center_lat)}\n"
-            f"  standard_parallel_2_degrees = {r(center_lat)}\n"
+            f"  standard_parallel_1_degrees = {r(parallel)}\n"
+            f"  standard_parallel_2_degrees = {r(parallel)}\n"
             "/\n"
         )
 

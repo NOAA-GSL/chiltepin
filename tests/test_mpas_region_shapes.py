@@ -57,11 +57,13 @@ def lambert_inverse(x, y, center_lat, center_lon):
     """Return longitudes and latitudes of plane points, as project_hexes does.
 
     This is ``xy_to_lambert_conformal_projection`` from MPAS-Tools 2.0.0, with
-    both standard parallels at the center, as the agent configures it.
+    the reference latitude at the center, and both standard parallels where
+    the agent writes them.
     """
     phi0 = math.radians(center_lat)
-    n = math.sin(phi0)
-    factor = math.cos(phi0) * math.tan(math.pi / 4 + phi0 / 2) ** n / n
+    phi1 = math.radians(shapes.standard_parallel(center_lat))
+    n = math.sin(phi1)
+    factor = math.cos(phi1) * math.tan(math.pi / 4 + phi1 / 2) ** n / n
     rho0 = factor * R / math.tan(math.pi / 4 + phi0 / 2) ** n
     rho = np.sign(n) * np.sqrt(x**2 + (rho0 - y) ** 2)
     theta = np.arctan(x / (rho0 - y))
@@ -177,7 +179,8 @@ def test_gnomonic_frame_makes_great_circles_straight():
 
 
 @pytest.mark.parametrize(
-    ("lat", "lon", "rotation"), [(40, -100, 0), (-35, 150, 30), (70, 10, -60)]
+    ("lat", "lon", "rotation"),
+    [(40, -100, 0), (-35, 150, 30), (70, 10, -60), (0, 20, 0)],
 )
 def test_lambert_matches_project_hexes(lat, lon, rotation):
     # Points project_hexes puts on the sphere go back to its plane
@@ -201,6 +204,12 @@ def test_rotation_is_counter_clockwise_from_above():
 def test_lambert_apex():
     # For a cone tangent at 40 degrees, the apex is R cot(40) north
     assert shapes.lambert_apex_km(40) == pytest.approx(R / math.tan(math.radians(40)))
+    assert shapes.lambert_apex_km(0) == math.inf
+
+
+def test_standard_parallel():
+    assert shapes.standard_parallel(40) == 40
+    assert shapes.standard_parallel(0) == shapes.EQUATOR_PARALLEL_DEGREES
 
 
 # Shapes
@@ -299,21 +308,15 @@ def test_project_hexes_holds_the_margin():
     assert inside_rectangle(block, margin_ring(region, 150)).all()
 
 
-def test_project_hexes_center_keeps_off_the_equator():
-    # project_hexes divides by the sine of its center latitude
+def test_project_hexes_on_the_equator():
+    # The agent tangents the cone just off the equator, so the center can be on it
     region = Polygon([(-80, -3), (-76, -3), (-76, 3), (-80, 3)])
     block = shapes.fit_project_hexes(region, 0)
-    assert block["center_lat"] != 0
-    assert abs(block["center_lat"]) <= 0.2
+    assert block["center_lat"] == pytest.approx(0, abs=1e-3)
     assert inside_rectangle(block, outline(region)).all()
-
-
-def test_project_hexes_rounds_a_center_on_the_equator(monkeypatch):
-    # A center that rounds to 0 is moved off it
-    monkeypatch.setattr(shapes, "MIN_CENTER_LAT", 1e-6)
-    region = Polygon([(-80, -3), (-76, -3), (-76, 3), (-80, 3)])
-    block = shapes.fit_project_hexes(region, 0)
-    assert block["center_lat"] == 1e-6
+    on_it = {**block, "center_lat": 0.0}
+    _MeshBehavior._validate_project_hexes(on_it)
+    assert inside_rectangle(on_it, outline(region)).all()
 
 
 def test_project_hexes_near_a_pole():
@@ -341,8 +344,21 @@ def test_project_hexes_rectangle_reaching_past_the_apex(monkeypatch):
     # Every point is in front of the cone, but the rectangle is as tall as its
     # farthest point the other way, which reaches past the apex
     monkeypatch.setattr(shapes, "lambert_apex_km", lambda lat: 100.0)
-    with pytest.raises(shapes.RegionTooLarge, match="reaches 100 km"):
+    with pytest.raises(shapes.RegionTooLarge, match="less than 100 km"):
         shapes.fit_project_hexes(cap(-100, 40, 300), 0)
+
+
+def test_project_hexes_boundary_layers_count_toward_the_pole():
+    # The pole is 670 km from the center. A 15km mesh reaches about 370 km,
+    # and a 60km mesh's boundary layers reach about 730 km.
+    region = cap(30, 84, 250)
+    shapes.fit_project_hexes(region, 0, resolution_km=15)
+    with pytest.raises(shapes.RegionTooLarge, match="Use create_region"):
+        shapes.fit_project_hexes(region, 0, resolution_km=60)
+
+
+def test_project_hexes_reach():
+    assert shapes.project_hexes_reach_km(1000, 15) == 500 + 8 * 15
 
 
 @pytest.mark.parametrize("fit", [shapes.fit_polygon, shapes.fit_rectangle])
@@ -451,14 +467,18 @@ def test_margin_is_a_part_of_the_diameter():
     )
 
 
-def test_project_hexes_has_room_for_its_boundary_layers(monkeypatch):
-    margins = []
+def test_project_hexes_gets_the_margin_and_the_cell_spacing(monkeypatch):
+    # Its boundary layers are outside its rectangle, so the margin has no room
+    # for them, and the cell spacing sets how far they reach
+    calls = []
     monkeypatch.setattr(
-        shapes, "fit_project_hexes", lambda region, margin: margins.append(margin)
+        shapes,
+        "fit_project_hexes",
+        lambda region, margin, resolution: calls.append((margin, resolution)),
     )
     region = cap(-100, 40, 100)
     shapes.regional_config(region, "project_hexes", "rectangle", 15, 50)
-    assert margins == [pytest.approx(50 + 7 * 15)]
+    assert calls == [(50.0, 15.0)]
 
 
 @pytest.mark.parametrize(
