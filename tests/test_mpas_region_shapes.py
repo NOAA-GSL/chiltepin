@@ -204,12 +204,19 @@ def test_rotation_is_counter_clockwise_from_above():
 def test_lambert_apex():
     # For a cone tangent at 40 degrees, the apex is R cot(40) north
     assert shapes.lambert_apex_km(40) == pytest.approx(R / math.tan(math.radians(40)))
-    assert shapes.lambert_apex_km(0) == math.inf
+    # A cone at the equator touches 0.0001 degrees from it, so its apex is
+    # billions of km away
+    assert shapes.lambert_apex_km(0) > 3e9
 
 
-def test_standard_parallel():
-    assert shapes.standard_parallel(40) == 40
-    assert shapes.standard_parallel(0) == shapes.EQUATOR_PARALLEL_DEGREES
+@pytest.mark.parametrize(
+    ("center", "parallel"),
+    [(40, 40), (-1e-4, -1e-4), (0, 1e-4), (5e-14, 1e-4), (-3e-9, -1e-4)],
+)
+def test_standard_parallel(center, parallel):
+    # Centers this near the equator would put the apex so far that the frame
+    # loses all precision
+    assert shapes.standard_parallel(center) == parallel
 
 
 # Shapes
@@ -309,10 +316,15 @@ def test_project_hexes_holds_the_margin():
 
 
 def test_project_hexes_on_the_equator():
-    # The agent tangents the cone just off the equator, so the center can be on it
+    # The agent tangents the cone just off the equator, so the center can be on
+    # it. The search starts at a center a hair off it, which must not lose
+    # the frame's precision.
     region = Polygon([(-80, -3), (-76, -3), (-76, 3), (-80, 3)])
     block = shapes.fit_project_hexes(region, 0)
-    assert block["center_lat"] == pytest.approx(0, abs=1e-3)
+    assert block["center_lat"] == pytest.approx(0, abs=0.02)
+    assert "rotation_degrees" not in block
+    assert block["extent_x_km"] == pytest.approx(445, rel=0.01)
+    assert block["extent_y_km"] == pytest.approx(667, rel=0.01)
     assert inside_rectangle(block, outline(region)).all()
     on_it = {**block, "center_lat": 0.0}
     _MeshBehavior._validate_project_hexes(on_it)
@@ -330,14 +342,30 @@ def test_project_hexes_near_a_pole():
     [
         # Around the pole, which is the apex of every project_hexes cone
         cap(30, 88, 400),
-        # Wide at a high latitude, as Russia is, so it reaches around the cone
-        Polygon([(20, 45), (190, 45), (190, 75), (20, 75)]),
     ],
-    ids=["pole", "wide"],
+    ids=["pole"],
 )
 def test_project_hexes_cannot_reach_past_the_pole(region):
     with pytest.raises(shapes.RegionTooLarge, match="Use create_region"):
         shapes.fit_project_hexes(region, 0)
+
+
+def test_project_hexes_of_a_wide_region_at_a_high_latitude():
+    # Wide in longitude, as Russia is. The search finds a center far enough
+    # north that the region stays in front of the cone's apex, and
+    # project_hexes puts every point back where it was.
+    region = Polygon([(20, 45), (190, 45), (190, 75), (20, 75)])
+    block = shapes.fit_project_hexes(region, 0)
+    points = outline(region)
+    assert inside_rectangle(block, points).all()
+    center = shapes._unit(block["center_lon"], block["center_lat"])
+    turn = math.radians(block.get("rotation_degrees", 0.0))
+    x, y = shapes.lambert(
+        shapes._rotate(points, center, -turn), block["center_lat"], block["center_lon"]
+    )
+    lons, lats = lambert_inverse(x, y, block["center_lat"], block["center_lon"])
+    back = shapes._rotate(shapes._unit(lons, lats), center, turn)
+    assert np.abs(back - points).max() * R < 1e-6
 
 
 def test_project_hexes_rectangle_reaching_past_the_apex(monkeypatch):

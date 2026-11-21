@@ -48,6 +48,13 @@ MAX_FLAT_RADIUS_DEGREES = 80.0
 # project_hexes rectangles are rotated only if that makes them this much smaller
 MIN_ROTATION_GAIN = 0.05
 
+# The search for the smallest project_hexes rectangle moves its center by
+# steps from this many km, and turns it by steps from this many degrees, until
+# the steps are this many km
+RECTANGLE_STEP_KM = 500.0
+RECTANGLE_STEP_DEGREES = 10.0
+RECTANGLE_TOLERANCE_KM = 1.0
+
 # Times a shape's center is moved toward the middle of the region
 CENTER_STEPS = 4
 
@@ -64,7 +71,9 @@ MIN_CENTER_NORM = 0.01
 MAX_CENTER_LAT = 89.9
 
 # project_hexes divides by the sine of its standard parallels, which the agent
-# puts at the center. A center on the equator gets parallels this far north.
+# puts at the center. A center nearer the equator than this, where the cone's
+# apex is so far that its frame loses all precision, gets parallels this far
+# from the equator, on the center's side.
 EQUATOR_PARALLEL_DEGREES = 1e-4
 
 SHAPES = ("circle", "ellipse", "polygon", "rectangle")
@@ -186,7 +195,9 @@ def gnomonic_inverse(x, y, center):
 
 def standard_parallel(center_lat: float) -> float:
     """Return the latitude project_hexes' cone touches the sphere at."""
-    return center_lat if center_lat != 0 else EQUATOR_PARALLEL_DEGREES
+    if abs(center_lat) >= EQUATOR_PARALLEL_DEGREES:
+        return center_lat
+    return math.copysign(EQUATOR_PARALLEL_DEGREES, center_lat)
 
 
 def lambert_apex_km(center_lat: float) -> float:
@@ -194,11 +205,10 @@ def lambert_apex_km(center_lat: float) -> float:
 
     The apex of its cone is the pole, and project_hexes finds a point's angle
     about it with ``atan``, so its rectangle must stay on the center's side of
-    the apex. A center on the equator can reach any distance.
+    the apex, about 3.6 billion km from a center on the equator.
     """
-    if center_lat == 0:
-        return math.inf
-    return abs(EARTH_RADIUS_KM / math.tan(math.radians(center_lat)))
+    parallel = standard_parallel(center_lat)
+    return abs(EARTH_RADIUS_KM / math.tan(math.radians(parallel)))
 
 
 def project_hexes_reach_km(extent_y_km: float, resolution_km: float) -> float:
@@ -490,21 +500,52 @@ def _half_extents(points, center, rotation: float) -> Tuple[float, float]:
     return float(np.abs(x).max()), float(np.abs(y).max())
 
 
-def _best_rotation(points, center) -> float:
-    """Return the rotation, in radians, giving the smallest rectangle."""
+def _rectangle_size(points, center, rotation: float) -> float:
+    """Return the area of the rectangle about a center and rotation, in km2."""
+    half_x, half_y = _half_extents(points, center, rotation)
+    return 4 * half_x * half_y
+
+
+def _coarse_rotation(points, center) -> float:
+    """Return the rotation, in radians, to the degree, of the smallest rectangle."""
     import numpy as np
 
-    def area(rotation):
-        half_x, half_y = _half_extents(points, center, rotation)
-        return half_x * half_y
+    rotations = np.radians(np.arange(-90.0, 90.0, 1.0))
+    sizes = [_rectangle_size(points, center, rotation) for rotation in rotations]
+    return float(rotations[int(np.argmin(sizes))])
 
-    coarse = np.radians(np.arange(0.0, 180.0, 1.0))
-    best = float(coarse[int(np.argmin([area(rotation) for rotation in coarse]))])
-    fine = best + np.radians(np.arange(-1.0, 1.0001, 0.1))
-    best = float(min(fine, key=area))
-    if area(best) > (1 - MIN_ROTATION_GAIN) * area(0.0):
-        return 0.0
-    return best
+
+def _smallest_rectangle(points, center, rotation: float, turn: bool):
+    """Return the center, rotation and area of the smallest rectangle nearby.
+
+    The center moves east, west, north and south, and with ``turn`` the
+    rotation turns, by steps that halve whenever no move makes the rectangle
+    smaller, down to about a kilometer.
+    """
+    step_km, step_turn = RECTANGLE_STEP_KM, math.radians(RECTANGLE_STEP_DEGREES)
+    size = _rectangle_size(points, center, rotation)
+    while step_km > RECTANGLE_TOLERANCE_KM:
+        moves = [(step_km, 0.0, 0.0), (-step_km, 0.0, 0.0), (0.0, step_km, 0.0)]
+        moves += [(0.0, -step_km, 0.0)]
+        if turn:
+            moves += [(0.0, 0.0, step_turn), (0.0, 0.0, -step_turn)]
+        for east, north, angle in moves:
+            moved = center
+            if east or north:
+                moved = _clamp_lat(
+                    _destination(
+                        center,
+                        math.atan2(east, north),
+                        math.hypot(east, north) / EARTH_RADIUS_KM,
+                    )
+                )
+            candidate = _rectangle_size(points, moved, rotation + angle)
+            if candidate < size * (1 - 1e-9):
+                center, rotation, size = moved, rotation + angle, candidate
+                break
+        else:
+            step_km, step_turn = step_km / 2, step_turn / 2
+    return center, rotation, size
 
 
 def fit_project_hexes(
@@ -516,9 +557,9 @@ def fit_project_hexes(
     boundary layers reach past the rectangle.
 
     The rectangle is rotated, with ``rotation_degrees``, only if that makes it
-    ``MIN_ROTATION_GAIN`` smaller. Its center starts at the middle of the
-    region, and moves toward the middle of the rectangle while that makes the
-    rectangle smaller.
+    ``MIN_ROTATION_GAIN`` smaller. Its center and rotation are searched from
+    the middle of the region for the smallest rectangle, with the rotation
+    free and with it fixed at 0.
 
     Raises
     ------
@@ -534,23 +575,14 @@ def fit_project_hexes(
     x, y = lambert(points, lat, lon)
     points = _with_margin(points[_hull(x, y)], margin_km)
 
-    def size(center):
-        rotation = _best_rotation(points, center)
-        half_x, half_y = _half_extents(points, center, rotation)
-        return half_x * half_y, rotation
-
-    area, rotation = size(center)
-    for _ in range(CENTER_STEPS):
-        x, y, _ = _lambert_frame(points, center, rotation)
-        dx, dy = (x.min() + x.max()) / 2, (y.min() + y.max()) / 2
-        moved = _destination(
-            center, math.atan2(dx, dy), math.hypot(dx, dy) / EARTH_RADIUS_KM
-        )
-        candidate = _clamp_lat(_rotate(moved[None, :], center, rotation)[0])
-        candidate_area, candidate_rotation = size(candidate)
-        if candidate_area >= area:
-            break
-        center, area, rotation = candidate, candidate_area, candidate_rotation
+    turned = _smallest_rectangle(
+        points, center, _coarse_rotation(points, center), turn=True
+    )
+    straight = _smallest_rectangle(points, center, 0.0, turn=False)
+    if turned[2] <= (1 - MIN_ROTATION_GAIN) * straight[2]:
+        center, rotation, _ = turned
+    else:
+        center, rotation, _ = straight
 
     # The rectangle is sized about the center and rotation as they are written
     rotation_degrees = round((math.degrees(rotation) + 90.0) % 180.0 - 90.0, 1)

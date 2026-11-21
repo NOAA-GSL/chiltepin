@@ -2411,9 +2411,12 @@ def test_project_hexes_namelist_on_the_equator():
     assert "reference_latitude_degrees = 0.0\n" in text
     assert "standard_parallel_1_degrees = 0.0001\n" in text
     assert "standard_parallel_2_degrees = 0.0001\n" in text
-    # A center just off the equator keeps its own parallels
+    # So does a center nearer the equator than that, on its own side
     text = _MeshBehavior._project_hexes_namelist(15.0, 500, 400, -1e-6, -105)
-    assert "standard_parallel_1_degrees = -1e-06\n" in text
+    assert "standard_parallel_1_degrees = -0.0001\n" in text
+    # A center that far from it keeps its own parallels
+    text = _MeshBehavior._project_hexes_namelist(15.0, 500, 400, -0.0002, -105)
+    assert "standard_parallel_1_degrees = -0.0002\n" in text
 
 
 def test_rotate_namelist():
