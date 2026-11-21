@@ -322,6 +322,7 @@ def test_read_prompt(tmp_path, stand_ins):
         {
             "nominatim_contact": "me@example.org",
             "cache_dir": behavior._nominatim_cache_dir,
+            "prompt": "Texas",
         },
     )
 

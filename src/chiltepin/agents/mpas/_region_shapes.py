@@ -236,9 +236,11 @@ def lambert(points, center_lat: float, center_lon: float):
     lat = np.arcsin(np.clip(points[:, 2], -1.0, 1.0))
     lon = np.arctan2(points[:, 1], points[:, 0])
     dlon = (lon - math.radians(center_lon) + np.pi) % (2 * np.pi) - np.pi
-    rho = EARTH_RADIUS_KM * factor / np.tan(np.pi / 4 + lat / 2) ** n
     theta = n * dlon
-    return rho * np.sin(theta), rho0 - rho * np.cos(theta)
+    # The pole opposite the cone is infinitely far, which the pole check refuses
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rho = EARTH_RADIUS_KM * factor / np.tan(np.pi / 4 + lat / 2) ** n
+        return rho * np.sin(theta), rho0 - rho * np.cos(theta)
 
 
 # Fitting
@@ -593,7 +595,11 @@ def fit_project_hexes(
     lat = written["center_lat"]
     apex = lambert_apex_km(lat)
     reach = project_hexes_reach_km(2 * half_y, resolution_km)
-    if float(np.abs(angle).max()) >= 90.0 or reach >= apex:
+    if (
+        float(np.abs(angle).max()) >= 90.0
+        or reach >= apex
+        or not math.isfinite(half_x * half_y)
+    ):
         raise RegionTooLarge(
             f"The region reaches around or past the pole on project_hexes' cone at "
             f"{lat:.1f} degrees, where a mesh can reach less than {apex:.0f} km "

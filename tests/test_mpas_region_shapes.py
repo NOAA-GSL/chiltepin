@@ -192,6 +192,16 @@ def test_lambert_matches_project_hexes(lat, lon, rotation):
     assert fy == pytest.approx(y, abs=1e-6)
 
 
+def test_lambert_of_the_opposite_pole_warns_of_nothing():
+    import warnings
+
+    # The south pole is infinitely far on a cone touching at 40N
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        x, y = shapes.lambert(shapes._unit([0.0], [-90.0]), 40, 0)
+    assert not np.isfinite(y[0])
+
+
 def test_rotation_is_counter_clockwise_from_above():
     center = shapes._unit(0, 0)
     east = shapes._destination(center, math.pi / 2, 0.1)
@@ -366,6 +376,19 @@ def test_project_hexes_of_a_wide_region_at_a_high_latitude():
     lons, lats = lambert_inverse(x, y, block["center_lat"], block["center_lon"])
     back = shapes._rotate(shapes._unit(lons, lats), center, turn)
     assert np.abs(back - points).max() * R < 1e-6
+
+
+def test_project_hexes_rectangle_of_no_finite_size(monkeypatch):
+    # A point infinitely far east on the cone makes no rectangle
+    frame = shapes._lambert_frame
+
+    def far(points, center, rotation):
+        x, y, angle = frame(points, center, rotation)
+        return np.where(np.arange(len(x)) == 0, np.inf, x), y, angle
+
+    monkeypatch.setattr(shapes, "_lambert_frame", far)
+    with pytest.raises(shapes.RegionTooLarge, match="Use create_region"):
+        shapes.fit_project_hexes(cap(-100, 40, 300), 0)
 
 
 def test_project_hexes_rectangle_reaching_past_the_apex(monkeypatch):

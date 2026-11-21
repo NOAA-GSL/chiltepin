@@ -389,57 +389,165 @@ def test_errors_hold_no_credentials(model, monkeypatch):
 
 
 DOWNLOADABLE = ["480km", "120km", "60km", "15km"]
+PH = ("project_hexes", "rectangle")
+POLYGON = ("create_region", "polygon")
+CIRCLE = ("create_region", "circle")
+ELLIPSE = ("create_region", "ellipse")
+CUT_RECTANGLE = ("create_region", "rectangle")
 
 
 @pytest.mark.parametrize(
-    ("fields", "choice"),
+    ("fields", "choices"),
     [
         # A global mesh is downloaded
-        ({"region_names": []}, (None, None)),
-        # A region of no shape is a project_hexes rectangle, at any resolution
-        ({}, ("project_hexes", "rectangle")),
-        ({"resolution": "7km"}, ("project_hexes", "rectangle")),
-        ({"shape": "rectangle"}, ("project_hexes", "rectangle")),
-        # Other shapes are cut from a global mesh
-        ({"shape": "circle"}, ("create_region", "circle")),
-        ({"shape": "ellipse"}, ("create_region", "ellipse")),
-        ({"shape": "polygon", "method": "create_region"}, ("create_region", "polygon")),
-        (
-            {"shape": "channel", "upper_lat": 10, "lower_lat": -10},
-            ("create_region", "channel"),
-        ),
-        # create_region without a shape cuts a polygon around the region
-        ({"method": "create_region"}, ("create_region", "polygon")),
+        ({"region_names": []}, [(None, None)]),
+        # A region of no shape is a project_hexes rectangle first, with the
+        # create_region shapes after
+        ({}, [PH, POLYGON, CIRCLE, ELLIPSE, CUT_RECTANGLE]),
+        # At a resolution that cannot be downloaded, only the rectangle
+        ({"resolution": "7km"}, [PH]),
+        # The model's choice comes first
+        ({"shape": "circle"}, [CIRCLE, PH, POLYGON, ELLIPSE, CUT_RECTANGLE]),
+        ({"method": "create_region"}, [POLYGON, PH, CIRCLE, ELLIPSE, CUT_RECTANGLE]),
         (
             {"method": "create_region", "shape": "rectangle"},
-            ("create_region", "rectangle"),
+            [CUT_RECTANGLE, PH, POLYGON, CIRCLE, ELLIPSE],
+        ),
+        (
+            {"shape": "channel", "upper_lat": 10, "lower_lat": -10},
+            [("create_region", "channel")],
         ),
     ],
 )
-def test_choose_method(fields, choice):
-    assert prompt.choose_method(response(**fields), DOWNLOADABLE) == choice
+def test_method_choices_of_what_the_model_chose(fields, choices):
+    # The prompt names no shape or method, so the model chose them
+    text = "a mesh over Texas"
+    assert prompt.method_choices(response(**fields), DOWNLOADABLE, text) == choices
 
 
 @pytest.mark.parametrize(
-    ("fields", "message"),
+    ("text", "fields", "choices"),
     [
-        ({"region_names": [], "resolution": "7km"}, "Global meshes are available at"),
-        ({"region_names": [], "shape": "circle"}, "name the places it covers"),
+        # What the model chose on its own falls back to what can be made: a
+        # cut at a resolution that cannot be downloaded becomes a rectangle
         (
+            "a 20 km mesh over Florida in Uruguay",
+            {"resolution": "20km", "method": "create_region"},
+            [PH],
+        ),
+        ("a 20 km mesh over Texas", {"resolution": "20km", "shape": "circle"}, [PH]),
+        (
+            "a 20 km mesh over Texas",
+            {"resolution": "20km", "method": "create_region", "shape": "ellipse"},
+            [PH],
+        ),
+        # What the prompt asks for stays
+        (
+            "a 15 km limited area mesh over Texas",
+            {"method": "create_region"},
+            [POLYGON, CIRCLE, ELLIPSE, CUT_RECTANGLE],
+        ),
+        ("a 15 km circle mesh over Texas", {"shape": "circle"}, [CIRCLE]),
+        ("a 15 km hex projection mesh over Texas", {"method": "project_hexes"}, [PH]),
+        ("a 15 km rectangle over Texas", {"shape": "rectangle"}, [PH, CUT_RECTANGLE]),
+        # A method or shape the model added to a global mesh is no matter
+        (
+            "a global 120 km mesh",
+            {
+                "region_names": [],
+                "resolution": "120km",
+                "method": "create_region",
+                "shape": "circle",
+            },
+            [(None, None)],
+        ),
+        # A channel needs no word for it, as for the tropics
+        (
+            "a 30 km mesh of the tropics",
+            {
+                "resolution": "30km",
+                "shape": "channel",
+                "upper_lat": 23.4,
+                "lower_lat": -23.4,
+            },
+            None,
+        ),
+    ],
+)
+def test_method_choices_keep_what_the_prompt_asks_for(text, fields, choices):
+    answer = response(**fields)
+    if choices is None:
+        # 30km is not downloadable here, and a channel can only be cut
+        with pytest.raises(ValueError, match="create_region cuts a downloaded"):
+            prompt.method_choices(answer, DOWNLOADABLE, text)
+    else:
+        assert prompt.method_choices(answer, DOWNLOADABLE, text) == choices
+
+
+@pytest.mark.parametrize(
+    ("text", "fields", "message"),
+    [
+        # Nothing can be made as asked for
+        (
+            "a global 7 km mesh",
+            {"region_names": [], "resolution": "7km"},
+            "Global meshes are available at",
+        ),
+        (
+            "a global circle mesh",
+            {"region_names": [], "shape": "circle"},
+            "name the places it covers",
+        ),
+        (
+            "a global hex projection mesh",
             {"region_names": [], "method": "project_hexes"},
             "name the places it covers",
         ),
         (
+            "a circle made with project_hexes",
             {"shape": "circle", "method": "project_hexes"},
             "project_hexes makes only rectangles, not a circle",
         ),
-        ({"shape": "ellipse", "resolution": "7km"}, "create_region cuts a downloaded"),
-        ({"method": "create_region", "resolution": "7km"}, "or for a rectangle"),
+        (
+            "a 7 km ellipse",
+            {"shape": "ellipse", "resolution": "7km"},
+            "create_region cuts a downloaded",
+        ),
+        (
+            "a 7 km limited area mesh",
+            {"method": "create_region", "resolution": "7km"},
+            "or for a rectangle",
+        ),
     ],
 )
-def test_choose_method_rejects(fields, message):
+def test_method_choices_refuse_what_cannot_be_made(text, fields, message):
     with pytest.raises(ValueError, match=message):
-        prompt.choose_method(response(**fields), DOWNLOADABLE)
+        prompt.method_choices(response(**fields), DOWNLOADABLE, text)
+
+
+def test_method_choices_without_a_prompt_count_the_answer_as_asked():
+    answer = response(resolution="7km", shape="circle")
+    with pytest.raises(ValueError, match="create_region cuts a downloaded"):
+        prompt.method_choices(answer, DOWNLOADABLE)
+
+
+@pytest.mark.parametrize(
+    ("text", "methods", "shapes"),
+    [
+        ("a 15 km mesh over Florida", set(), set()),
+        ("a limited area mesh over Florida", {"create_region"}, set()),
+        ("a Limited-Area oval", {"create_region"}, {"ellipse"}),
+        ("a LAM over Texas", {"create_region"}, set()),
+        ("use create_region for a square", {"create_region"}, {"rectangle"}),
+        ("a hex projection circle", {"project_hexes"}, {"circle"}),
+        # Names count only as whole words
+        ("a mesh over Alabama", set(), set()),
+        ("a mesh over Lamar County, or Roundup", set(), set()),
+    ],
+)
+def test_methods_and_shapes_named(text, methods, shapes):
+    assert prompt.methods_named(text) == methods
+    assert prompt.shapes_named(text) == shapes
 
 
 # Building the request
@@ -483,6 +591,58 @@ def test_mesh_config_of_a_channel(region_tools):
         },
     }
     assert region_tools == {}
+
+
+def test_mesh_config_falls_back_when_the_region_does_not_fit(monkeypatch, region_tools):
+    from chiltepin.agents.mpas import _region_shapes
+
+    tried = []
+
+    def fit(region, method, shape, resolution_km, buffer_km):
+        tried.append((method, shape))
+        if (method, shape) == PH:
+            raise _region_shapes.RegionTooLarge("It reaches the pole.")
+        return {method: {"fitted": shape}}
+
+    monkeypatch.setattr(_region_shapes, "regional_config", fit)
+    config = prompt.mesh_config(response(), DOWNLOADABLE, "/data", 50, prompt="Texas")
+    assert config["regional"] == {"create_region": {"fitted": "polygon"}}
+    assert tried == [PH, POLYGON]
+
+
+def test_mesh_config_when_no_shape_fits(monkeypatch, region_tools):
+    from chiltepin.agents.mpas import _region_shapes
+
+    def fit(region, method, shape, resolution_km, buffer_km):
+        raise _region_shapes.RegionTooLarge(f"No {shape}.")
+
+    monkeypatch.setattr(_region_shapes, "regional_config", fit)
+    with pytest.raises(_region_shapes.RegionTooLarge) as error:
+        prompt.mesh_config(response(), DOWNLOADABLE, "/data", 50, prompt="Texas")
+    # The first choice's reason, which is the one the prompt is about
+    assert str(error.value) == "No rectangle. No other shape fits the region either."
+    # With only one choice, its reason alone
+    answer = response(shape="circle")
+    with pytest.raises(_region_shapes.RegionTooLarge) as error:
+        prompt.mesh_config(answer, DOWNLOADABLE, "/data", 50, prompt="a circle")
+    assert str(error.value) == "No circle."
+
+
+def test_mesh_config_does_not_fall_back_for_a_region_too_small(
+    monkeypatch, region_tools
+):
+    from chiltepin.agents.mpas import _region_shapes
+
+    tried = []
+
+    def fit(region, method, shape, resolution_km, buffer_km):
+        tried.append(shape)
+        raise _region_shapes.RegionTooSmall("Ask for smaller cells.")
+
+    monkeypatch.setattr(_region_shapes, "regional_config", fit)
+    with pytest.raises(_region_shapes.RegionTooSmall):
+        prompt.mesh_config(response(), DOWNLOADABLE, "/data", 50, prompt="Texas")
+    assert tried == ["rectangle"]
 
 
 def test_mesh_config_of_a_region(region_tools):

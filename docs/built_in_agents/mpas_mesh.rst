@@ -537,8 +537,13 @@ Russia", with an LLM on the ``service`` resource:
    supported global resolutions. A circle, ellipse, polygon or channel is cut
    from a global mesh with ``create_region``, so it needs a global resolution
    too. A rectangle, or a region of no shape, is made with ``project_hexes`` at
-   any resolution, unless the prompt asks for ``create_region``, which then
-   cuts a polygon around the region.
+   any resolution, unless ``create_region`` is chosen, which then cuts a
+   polygon around the region. The model may choose a method or shape the
+   prompt does not name. If that choice cannot be made, such as a cut at a
+   resolution that cannot be downloaded, or a shape the region does not fit,
+   the mesh is made the first other way that works: a ``project_hexes``
+   rectangle, or a ``create_region`` polygon, circle, ellipse or rectangle.
+   What the prompt names stays as it is.
 3. The places are looked up in Natural Earth's detailed countries,
    continents, and states or provinces. A continent stands for its countries,
    and "Europe" leaves Russia out unless Russia is named too. "Contiguous
@@ -567,9 +572,9 @@ Russia", with an LLM on the ``service`` resource:
    region needs small cells.
 
 A prompt that asks for a mesh that cannot be made raises ``ValueError`` saying
-why, such as a place that is not found, a ``create_region`` shape at a
-resolution that cannot be downloaded, or a ``project_hexes`` rectangle around
-a pole. A model that cannot be reached, or gives no valid answer, raises
+why, such as a place that is not found, a circle it names at a resolution that
+cannot be downloaded, a rectangle it names made with ``project_hexes`` around
+a pole, or a region too small for its cells. A model that cannot be reached, or gives no valid answer, raises
 ``RuntimeError``. The request is then checked as any other is.
 
 ``model`` is a litellm model string, such as

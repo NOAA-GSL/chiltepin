@@ -1439,6 +1439,7 @@ class _MeshBehavior:
                 buffer_km,
                 nominatim_contact=self.nominatim_contact,
                 cache_dir=self._nominatim_cache_dir,
+                prompt=prompt,
             )
 
         try:

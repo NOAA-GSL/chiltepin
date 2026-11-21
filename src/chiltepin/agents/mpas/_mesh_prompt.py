@@ -403,55 +403,126 @@ def ask(
             ) from None
 
 
-def choose_method(
-    answer: MeshPromptResponse, downloadable: Sequence[str]
-) -> Tuple[Optional[str], Optional[str]]:
-    """Return the method and shape to make a mesh with, or None and None.
+# Shapes create_region cuts, which project_hexes cannot make
+CUT_SHAPES = ("circle", "ellipse", "polygon", "channel")
 
-    A global mesh is downloaded, so it has neither. A circle, an ellipse, a
-    polygon and a channel are cut from a global mesh with ``create_region``,
-    so their resolution must be one of ``downloadable``. A rectangle, or a
-    region of no shape, is made with ``project_hexes`` unless the prompt asks
-    for ``create_region``, which cuts a polygon around it.
+# What a regional mesh is made as when the model's choice cannot be made, in
+# order: a project_hexes rectangle, then create_region shapes, the last a
+# rectangle, for one asked for that project_hexes cannot draw
+FALLBACKS = (
+    ("project_hexes", "rectangle"),
+    ("create_region", "polygon"),
+    ("create_region", "circle"),
+    ("create_region", "ellipse"),
+    ("create_region", "rectangle"),
+)
+
+
+def _words(text: str) -> str:
+    """Return text as names are compared: lower case, "_" and "-" as spaces."""
+    return " ".join(text.casefold().replace("_", " ").replace("-", " ").split())
+
+
+def _named(prompt: str, table) -> set:
+    """Return the keys of ``table`` the prompt names by any of their names.
+
+    A name counts as whole words, so "lam" counts in "a LAM mesh" but not in
+    "Alabama".
+    """
+    text = _words(prompt)
+    return {
+        key
+        for key, names in table.items()
+        if any(re.search(rf"\b{re.escape(_words(name))}\b", text) for name in names)
+    }
+
+
+def methods_named(prompt: str) -> set:
+    """Return the methods a prompt names, such as "limited area"."""
+    return _named(prompt, METHODS)
+
+
+def shapes_named(prompt: str) -> set:
+    """Return the shapes a prompt names, such as "oval"."""
+    return _named(prompt, SHAPES)
+
+
+def method_choices(
+    answer: MeshPromptResponse,
+    downloadable: Sequence[str],
+    prompt: Optional[str] = None,
+) -> List[Tuple[Optional[str], Optional[str]]]:
+    """Return the methods and shapes to try to make a mesh with, in order.
+
+    A global mesh is downloaded, so it is made as ``(None, None)``. A circle,
+    an ellipse, a polygon and a channel are cut from a global mesh with
+    ``create_region``, so their resolution must be one of ``downloadable``. A
+    rectangle, or a region of no shape, is made with ``project_hexes`` unless
+    ``create_region`` is chosen, which cuts a polygon around it.
+
+    The model's choice comes first, and then ``FALLBACKS``, for when its
+    choice cannot be made: a cut at a resolution that cannot be downloaded,
+    or a shape the region does not fit. What the prompt asks for, the method
+    and shape it names, stays, so a fallback never changes it. Without a
+    prompt, the answer's method and shape count as asked for.
 
     Raises
     ------
     ValueError
-        If the method, shape and resolution do not go together. The message
-        says what to ask for instead.
+        If nothing can be made as asked for, such as a circle at a resolution
+        that cannot be downloaded. The message says what to ask for instead.
     """
     available = ", ".join(downloadable)
+    downloaded = answer.resolution in downloadable
+    if prompt is None:
+        asked_method, asked_shape = answer.method, answer.shape
+    else:
+        asked_method = answer.method if answer.method in methods_named(prompt) else None
+        asked_shape = answer.shape if answer.shape in shapes_named(prompt) else None
+        # A channel is a band of latitude, which needs no word for it
+        if answer.shape == "channel":
+            asked_shape = "channel"
     if answer.is_global:
-        if answer.shape or answer.method:
+        if asked_shape or asked_method:
             raise ValueError(
                 "A shape or method is for a regional mesh, so name the places it covers"
             )
-        if answer.resolution not in downloadable:
+        if not downloaded:
             raise ValueError(
                 f"Global meshes are available at {available}, not "
                 f"{answer.resolution}. Name a region to make a mesh at another "
                 "resolution."
             )
-        return None, None
-    method, shape = answer.method, answer.shape
-    if shape in ("circle", "ellipse", "polygon", "channel"):
-        if method == "project_hexes":
-            raise ValueError(
-                f"project_hexes makes only rectangles, not a {shape}. Ask for a "
-                "rectangle, or for create_region."
-            )
-        method = "create_region"
-    elif method is None:
-        method = "project_hexes"
-    if method == "create_region" and answer.resolution not in downloadable:
+        return [(None, None)]
+
+    method = answer.method or (
+        "create_region" if answer.shape in CUT_SHAPES else "project_hexes"
+    )
+    shape = answer.shape or ("rectangle" if method == "project_hexes" else "polygon")
+    choices = []
+    for candidate in [(method, shape), *FALLBACKS]:
+        candidate_method, candidate_shape = candidate
+        if (
+            candidate in choices
+            or (candidate_method == "project_hexes" and candidate_shape != "rectangle")
+            or (asked_method and candidate_method != asked_method)
+            or (asked_shape and candidate_shape != asked_shape)
+            or (candidate_method == "create_region" and not downloaded)
+        ):
+            continue
+        choices.append(candidate)
+    if choices:
+        return choices
+    if asked_method == "project_hexes" and asked_shape in CUT_SHAPES:
         raise ValueError(
-            f"create_region cuts a downloaded global mesh, which is available at "
-            f"{available}, not {answer.resolution}. Ask for one of those, or for "
-            "a rectangle made with project_hexes."
+            f"project_hexes makes only rectangles, not a {asked_shape}. Ask for a "
+            "rectangle, or for create_region."
         )
-    if shape is None:
-        shape = "rectangle" if method == "project_hexes" else "polygon"
-    return method, shape
+    raise ValueError(
+        f"create_region cuts a downloaded global mesh, which is available at "
+        f"{available}, not {answer.resolution}. Ask for one of those, or for "
+        "a rectangle made with project_hexes."
+    )
 
 
 def mesh_config(
@@ -461,23 +532,27 @@ def mesh_config(
     buffer_km: float,
     nominatim_contact: Optional[str] = None,
     cache_dir=None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return the mesh request an answer describes, as ``generate_mesh`` takes.
 
     The places are looked up in ``data_dir``, and Nominatim with a contact,
-    and the region is fitted to the shape with a margin of ``buffer_km``.
+    and the region is fitted to the first of ``method_choices()`` for the
+    ``prompt`` it fits, with a margin of ``buffer_km``.
 
     Raises
     ------
     ValueError
-        If the method, shape and resolution do not go together, the places
-        are not found, or the region does not fit the shape.
+        If nothing can be made as the prompt asks, the places are not found,
+        the region fits none of the shapes it could be made as, or it is too
+        small for its cells.
     """
     from chiltepin.agents.mpas._geo_lookup import lookup_region
-    from chiltepin.agents.mpas._region_shapes import regional_config
+    from chiltepin.agents.mpas._region_shapes import RegionTooLarge, regional_config
 
-    method, shape = choose_method(answer, downloadable)
+    choices = method_choices(answer, downloadable, prompt)
     config: Dict[str, Any] = {"resolution": answer.resolution, "name": answer.name}
+    ((method, shape), *_) = choices
     if method is None:
         return config
     if shape == "channel":
@@ -492,7 +567,17 @@ def mesh_config(
         cache_dir=cache_dir,
     )
     resolution_km = float(answer.resolution[:-2])
-    config["regional"] = regional_config(
-        region, method, shape, resolution_km, buffer_km
-    )
-    return config
+    # The first choice the region fits. A region too small for its cells is
+    # too small for every shape, so it is not tried again.
+    first = None
+    for method, shape in choices:
+        try:
+            config["regional"] = regional_config(
+                region, method, shape, resolution_km, buffer_km
+            )
+            return config
+        except RegionTooLarge as e:
+            first = first or e
+    if len(choices) > 1:
+        raise RegionTooLarge(f"{first} No other shape fits the region either.")
+    raise first
