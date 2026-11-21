@@ -46,6 +46,8 @@ _SHARED_MESH_FILE_RE = re.compile(r"x1\.[0-9]+\.(static\.nc|graph\.info)")
 _MAX_PROMPT_CHARS = 10_000
 # Largest margin around a prompt's region, in km
 _MAX_BUFFER_KM = 5000.0
+# A reasoning effort litellm passes to a model, such as "none" or "low"
+_REASONING_EFFORT_RE = re.compile(r"[a-z]{1,16}")
 # A contact for Nominatim: an email address, without spaces or control characters
 _CONTACT_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 # Most rank counts one partition_mesh call may request, since each one is a task
@@ -1398,7 +1400,13 @@ class _MeshBehavior:
                 (extracted / name).replace(directory / name)
 
     @python_task
-    def _read_prompt(self, prompt: str, model: str, buffer_km: float) -> Dict[str, Any]:
+    def _read_prompt(
+        self,
+        prompt: str,
+        model: str,
+        buffer_km: float,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Ask the model what mesh a prompt describes, and return its request.
 
         Runs on ``service``, whose environment holds the model's credentials.
@@ -1408,7 +1416,12 @@ class _MeshBehavior:
         from chiltepin.agents.mpas._mesh_prompt import ask, mesh_config, redact
 
         try:
-            answer = ask(prompt, model, list(self.resolution_cells))
+            answer = ask(
+                prompt,
+                model,
+                list(self.resolution_cells),
+                reasoning_effort=reasoning_effort,
+            )
             return mesh_config(
                 answer,
                 list(self.resolution_cells),
@@ -1881,7 +1894,9 @@ class _MeshBehavior:
             self.prompting_built = True
 
     @staticmethod
-    def _validate_prompt(prompt: Any, model: Any, buffer_km: Any) -> float:
+    def _validate_prompt(
+        prompt: Any, model: Any, buffer_km: Any, reasoning_effort: Any = None
+    ) -> float:
         """Check a prompt action's arguments, and return the margin in km.
 
         Raises
@@ -1889,7 +1904,8 @@ class _MeshBehavior:
         ValueError
             If the prompt is not a non-empty string of at most 10000
             characters, the model is not a non-empty string without spaces,
-            or ``buffer_km`` is not a number from 0 to 5000.
+            ``buffer_km`` is not a number from 0 to 5000, or
+            ``reasoning_effort`` is not None or a short lower-case word.
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
@@ -1910,11 +1926,22 @@ class _MeshBehavior:
             raise ValueError(f"buffer_km must be a number, got {buffer_km!r}")
         if not math.isfinite(buffer_km) or not 0 <= buffer_km <= _MAX_BUFFER_KM:
             raise ValueError(f"buffer_km must be from 0 to {_MAX_BUFFER_KM:g}")
+        if reasoning_effort is not None and (
+            not isinstance(reasoning_effort, str)
+            or not _REASONING_EFFORT_RE.fullmatch(reasoning_effort)
+        ):
+            raise ValueError(
+                "reasoning_effort must be None or a word such as 'none' or 'low'"
+            )
         return float(buffer_km)
 
     @agent_action
     async def mesh_config_from_prompt(
-        self, prompt: str, model: str, buffer_km: float = 50.0
+        self,
+        prompt: str,
+        model: str,
+        buffer_km: float = 50.0,
+        reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return the mesh request a prompt describes, without making the mesh.
 
@@ -1935,6 +1962,11 @@ class _MeshBehavior:
         buffer_km : float, optional
             Margin around the region, by default 50. It is at least a tenth of
             the region's diameter.
+        reasoning_effort : str, optional
+            How much the model reasons before answering, passed to litellm,
+            such as ``"none"`` to turn reasoning off for Ollama's Qwen and
+            Gemma models, or ``"low"`` for GPT-OSS. Reasoning is slow without
+            a GPU. By default the model's own setting is used.
 
         Raises
         ------
@@ -1945,10 +1977,12 @@ class _MeshBehavior:
             If prompting cannot be installed, the ``service`` resource is not
             defined, or the model cannot be reached or gives no valid answer.
         """
-        margin = self._validate_prompt(prompt, model, buffer_km)
+        margin = self._validate_prompt(prompt, model, buffer_km, reasoning_effort)
         await self.install_prompting()
         self._require_resources("Reading a prompt", "service")
-        future = self._read_prompt(prompt, model, margin, executor=["service"])
+        future = self._read_prompt(
+            prompt, model, margin, reasoning_effort, executor=["service"]
+        )
         try:
             mesh_config = await asyncio.wrap_future(future)
         except ValueError as e:
@@ -1967,6 +2001,7 @@ class _MeshBehavior:
         mesh_name: Optional[str] = None,
         plot: bool = False,
         buffer_km: float = 50.0,
+        reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Make the mesh a prompt describes.
 
@@ -1975,7 +2010,7 @@ class _MeshBehavior:
 
         Parameters
         ----------
-        prompt, model, buffer_km
+        prompt, model, buffer_km, reasoning_effort
             As for ``mesh_config_from_prompt()``.
         mesh_data_dir : str
             Directory the mesh is written to, as for ``generate_mesh()``.
@@ -2003,7 +2038,9 @@ class _MeshBehavior:
             raise ValueError(f"plot must be True or False, got {plot!r}")
         if mesh_name is not None and not isinstance(mesh_name, str):
             raise ValueError("mesh_name must be a string")
-        mesh_config = await self.mesh_config_from_prompt(prompt, model, buffer_km)
+        mesh_config = await self.mesh_config_from_prompt(
+            prompt, model, buffer_km, reasoning_effort
+        )
         if mesh_name is not None:
             mesh_config["name"] = mesh_name
         if plot:

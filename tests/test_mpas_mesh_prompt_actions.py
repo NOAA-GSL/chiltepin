@@ -271,8 +271,8 @@ def stand_ins(monkeypatch):
     """Replace the model and the request builder, recording their arguments."""
     calls = {}
 
-    def ask(prompt, model, resolutions):
-        calls["ask"] = (prompt, model, resolutions)
+    def ask(prompt, model, resolutions, reasoning_effort=None):
+        calls["ask"] = (prompt, model, resolutions, reasoning_effort)
         return "the answer"
 
     def mesh_config(answer, downloadable, data_dir, buffer_km, **kwargs):
@@ -286,10 +286,10 @@ def stand_ins(monkeypatch):
 
 def test_read_prompt(tmp_path, stand_ins):
     behavior = _MeshBehavior(str(tmp_path), nominatim_contact="me@example.org")
-    config = _MeshBehavior._read_prompt.func(behavior, "Texas", MODEL, 75.0)
+    config = _MeshBehavior._read_prompt.func(behavior, "Texas", MODEL, 75.0, "low")
     assert config == CONFIG
     resolutions = list(behavior.resolution_cells)
-    assert stand_ins["ask"] == ("Texas", MODEL, resolutions)
+    assert stand_ins["ask"] == ("Texas", MODEL, resolutions, "low")
     assert stand_ins["mesh_config"] == (
         "the answer",
         resolutions,
@@ -341,7 +341,16 @@ async def test_mesh_config_from_prompt(monkeypatch, behavior):
     mark_prompting_installed(behavior)
     task = fake_read_prompt(monkeypatch, behavior)
     assert await behavior.mesh_config_from_prompt("Texas", MODEL, 75) == CONFIG
-    task.assert_called_once_with("Texas", MODEL, 75.0, executor=["service"])
+    task.assert_called_once_with("Texas", MODEL, 75.0, None, executor=["service"])
+
+
+async def test_mesh_config_from_prompt_passes_the_reasoning_effort(
+    monkeypatch, behavior
+):
+    mark_prompting_installed(behavior)
+    task = fake_read_prompt(monkeypatch, behavior)
+    await behavior.mesh_config_from_prompt("Texas", MODEL, reasoning_effort="none")
+    task.assert_called_once_with("Texas", MODEL, 50.0, "none", executor=["service"])
 
 
 async def test_mesh_config_from_prompt_installs_prompting_first(monkeypatch, behavior):
@@ -367,6 +376,9 @@ async def test_mesh_config_from_prompt_installs_prompting_first(monkeypatch, beh
         (("Texas", MODEL, -1), "buffer_km must be from 0 to 5000"),
         (("Texas", MODEL, 5001), "buffer_km must be from 0 to 5000"),
         (("Texas", MODEL, float("nan")), "buffer_km must be from 0 to 5000"),
+        (("Texas", MODEL, 50, ""), "reasoning_effort must be None or a word"),
+        (("Texas", MODEL, 50, "None; x"), "reasoning_effort must be None or a word"),
+        (("Texas", MODEL, 50, 1), "reasoning_effort must be None or a word"),
     ],
 )
 async def test_mesh_config_from_prompt_rejects(
@@ -431,7 +443,7 @@ async def test_create_mesh_from_prompt(monkeypatch, behavior, options, changes):
 
     monkeypatch.setattr(behavior, "generate_mesh", generate_mesh)
     result = await behavior.create_mesh_from_prompt(
-        "Texas", "/meshes", MODEL, buffer_km=60, **options
+        "Texas", "/meshes", MODEL, buffer_km=60, reasoning_effort="low", **options
     )
     expected = {**CONFIG, **changes}
     assert result == {
@@ -439,7 +451,7 @@ async def test_create_mesh_from_prompt(monkeypatch, behavior, options, changes):
         "mesh_result": {"static": "/m/texas.static.nc"},
     }
     generate.assert_called_once_with(expected, "/meshes")
-    task.assert_called_once_with("Texas", MODEL, 60.0, executor=["service"])
+    task.assert_called_once_with("Texas", MODEL, 60.0, "low", executor=["service"])
 
 
 @pytest.mark.parametrize(

@@ -472,10 +472,10 @@ Actions
    ``work_dir/logs``. Installing needs the ``service`` resource, and raises
    ``RuntimeError`` if it is not defined. This runs automatically when a prompt
    is read, so calling it is optional.
-``mesh_config_from_prompt(prompt, model, buffer_km=50.0)``
+``mesh_config_from_prompt(prompt, model, buffer_km=50.0, reasoning_effort=None)``
    Returns the mesh request a prompt describes, in the form ``generate_mesh``
    takes, without making the mesh. See `Meshes from Prompts`_.
-``create_mesh_from_prompt(prompt, mesh_data_dir, model, mesh_name=None, plot=False, buffer_km=50.0)``
+``create_mesh_from_prompt(prompt, mesh_data_dir, model, mesh_name=None, plot=False, buffer_km=50.0, reasoning_effort=None)``
    Makes the mesh a prompt describes, and returns a dictionary of
    ``mesh_config``, the request it was made into, and ``mesh_result``, what
    ``generate_mesh`` returned for it. ``mesh_name`` replaces the name the model
@@ -561,8 +561,13 @@ a pole. A model that cannot be reached, or gives no valid answer, raises
 
 ``model`` is a litellm model string, such as
 ``"bedrock/us.anthropic.claude-sonnet-5-5"`` for Amazon Bedrock or
-``"ollama_chat/qwen2.5:3b"`` for Ollama. Models that cannot be made to answer
+``"ollama_chat/qwen3:8b"`` for Ollama. Models that cannot be made to answer
 in the fields, as some Bedrock models cannot, are asked to instead.
+``reasoning_effort``, passed to litellm, sets how much the model reasons before
+answering: ``"none"`` turns reasoning off for Ollama's Qwen 3 and Gemma 4
+models, and ``"low"`` keeps it short for GPT-OSS. Without a GPU, reasoning can
+take minutes, while ``qwen3:8b`` with reasoning off answers in under a minute
+on 8 CPUs.
 
 Credentials
 ~~~~~~~~~~~

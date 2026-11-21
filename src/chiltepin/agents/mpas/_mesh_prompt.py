@@ -18,6 +18,7 @@ are never arguments, and are removed from error messages.
 This module needs the ``chiltepin[llm]`` extra.
 """
 
+import ast
 import math
 import os
 import re
@@ -139,13 +140,30 @@ def normalize_name(value: Any) -> str:
     return text
 
 
+def _listed(value: Any) -> List[Any]:
+    """Return the names in a value, as a list.
+
+    Small models sometimes write a list as a string, such as
+    "['Texas', 'Oklahoma']", which is read as the list it holds.
+    """
+    text = value.strip() if isinstance(value, str) else ""
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            # Text in brackets is a list, or not a literal at all
+            return ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            pass
+    return [value]
+
+
 def _names(values: Any) -> List[str]:
     if values is None:
         return []
     if isinstance(values, str):
         values = [values]
+    flat = [name for value in values for name in _listed(value)]
     seen, names = set(), []
-    for value in values:
+    for value in flat:
         name = " ".join(str(value).split())
         if name and name.casefold() not in seen:
             seen.add(name.casefold())
@@ -299,13 +317,20 @@ def ask(
     model: str,
     resolutions: Sequence[str],
     timeout: float = 120,
+    reasoning_effort: Optional[str] = None,
 ) -> MeshPromptResponse:
     """Return the mesh the model reads in a prompt.
 
     ``model`` is a litellm model string, such as
-    ``bedrock/us.anthropic.claude-sonnet-5-5`` or ``ollama_chat/qwen2.5:3b``.
+    ``bedrock/us.anthropic.claude-sonnet-5-5`` or ``ollama_chat/qwen3:8b``.
     Models that cannot be made to call a tool, as some Bedrock models cannot,
     are asked to, which ``drop_params`` lets litellm do.
+
+    ``reasoning_effort``, if given, is passed to litellm, which sets how much
+    a model reasons before answering. ``"none"`` turns reasoning off for
+    Ollama's Qwen and Gemma models, and ``"low"`` keeps it short for GPT-OSS,
+    which cannot turn it off. Reasoning is slow without a GPU. Providers that
+    do not take it drop it.
 
     Raises
     ------
@@ -319,8 +344,10 @@ def ask(
     # litellm otherwise prints help to standard output with each error
     litellm.suppress_debug_info = True
 
+    options = {} if reasoning_effort is None else {"reasoning_effort": reasoning_effort}
+
     def completion(**kwargs):
-        return litellm.completion(drop_params=True, **kwargs)
+        return litellm.completion(drop_params=True, **options, **kwargs)
 
     client = instructor.from_litellm(completion)
     messages = [

@@ -150,6 +150,24 @@ def test_global_response():
     assert response(region_names=None).region_names == []
 
 
+@pytest.mark.parametrize(
+    ("value", "names"),
+    [
+        ("['Texas', 'Oklahoma']", ["Texas", "Oklahoma"]),
+        ('["Texas", "Oklahoma"]', ["Texas", "Oklahoma"]),
+        (["['Texas', 'Oklahoma']", "Utah"], ["Texas", "Oklahoma", "Utah"]),
+        ("[Texas, Oklahoma]", ["[Texas, Oklahoma]"]),
+        ("['Texas'", ["['Texas'"]),
+        ("[]", []),
+        ("Texas", ["Texas"]),
+        ([5, "Texas"], ["5", "Texas"]),
+    ],
+)
+def test_names_written_as_a_list_in_a_string(value, names):
+    # As small models sometimes write them. Anything else stays a name.
+    assert response(region_names=value).region_names == names
+
+
 def test_too_many_names():
     with pytest.raises(ValidationError, match="At most 300 places"):
         response(region_names=[f"place {i}" for i in range(prompt.MAX_NAMES + 1)])
@@ -276,6 +294,15 @@ def test_ask(model):
     assert system == {"role": "system", "content": prompt.system_prompt(RESOLUTIONS)}
     assert user == {"role": "user", "content": "A 15 km mesh over Texas"}
     assert litellm.suppress_debug_info is True
+
+
+def test_reasoning_effort_is_passed_only_when_given(model):
+    answer = {"resolution": "15km", "name": "texas", "region_names": ["Texas"]}
+    model.answers = [answer, answer]
+    prompt.ask("Texas", "ollama_chat/qwen3:8b", RESOLUTIONS)
+    prompt.ask("Texas", "ollama_chat/qwen3:8b", RESOLUTIONS, reasoning_effort="none")
+    assert "reasoning_effort" not in model.calls[0]
+    assert model.calls[1]["reasoning_effort"] == "none"
 
 
 def test_invalid_answer_is_sent_back(model):
