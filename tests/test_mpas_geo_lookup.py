@@ -161,6 +161,18 @@ def test_overseas_parts_are_left_out(boundaries):
     assert bounds(far) == [10, 0, 51, 4]
 
 
+def test_parts_are_kept_by_their_distance_in_km():
+    # At 70 degrees north, 15 degrees of longitude is about 570 km, and at
+    # the equator about 1670 km
+    from shapely.geometry import box
+
+    north = [box(0, 70, 1, 71), box(16, 70, 17, 71)]
+    assert len(geo._near_largest(north, 1000)) == 2
+    assert len(geo._near_largest(north, 500)) == 1
+    equator = [box(0, 0, 1, 1), box(16, 0, 17, 1)]
+    assert len(geo._near_largest(equator, 1000)) == 1
+
+
 def test_continent_stands_for_its_countries(boundaries):
     # Each country keeps its own parts, so neither is dropped for being far
     # from the other

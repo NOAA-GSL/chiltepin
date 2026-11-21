@@ -52,6 +52,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import time
@@ -121,6 +122,8 @@ REGIONS = {
 # from its largest part, are left out
 PROXIMITY_KM = 1000.0
 KM_PER_DEGREE = 111.32
+# The sphere MPAS meshes are on, as _region_shapes has it
+EARTH_RADIUS_KM = 6371.229
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PROJECT_URL = "https://github.com/NOAA-GSL/chiltepin"
@@ -424,6 +427,23 @@ def _unwrap(polygons: Sequence[Any], reference: float) -> List[Any]:
     return shifted
 
 
+def _km_between(polygon, other) -> float:
+    """Return about how far apart two polygons are, in km on the sphere.
+
+    The distance is between the points nearest each other in longitude and
+    latitude, which are near enough the nearest on the sphere.
+    """
+    from shapely.ops import nearest_points
+
+    a, b = nearest_points(polygon, other)
+    lat1, lon1, lat2, lon2 = map(math.radians, (a.y, a.x, b.y, b.x))
+    h = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    )
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(min(1.0, h)))
+
+
 def _near_largest(polygons: Sequence[Any], proximity_km: float) -> List[Any]:
     """Return the polygons reached from the largest in steps of ``proximity_km``.
 
@@ -438,10 +458,22 @@ def _near_largest(polygons: Sequence[Any], proximity_km: float) -> List[Any]:
     largest = max(range(len(polygons)), key=lambda i: polygons[i].area)
     kept, frontier = {largest}, [largest]
     while frontier:
-        near = tree.query(
-            [polygons[i] for i in frontier], predicate="dwithin", distance=limit
-        )[1]
-        frontier = [int(i) for i in set(near.tolist()) - kept]
+        near = set()
+        for i in frontier:
+            # A degree of longitude is shorter away from the equator, so
+            # parts that far in degrees east or west are checked in km
+            _, south, _, north = polygons[i].bounds
+            widest = min(max(abs(south), abs(north)) + limit, 89.0)
+            reach = limit / math.cos(math.radians(widest))
+            candidates = tree.query(polygons[i], predicate="dwithin", distance=reach)
+            near.update(
+                j
+                for j in candidates.tolist()
+                if j not in kept
+                and j not in near
+                and _km_between(polygons[i], polygons[j]) <= proximity_km
+            )
+        frontier = sorted(near)
         kept.update(frontier)
     return [polygons[i] for i in sorted(kept)]
 
