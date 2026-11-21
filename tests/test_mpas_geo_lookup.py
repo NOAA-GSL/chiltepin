@@ -598,15 +598,63 @@ def test_real_state_names(real_boundaries):
     # Columbia is "Washington"
     washington = lookup(["Washington"], real_boundaries)
     assert [round(b) for b in washington.bounds] == [-125, 46, -117, 49]
-    # Florida is a US state and a department of Uruguay, so it alone is
-    # ambiguous, and settled by the US states next to it
-    with pytest.raises(geo.RegionNotFound, match="Florida .*Uruguay"):
-        lookup(["Florida"], real_boundaries)
+    # Florida is a US state and a department of Uruguay, and the US states
+    # next to it say which
     south = lookup(["Florida", "Alabama"], real_boundaries)
     assert -88.5 < south.bounds[0] and south.bounds[2] < -79.5
-    # Georgia alone is the country, and next to Alabama the US state
-    assert lookup(["Georgia"], real_boundaries).bounds[0] > 39
+    # Georgia next to Alabama is the US state
     assert lookup(["Georgia", "Alabama"], real_boundaries).bounds[0] < -84
+
+
+US_FLORIDA = [-87.6, 24.5, -80.0, 31.0]
+URUGUAY_FLORIDA = [-56.5, -34.5, -55.2, -33.1]
+US_GEORGIA = [-85.6, 30.4, -80.8, 35.0]
+GEORGIA = [40.0, 41.1, 46.7, 43.6]
+
+
+def rounded(region):
+    return [round(b, 1) for b in region.bounds]
+
+
+@pytest.mark.parametrize(
+    ("names", "expected"),
+    [
+        # A US state's name alone is the US state, as people mean it
+        (["Florida"], US_FLORIDA),
+        (["Georgia"], US_GEORGIA),
+        # Unless the other names point to another country
+        (["Florida", "Uruguay"], None),
+        (["Georgia", "Armenia"], None),
+        # Or the name says which
+        (["Florida, Uruguay"], URUGUAY_FLORIDA),
+        (["Georgia (country)"], GEORGIA),
+        (["the country of Georgia"], GEORGIA),
+        (["country Georgia"], GEORGIA),
+        (["Georgia, the country"], GEORGIA),
+        (["Georgia, United States of America"], US_GEORGIA),
+        # Names of states elsewhere, and of other countries, as before
+        (["Florida", "France"], None),
+    ],
+)
+def test_real_names_of_us_states(real_boundaries, names, expected):
+    region = lookup(names, real_boundaries)
+    if expected is not None:
+        assert rounded(region) == pytest.approx(expected, abs=0.15)
+    elif names[1] == "Uruguay":
+        # Uruguay's Florida department, inside Uruguay
+        assert region.bounds[2] < -50
+    elif names[1] == "Armenia":
+        # The country, next to Armenia
+        assert region.bounds[0] > 39
+    else:
+        # The US state, with France
+        assert region.bounds[0] < -80
+
+
+def test_real_names_of_states_elsewhere_stay_ambiguous(real_boundaries):
+    # Punjab is no US state, so it alone names states of India and Pakistan
+    with pytest.raises(geo.RegionNotFound, match="Punjab .*India.*Pakistan"):
+        lookup(["Punjab"], real_boundaries)
 
 
 def test_real_states_of_countries_with_other_names(real_boundaries):

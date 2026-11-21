@@ -543,12 +543,14 @@ Russia", with an LLM on the ``service`` resource:
    continents, and states or provinces. A continent stands for its countries,
    and "Europe" leaves Russia out unless Russia is named too. "Contiguous
    United States", "CONUS" and "Lower 48" stand for the United States without
-   Alaska and Hawaii. A country can leave out states, and a country named with
-   some of its own states only says which states they are. A name used for states in several countries, such as
-   "Florida", or for a country and a state, such as "Georgia", stands for the
-   one in the country the prompt's other places are in, as "Georgia" next to
-   "Alabama" does for the US state. Otherwise it is the country, or, for
-   states alone, is named with its country, as ``"Punjab, India"``. If the
+   Alaska and Hawaii. A country can leave out states, and a country named withsome of its own states only says which states they are. A name used for
+   states in several countries, such as "Florida", or for a country and a
+   state, such as "Georgia", stands for the one in the country the prompt's
+   other places are in, as "Florida" next to "Uruguay" does for Uruguay's
+   department. Otherwise a US state's name means the US state, so "Florida"
+   and "Georgia" alone are the US states. A prompt names the others with their
+   country, as "Florida, Uruguay" or "Punjab, India", or as a country, as
+   "Georgia (country)" or "the country of Georgia". If the
    places cannot be found, the model is told why and asked once more. A place
    Natural Earth lacks is looked up with Nominatim, only if
    ``nominatim_contact`` is given. Answers are kept in

@@ -214,6 +214,7 @@ def test_system_prompt_lists_the_resolutions():
     assert "480km, 120km, 60km, 15km" in text
     assert "MeshPromptResponse" in text
     assert "'Europe' does not include Russia" in text
+    assert "'Georgia (country)'" in text
 
 
 # Credentials

@@ -19,9 +19,13 @@ A name matches exactly, ignoring case, accents and extra spaces. It can be:
 - a state or province, such as "Colorado", by its own name, or else by one
   of its other names, such as "WA". A name of states in several countries,
   such as "Punjab", or of a country and a state, such as "Georgia", stands
-  for the one in the country the other names point to, as "Georgia" does for
-  the US state next to "Alabama", or else for the country. Naming the country
-  settles it, as "Punjab, India" does. A country named with some of its own
+  for the one in the country the other names point to, as "Florida" next to
+  "Uruguay" does for Uruguay's department, and "Georgia" next to "Armenia"
+  for the country. Otherwise a US state's name stands for the US state, as
+  "Georgia" and "Florida" alone do, since that is what people mean by them,
+  and another name is the country, or else ambiguous. Naming the country
+  settles it, as "Punjab, India" and "Florida, Uruguay" do, and so do "Georgia
+  (country)" and "the country of Georgia" for a country. A country named with some of its own
   states, as models sometimes name "United States of America" with "Texas",
   only settles which states they are, and is not part of the region.
 - a region named in ``REGIONS``, such as "Contiguous United States", which
@@ -49,6 +53,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import time
 import unicodedata
 import urllib.error
@@ -79,6 +84,21 @@ CONTINENT_FIELD = "CONTINENT"
 COUNTRY_CODE_FIELD = "ADM0_A3"
 STATE_CODE_FIELD = "adm0_a3"
 STATE_COUNTRY_FIELD = "admin"
+
+# Code of the country whose states a name means when nothing else in the
+# request says which: "Georgia" and "Florida" mean the US states
+PREFERRED_STATE_COUNTRY = "USA"
+
+# Ways to say a name is a country, as "Georgia (country)" or "the country of
+# Georgia", with the name as the group "name"
+COUNTRY_FORMS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"(?P<name>.+?)\s*\(country\)",
+        r"(?:the )?country(?: of)? (?P<name>.+)",
+        r"(?P<name>.+?),? the country",
+    )
+)
 
 # Countries a continent stands for only when they are named too, with the
 # continent's name and their codes. Russia reaches the Pacific.
@@ -215,6 +235,10 @@ class _Boundaries:
         key = normalize_name(name)
         if key in self.continent_index:
             return list(self.continent_index[key]), {}
+        for form in COUNTRY_FORMS:
+            match = form.fullmatch(key)
+            if match and match["name"] in self.country_index:
+                return list(self.country_index[match["name"]]), {}
         if "," in key and key not in self.country_index:
             place, _, country = (part.strip() for part in key.rpartition(","))
             codes = {self.code[i] for i in self.country_index.get(country, [])}
@@ -232,13 +256,23 @@ class _Boundaries:
         """
         countries, states = self.candidates(name)
         near = {code: records for code, records in states.items() if code in context}
-        if countries and not (states and len(near) == 1):
+        country_codes = {self.code[i] for i in countries}
+        if len(near) == 1:
+            # The other names point to the country of one of its states
+            ((_, records),) = near.items()
+            return "states", list(records)
+        if countries and (
+            not states or context & country_codes or context - {PREFERRED_STATE_COUNTRY}
+        ):
+            # It is a country, or the other names point to countries other
+            # than that of its US state
+            return "countries", countries
+        if PREFERRED_STATE_COUNTRY in states:
+            return "states", list(states[PREFERRED_STATE_COUNTRY])
+        if countries:
             return "countries", countries
         if len(states) == 1:
             ((_, records),) = states.items()
-            return "states", list(records)
-        if len(near) == 1:
-            ((_, records),) = near.items()
             return "states", list(records)
         if states:
             return "ambiguous", sorted(self.country_names[code] for code in states)
