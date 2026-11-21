@@ -121,7 +121,11 @@ def normalize_resolution(value: Any) -> str:
         number = float(match.group(1))
     if not math.isfinite(number) or number <= 0:
         raise ValueError(f"Resolution must be greater than 0 km, got {value!r}")
-    return f"{number:g}km" if number < 1e6 else f"{number:.0f}km"
+    # Digits and a point, as the agent reads them, without an exponent
+    digits = f"{number:.6f}".rstrip("0").rstrip(".")
+    if digits == "0":
+        raise ValueError(f"Resolution must be at least 0.000001 km, got {value!r}")
+    return f"{digits}km"
 
 
 def normalize_name(value: Any) -> str:
@@ -273,15 +277,19 @@ def system_prompt(resolutions: Sequence[str]) -> str:
         "- region_names: the places the mesh covers, as English names of "
         "continents, countries, or states and provinces, as Natural Earth names "
         "them, such as 'Europe', 'Japan', 'United States of America', 'Texas' or "
-        "'Quebec'. A state or province whose name is used in several countries "
-        "gets its country after a comma, such as 'Punjab, India'. For a region "
-        "known by another name, such as 'CONUS', 'Tornado Alley' or 'the "
-        "Rockies', list the countries or states it covers. Name a city or county "
+        "'Quebec'. 'Europe' does not include Russia, so name Russia too if the "
+        "user includes it. A state or province whose name is used in several "
+        "countries gets its country after a comma, such as 'Punjab, India'. For "
+        "a region "
+        "known by another name, such as 'Tornado Alley' or 'the Rockies', "
+        "list the countries or states it covers. For the contiguous United "
+        "States, also called CONUS or the lower 48, name just 'Contiguous United "
+        "States'. Name a city or county "
         "only if the user asks for one. For a global mesh, leave it empty.\n"
-        "- exclude_names: places to leave out of a larger region, such as Russia "
-        "for 'Europe without Russia', or Alaska and Hawaii for the contiguous "
-        "United States. Only continents, countries, states and provinces can be "
-        "left out. Otherwise empty.\n"
+        "- exclude_names: places to leave out of a larger region, such as Spain "
+        "for 'Europe without Spain'. Leave out only what the user leaves out, "
+        "and only continents, countries, states and provinces. Otherwise "
+        "empty.\n"
         "- shape: 'rectangle', 'circle', 'ellipse', 'polygon' or 'channel', only "
         "if the user names a shape. Otherwise null. A channel is a band of "
         "latitude around the whole globe, such as the tropics.\n"
@@ -318,6 +326,7 @@ def ask(
     resolutions: Sequence[str],
     timeout: float = 120,
     reasoning_effort: Optional[str] = None,
+    correction: Optional[Tuple[MeshPromptResponse, str]] = None,
 ) -> MeshPromptResponse:
     """Return the mesh the model reads in a prompt.
 
@@ -331,6 +340,10 @@ def ask(
     Ollama's Qwen and Gemma models, and ``"low"`` keeps it short for GPT-OSS,
     which cannot turn it off. Reasoning is slow without a GPU. Providers that
     do not take it drop it.
+
+    ``correction`` is an earlier answer and why it could not be used, such as
+    a place that was not found, which the model is told so it can answer
+    again.
 
     Raises
     ------
@@ -354,6 +367,16 @@ def ask(
         {"role": "system", "content": system_prompt(resolutions)},
         {"role": "user", "content": prompt},
     ]
+    if correction is not None:
+        earlier, reason = correction
+        messages += [
+            {"role": "assistant", "content": earlier.model_dump_json()},
+            {
+                "role": "user",
+                "content": f"That answer could not be used: {reason}. Answer again "
+                "with place names that fix this.",
+            },
+        ]
     attempt = 0
     while True:
         attempt += 1

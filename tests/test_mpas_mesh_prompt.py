@@ -82,10 +82,19 @@ def test_unknown_names_list_the_choices(normalize):
         (7.5, "7.5km"),
         ("0.25km", "0.25km"),
         (12345678, "12345678km"),
+        # Written without an exponent, as the agent reads resolutions
+        (1e-05, "0.00001km"),
+        (2e6, "2000000km"),
+        ("0.0000015 km", "0.000002km"),
     ],
 )
 def test_normalize_resolution(value, resolution):
     assert prompt.normalize_resolution(value) == resolution
+
+
+def test_resolution_too_small_to_write():
+    with pytest.raises(ValueError, match="at least 0.000001 km"):
+        prompt.normalize_resolution(1e-7)
 
 
 @pytest.mark.parametrize(
@@ -204,6 +213,7 @@ def test_system_prompt_lists_the_resolutions():
     text = prompt.system_prompt(RESOLUTIONS)
     assert "480km, 120km, 60km, 15km" in text
     assert "MeshPromptResponse" in text
+    assert "'Europe' does not include Russia" in text
 
 
 # Credentials
@@ -303,6 +313,21 @@ def test_reasoning_effort_is_passed_only_when_given(model):
     prompt.ask("Texas", "ollama_chat/qwen3:8b", RESOLUTIONS, reasoning_effort="none")
     assert "reasoning_effort" not in model.calls[0]
     assert model.calls[1]["reasoning_effort"] == "none"
+
+
+def test_correction_tells_the_model_why(model):
+    answer = {"resolution": "15km", "name": "florida", "region_names": ["Florida"]}
+    model.answers = [answer]
+    earlier = response(name="florida", region_names=["Florida"])
+    prompt.ask(
+        "Florida", "m", RESOLUTIONS, correction=(earlier, "Florida is ambiguous")
+    )
+    messages = model.calls[0]["messages"]
+    assert messages[2] == {"role": "assistant", "content": earlier.model_dump_json()}
+    assert messages[3]["role"] == "user"
+    assert (
+        "That answer could not be used: Florida is ambiguous" in messages[3]["content"]
+    )
 
 
 def test_invalid_answer_is_sent_back(model):

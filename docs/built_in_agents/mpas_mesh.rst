@@ -539,13 +539,24 @@ Russia", with an LLM on the ``service`` resource:
    too. A rectangle, or a region of no shape, is made with ``project_hexes`` at
    any resolution, unless the prompt asks for ``create_region``, which then
    cuts a polygon around the region.
-3. The places are looked up in Natural Earth's countries, continents, and
-   states or provinces. A continent stands for its countries, a country can
-   leave out states, and a state used in several countries is named with its
-   country, as ``"Punjab, India"``. A place Natural Earth lacks is looked up
-   with Nominatim, only if ``nominatim_contact`` is given. Answers are kept in
-   ``work_dir/geo/nominatim``, so each place is asked for once, at most once a
-   second. Parts of a place far overseas are left out.
+3. The places are looked up in Natural Earth's detailed countries,
+   continents, and states or provinces. A continent stands for its countries,
+   and "Europe" leaves Russia out unless Russia is named too. "Contiguous
+   United States", "CONUS" and "Lower 48" stand for the United States without
+   Alaska and Hawaii. A country can leave out states, and a country named with
+   some of its own states only says which states they are. A name used for states in several countries, such as
+   "Florida", or for a country and a state, such as "Georgia", stands for the
+   one in the country the prompt's other places are in, as "Georgia" next to
+   "Alabama" does for the US state. Otherwise it is the country, or, for
+   states alone, is named with its country, as ``"Punjab, India"``. If the
+   places cannot be found, the model is told why and asked once more. A place
+   Natural Earth lacks is looked up with Nominatim, only if
+   ``nominatim_contact`` is given. Answers are kept in
+   ``work_dir/geo/nominatim``, so each place is asked for once, and requests
+   from every process sharing that directory are at least a second apart,
+   where its filesystem supports locks. Parts of a place far from the rest of
+   it, as Hawaii is, are left out, while a chain of islands, as the Ryukyus
+   are, stays.
 4. The region is fitted to the shape in the frame its tool draws it in, with a
    margin of ``buffer_km`` and at least a tenth of the region's diameter, so
    the shape holds the whole region. The boundary layers both tools add are

@@ -19,11 +19,13 @@ from parsl.app.errors import BashExitFailure
 from parsl.errors import NoDataFlowKernelError
 
 from chiltepin.agents import agent_action, chiltepin_agent
+from chiltepin.agents.mpas._geo_lookup import BOUNDARY_LAYERS
 from chiltepin.agents.mpas._plot_mesh import (
     EXIT_MISSING_MAP,
     EXIT_VIEW_OF_REGIONAL_MESH,
     MAP_LAYERS,
     REQUIRED_PARTS,
+    layer_complete,
     layer_path,
 )
 from chiltepin.agents.mpas._region_shapes import (
@@ -626,9 +628,10 @@ class _MeshBehavior:
         """Return the ``namelist.projections`` text that project_hexes reads.
 
         The Lambert conformal cone touches the sphere at the center, unless the
-        center is on the equator, where project_hexes would divide by zero. Its
-        cone then touches 0.0001 degrees north, which moves its cells by at
-        most about 40 m on a mesh 10000 km across.
+        center is within 0.0001 degrees of the equator, where project_hexes
+        would divide by zero or lose all precision. Its cone then touches 0.0001
+        degrees from the equator, which moves its cells by at most about 40 m
+        on a mesh 10000 km across.
         """
         r = cls._real
         parallel = standard_parallel(center_lat)
@@ -900,8 +903,15 @@ class _MeshBehavior:
         return Path(__file__).with_name("_plot_mesh.py")
 
     def _prompting_usable(self) -> bool:
-        """Whether the boundaries are installed and prompting was checked."""
-        return (self._geo_prefix / ".installed").is_file()
+        """Whether the boundaries are installed and prompting was checked.
+
+        Every boundary layer must be complete, so an install made before a
+        layer was added is replaced.
+        """
+        return (self._geo_prefix / ".installed").is_file() and all(
+            layer_complete(layer_path(self._boundaries_dir, layer))
+            for layer in BOUNDARY_LAYERS
+        )
 
     @property
     def _geo_prefix(self) -> Path:
@@ -1410,28 +1420,42 @@ class _MeshBehavior:
         """Ask the model what mesh a prompt describes, and return its request.
 
         Runs on ``service``, whose environment holds the model's credentials.
-        Errors leave without them: a ValueError when the prompt asks for a mesh
-        that cannot be made, and a RuntimeError otherwise.
+        If the places of the model's answer cannot be looked up, the model is
+        told why, and asked once more. The request is returned as
+        ``{"mesh_config": ...}``, or why the prompt cannot be made into a mesh
+        as ``{"error": ...}``, which every executor returns as it is. Other
+        failures raise a RuntimeError. Neither holds credentials.
         """
+        from chiltepin.agents.mpas._geo_lookup import RegionNotFound
         from chiltepin.agents.mpas._mesh_prompt import ask, mesh_config, redact
 
-        try:
-            answer = ask(
-                prompt,
-                model,
-                list(self.resolution_cells),
-                reasoning_effort=reasoning_effort,
-            )
+        resolutions = list(self.resolution_cells)
+
+        def config_of(answer):
             return mesh_config(
                 answer,
-                list(self.resolution_cells),
+                resolutions,
                 self._boundaries_dir,
                 buffer_km,
                 nominatim_contact=self.nominatim_contact,
                 cache_dir=self._nominatim_cache_dir,
             )
+
+        try:
+            answer = ask(prompt, model, resolutions, reasoning_effort=reasoning_effort)
+            try:
+                return {"mesh_config": config_of(answer)}
+            except RegionNotFound as e:
+                answer = ask(
+                    prompt,
+                    model,
+                    resolutions,
+                    reasoning_effort=reasoning_effort,
+                    correction=(answer, str(e)),
+                )
+                return {"mesh_config": config_of(answer)}
         except ValueError as e:
-            raise ValueError(redact(str(e))) from None
+            return {"error": redact(str(e))}
         except Exception as e:
             raise RuntimeError(redact(f"{type(e).__name__}: {e}")) from None
 
@@ -1984,11 +2008,14 @@ class _MeshBehavior:
             prompt, model, margin, reasoning_effort, executor=["service"]
         )
         try:
-            mesh_config = await asyncio.wrap_future(future)
-        except ValueError as e:
-            raise ValueError(f"The prompt cannot be made into a mesh: {e}") from None
+            result = await asyncio.wrap_future(future)
         except Exception as e:
             raise RuntimeError(f"Reading the prompt failed: {e}") from None
+        if "error" in result:
+            raise ValueError(
+                f"The prompt cannot be made into a mesh: {result['error']}"
+            )
+        mesh_config = result["mesh_config"]
         self._validate_mesh_config(mesh_config)
         return mesh_config
 

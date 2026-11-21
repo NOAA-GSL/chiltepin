@@ -18,7 +18,7 @@ import pytest
 
 from chiltepin.agents.mpas import _mesh_prompt
 from chiltepin.agents.mpas import mesh as mesh_module
-from chiltepin.agents.mpas._geo_lookup import BOUNDARY_LAYERS
+from chiltepin.agents.mpas._geo_lookup import BOUNDARY_LAYERS, RegionNotFound
 from chiltepin.agents.mpas._plot_mesh import REQUIRED_PARTS, layer_path
 from chiltepin.agents.mpas.mesh import MeshAgent, _MeshBehavior
 
@@ -222,6 +222,24 @@ async def test_install_prompting_runs_both_steps_on_service(monkeypatch, behavio
     )
 
 
+@pytest.mark.parametrize("problem", ["marker", "layer"])
+async def test_install_prompting_replaces_an_unfinished_install(
+    monkeypatch, behavior, problem
+):
+    # An install without a marker, or made before a boundary layer was added,
+    # is replaced
+    mark_prompting_installed(behavior)
+    if problem == "marker":
+        (behavior._geo_prefix / ".installed").unlink()
+    else:
+        path = layer_path(behavior._boundaries_dir, BOUNDARY_LAYERS[0])
+        path.with_suffix(".shp").unlink()
+    download, check = mock_prompting_tasks(monkeypatch, behavior)
+    await behavior.install_prompting()
+    download.assert_called_once()
+    check.assert_called_once()
+
+
 async def test_install_prompting_reuses_a_finished_install(monkeypatch, behavior):
     mark_prompting_installed(behavior)
     download, check = mock_prompting_tasks(monkeypatch, behavior)
@@ -268,15 +286,21 @@ async def test_concurrent_prompting_installs_run_once(monkeypatch, behavior):
 
 @pytest.fixture
 def stand_ins(monkeypatch):
-    """Replace the model and the request builder, recording their arguments."""
-    calls = {}
+    """Replace the model and the request builder, recording their arguments.
 
-    def ask(prompt, model, resolutions, reasoning_effort=None):
-        calls["ask"] = (prompt, model, resolutions, reasoning_effort)
-        return "the answer"
+    Set ``failures`` to errors the request builder raises, in turn, before it
+    returns the request.
+    """
+    calls = {"ask": [], "failures": []}
+
+    def ask(prompt, model, resolutions, reasoning_effort=None, correction=None):
+        calls["ask"].append((prompt, model, resolutions, reasoning_effort, correction))
+        return f"answer {len(calls['ask'])}"
 
     def mesh_config(answer, downloadable, data_dir, buffer_km, **kwargs):
         calls["mesh_config"] = (answer, downloadable, data_dir, buffer_km, kwargs)
+        if calls["failures"]:
+            raise calls["failures"].pop(0)
         return dict(CONFIG)
 
     monkeypatch.setattr(_mesh_prompt, "ask", ask)
@@ -286,12 +310,12 @@ def stand_ins(monkeypatch):
 
 def test_read_prompt(tmp_path, stand_ins):
     behavior = _MeshBehavior(str(tmp_path), nominatim_contact="me@example.org")
-    config = _MeshBehavior._read_prompt.func(behavior, "Texas", MODEL, 75.0, "low")
-    assert config == CONFIG
+    result = _MeshBehavior._read_prompt.func(behavior, "Texas", MODEL, 75.0, "low")
+    assert result == {"mesh_config": CONFIG}
     resolutions = list(behavior.resolution_cells)
-    assert stand_ins["ask"] == ("Texas", MODEL, resolutions, "low")
+    assert stand_ins["ask"] == [("Texas", MODEL, resolutions, "low", None)]
     assert stand_ins["mesh_config"] == (
-        "the answer",
+        "answer 1",
         resolutions,
         behavior._boundaries_dir,
         75.0,
@@ -302,37 +326,58 @@ def test_read_prompt(tmp_path, stand_ins):
     )
 
 
-@pytest.mark.parametrize(
-    ("error", "kind"),
-    [
-        (ValueError("No place is named key-123456789"), ValueError),
-        (OSError("unreachable with key-123456789"), RuntimeError),
-    ],
-)
-def test_read_prompt_errors_hold_no_credentials(
-    monkeypatch, behavior, stand_ins, error, kind
-):
+def test_read_prompt_asks_again_when_places_are_not_found(behavior, stand_ins):
+    stand_ins["failures"] = [RegionNotFound("No place is named 'Florida'")]
+    result = _MeshBehavior._read_prompt.func(behavior, "Florida", MODEL, 50.0, "none")
+    assert result == {"mesh_config": CONFIG}
+    # The model is told its answer and why it could not be used
+    first, second = stand_ins["ask"]
+    assert first[4] is None
+    assert second[3] == "none"
+    assert second[4] == ("answer 1", "No place is named 'Florida'")
+    assert stand_ins["mesh_config"][0] == "answer 2"
+
+
+def test_read_prompt_asks_again_only_once(behavior, stand_ins):
+    stand_ins["failures"] = [RegionNotFound("first"), RegionNotFound("second")]
+    result = _MeshBehavior._read_prompt.func(behavior, "Florida", MODEL, 50.0)
+    assert result == {"error": "second"}
+    assert len(stand_ins["ask"]) == 2
+
+
+def test_read_prompt_does_not_ask_again_for_other_problems(behavior, stand_ins):
+    # Such as a region too small for its cells, which other places cannot fix
+    stand_ins["failures"] = [ValueError("Ask for smaller cells")]
+    result = _MeshBehavior._read_prompt.func(behavior, "Colorado", MODEL, 50.0)
+    assert result == {"error": "Ask for smaller cells"}
+    assert len(stand_ins["ask"]) == 1
+
+
+def test_read_prompt_errors_hold_no_credentials(monkeypatch, behavior, stand_ins):
     monkeypatch.setenv("SOME_API_KEY", "key-123456789")
-
-    def fail(*args, **kwargs):
-        raise error
-
-    monkeypatch.setattr(_mesh_prompt, "mesh_config", fail)
-    with pytest.raises(kind) as info:
+    # A prompt that cannot be made into a mesh is returned as its reason
+    stand_ins["failures"] = [ValueError("No place is named key-123456789")]
+    result = _MeshBehavior._read_prompt.func(behavior, "Texas", MODEL, 50.0)
+    assert result == {"error": "No place is named <redacted>"}
+    # Anything else is raised, without the original error
+    stand_ins["failures"] = [OSError("unreachable with key-123456789")]
+    with pytest.raises(RuntimeError) as info:
         _MeshBehavior._read_prompt.func(behavior, "Texas", MODEL, 50.0)
-    assert "key-123456789" not in str(info.value)
-    assert "<redacted>" in str(info.value)
+    assert str(info.value) == "OSError: unreachable with <redacted>"
     assert info.value.__cause__ is None
     assert info.value.__suppress_context__
-    if kind is RuntimeError:
-        assert str(info.value).startswith("OSError: ")
 
 
 # The actions
 
 
 def fake_read_prompt(monkeypatch, behavior, result=None, error=None):
-    task = Mock(return_value=done_future(result or dict(CONFIG), error))
+    """Replace the prompt task with one returning ``result``, or raising ``error``.
+
+    ``result`` is by default the request of CONFIG.
+    """
+    result = result or {"mesh_config": dict(CONFIG)}
+    task = Mock(return_value=done_future(result, error))
     monkeypatch.setattr(behavior, "_read_prompt", task)
     return task
 
@@ -392,7 +437,7 @@ async def test_mesh_config_from_prompt_rejects(
 
 async def test_prompt_that_cannot_be_made_into_a_mesh(monkeypatch, behavior):
     mark_prompting_installed(behavior)
-    fake_read_prompt(monkeypatch, behavior, error=ValueError("No place is named 'X'"))
+    fake_read_prompt(monkeypatch, behavior, {"error": "No place is named 'X'"})
     with pytest.raises(
         ValueError, match="cannot be made into a mesh: No place is named 'X'"
     ) as info:
@@ -410,7 +455,7 @@ async def test_prompt_that_cannot_be_read(monkeypatch, behavior):
 async def test_invalid_request_from_a_prompt_is_rejected(monkeypatch, behavior):
     # The request is checked as any other is, whatever the task returned
     mark_prompting_installed(behavior)
-    fake_read_prompt(monkeypatch, behavior, result={"resolution": "7km"})
+    fake_read_prompt(monkeypatch, behavior, {"mesh_config": {"resolution": "7km"}})
     with pytest.raises(ValueError, match="not supported"):
         await behavior.mesh_config_from_prompt("Texas", MODEL)
 
