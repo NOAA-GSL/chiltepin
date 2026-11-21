@@ -8,11 +8,13 @@ countries.
 
 import io
 import json
+import shutil
 import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import pytest
 import shapefile
@@ -61,25 +63,31 @@ STATES = [
 ]
 
 
+def code(country):
+    """Return the code joining a stand-in country to its states."""
+    return country[:3].upper()
+
+
 def write_boundaries(directory, countries=COUNTRIES, states=STATES):
     """Write Natural Earth stand-ins with the fields the lookup reads."""
     path = plot.layer_path(directory, geo.COUNTRIES)
     path.parent.mkdir(parents=True, exist_ok=True)
     with shapefile.Writer(str(path), shapeType=shapefile.POLYGON) as writer:
-        for field in ("ADMIN", "NAME", "NAME_LONG", "NAME_EN", "CONTINENT"):
+        for field in ("ADMIN", "NAME", "NAME_LONG", "NAME_EN", "CONTINENT", "ADM0_A3"):
             writer.field(field, "C")
         for *fields, parts in countries:
             writer.poly(parts)
-            writer.record(*fields)
+            writer.record(*fields, code(fields[0]))
     if states is not None:
         path = plot.layer_path(directory, geo.STATES)
         with shapefile.Writer(str(path), shapeType=shapefile.POLYGON) as writer:
             for field in ("name", "name_en", "gn_name", "woe_name", "name_alt"):
                 writer.field(field, "C")
             writer.field("admin", "C")
+            writer.field("adm0_a3", "C")
             for *fields, ring in states:
                 writer.poly([ring])
-                writer.record(*fields)
+                writer.record(*fields, code(fields[-1]))
     return directory
 
 
@@ -217,8 +225,8 @@ def test_missing_and_ambiguous_names_are_both_reported(boundaries):
 
 
 def test_excluded_names_are_skipped(boundaries):
-    region = geo.lookup_region(["Alpha", "Rio", "Nowhere"], boundaries, ["nowhere"])
-    assert bounds(region) == [0, 0, 4, 4]
+    region = geo.lookup_region(["Alpha", "Quebec", "Nowhere"], boundaries, ["nowhere"])
+    assert bounds(region) == [0, 0, 14, 4]
 
 
 def test_region_of_only_excluded_names(boundaries):
@@ -269,8 +277,48 @@ def test_unknown_exclusion_is_an_error(boundaries):
 
 def test_ambiguous_exclusion_is_an_error(boundaries):
     with pytest.raises(geo.RegionNotFound, match=r"Punjab \(Alpha, Beta\)") as error:
-        geo.lookup_region(["Alpha"], boundaries, exclude_names=["Punjab"])
+        geo.lookup_region(["Testland"], boundaries, exclude_names=["Punjab"])
     assert "not in the region" not in str(error.value)
+
+
+def test_exclusion_settled_by_the_region(boundaries):
+    # Of the two Punjabs, only Alpha's is in a region of Alpha
+    region = geo.lookup_region(["Alpha"], boundaries, exclude_names=["Punjab"])
+    assert bounds(region) == [0, 0, 1, 1]
+
+
+def test_country_named_with_its_states_is_not_in_the_region(boundaries):
+    region = geo.lookup_region(["Rio", "Republic of Alpha"], boundaries)
+    assert bounds(region) == [0, 0, 1, 1]
+    # A continent named with states of one of its countries stays whole
+    continent = geo.lookup_region(["Testland", "Rio"], boundaries)
+    assert bounds(continent) == [0, 0, 14, 4]
+
+
+def test_names_settled_by_the_other_names(boundaries):
+    # Next to Quebec, a state of Beta, Punjab and Georgia are Beta's states
+    region = geo.lookup_region(["Quebec", "Punjab", "Georgia"], boundaries)
+    assert bounds(region) == [11, 1, 14, 3]
+    # Georgia alone, or next to a country with no state of that name, is the
+    # country
+    assert bounds(geo.lookup_region(["Georgia", "Alpha"], boundaries)) == [0, 0, 41, 41]
+
+
+def test_state_by_another_name_only_if_none_has_it_as_its_own(tmp_path):
+    states = STATES + [
+        # Rio's woe_name is "Big", and Big is another state's own name
+        ("Rio Big", "Rio Big", "", "Big", "", "Alpha", square(2, 2)),
+        ("Big", "Big", "", "", "", "Alpha", square(3, 3)),
+        ("Small", "Small", "", "", "Sm", "Alpha", square(2, 3)),
+    ]
+    data = write_boundaries(tmp_path / "ne", states=states)
+    assert bounds(geo.lookup_region(["Big"], data)) == [3, 3, 4, 4]
+    assert bounds(geo.lookup_region(["Sm"], data)) == [2, 3, 3, 4]
+
+
+def test_name_with_a_comma_that_names_no_country(boundaries):
+    with pytest.raises(geo.RegionNotFound, match="'Rio, Nowhere'"):
+        geo.lookup_region(["Rio, Nowhere"], boundaries)
 
 
 def test_ambiguous_exclusion_with_its_country(boundaries):
@@ -321,11 +369,16 @@ def nominatim(monkeypatch):
         failures = []
         requests = []
         sleeps = []
+        # Seconds since the epoch, which advances only when the test says
+        now = 1000.0
 
         def urlopen(self, request, timeout):
             self.requests.append(request)
             if self.failures:
-                raise self.failures.pop(0)
+                failure = self.failures.pop(0)
+                if isinstance(failure, bytes):
+                    return io.BytesIO(failure)
+                raise failure
             query = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
             answer = feature_collection(self.places.get(query["q"][0]))
             return io.BytesIO(json.dumps(answer).encode())
@@ -333,12 +386,13 @@ def nominatim(monkeypatch):
     fake = Fake()
     monkeypatch.setattr(urllib.request, "urlopen", fake.urlopen)
     monkeypatch.setattr(geo.time, "sleep", fake.sleeps.append)
-    monkeypatch.setattr(geo, "_last_nominatim_request", 0.0)
+    monkeypatch.setattr(geo.time, "time", lambda: fake.now)
     return fake
 
 
-def http_error(code):
-    return urllib.error.HTTPError(geo.NOMINATIM_URL, code, "error", {}, None)
+def http_error(code, retry_after=None):
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    return urllib.error.HTTPError(geo.NOMINATIM_URL, code, "error", headers, None)
 
 
 def test_nominatim_request(nominatim, tmp_path):
@@ -366,18 +420,49 @@ def test_nominatim_answers_are_cached(nominatim, tmp_path):
     assert geo.query_nominatim("nowhere", "me@example.org", cache) is None
     assert len(nominatim.requests) == 2
     assert len(list(cache.glob("*.json"))) == 2
-    assert not list(cache.glob(".*"))
+    # Only the lock is left besides the answers, and no partial file
+    assert [path.name for path in cache.glob(".*")] == [".lock"]
 
 
-def test_nominatim_requests_are_spaced(nominatim, tmp_path, monkeypatch):
-    # The first request starts at 100.0 and ends at 100.2, and the second is
-    # ready at 100.3
-    clock = iter([100.0, 100.2, 100.3, 101.4])
-    monkeypatch.setattr(geo.time, "monotonic", lambda: next(clock))
+def test_nominatim_requests_are_spaced(nominatim, tmp_path):
     geo.query_nominatim("Springfield", "me@example.org", tmp_path)
+    # The second request comes 0.3 s after the first, so it waits the rest
+    nominatim.now += 0.3
     geo.query_nominatim("Elsewhere", "me@example.org", tmp_path)
-    # So it waits until the interval after the first one ends
-    assert nominatim.sleeps == [pytest.approx(100.2 + geo.NOMINATIM_INTERVAL - 100.3)]
+    assert nominatim.sleeps == [pytest.approx(geo.NOMINATIM_INTERVAL - 0.3)]
+    # The time of the last request is in the lock's file, which every process
+    # sharing the cache reads
+    assert float((tmp_path / ".lock").read_text()) == nominatim.now
+
+
+def test_nominatim_spacing_is_shared_by_processes(nominatim, tmp_path):
+    # Another process wrote the time of its request a moment ago
+    (tmp_path / ".lock").write_text(repr(nominatim.now - 0.5))
+    geo.query_nominatim("Springfield", "me@example.org", tmp_path)
+    assert nominatim.sleeps == [pytest.approx(geo.NOMINATIM_INTERVAL - 0.5)]
+
+
+def test_nominatim_lock_with_an_unreadable_time(nominatim, tmp_path):
+    (tmp_path / ".lock").write_text("not a time")
+    geo.query_nominatim("Springfield", "me@example.org", tmp_path)
+    assert nominatim.sleeps == []
+
+
+def test_nominatim_lock_is_exclusive():
+    import fcntl
+    import tempfile
+
+    # On a local disk, since some shared ones, such as Docker Desktop's host
+    # mounts, ignore locks
+    directory = Path(tempfile.mkdtemp())
+    lock = geo._wait_for_nominatim(directory)
+    other = open(directory / ".lock", "a+")
+    with pytest.raises(BlockingIOError):
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    geo._mark_nominatim_request(lock)
+    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    other.close()
+    shutil.rmtree(directory)
 
 
 @pytest.mark.parametrize(
@@ -393,6 +478,31 @@ def test_nominatim_retries_transient_failures(nominatim, tmp_path, error):
     assert [s for s in nominatim.sleeps if s >= 2] == [2, 4]
 
 
+def test_nominatim_waits_as_retry_after_asks(nominatim, tmp_path):
+    nominatim.failures = [http_error(429, "30"), http_error(503, "600")]
+    assert geo.query_nominatim("Springfield", "me@example.org", tmp_path)
+    # 30 s, more than the 2 s backoff, and then at most a minute
+    assert [s for s in nominatim.sleeps if s >= 2] == [30.0, geo.MAX_RETRY_AFTER]
+
+
+def test_nominatim_ignores_an_unreadable_retry_after(nominatim, tmp_path):
+    nominatim.failures = [http_error(429, "soon")]
+    assert geo.query_nominatim("Springfield", "me@example.org", tmp_path)
+    assert [s for s in nominatim.sleeps if s >= 2] == [2.0]
+
+
+def test_nominatim_answer_that_is_not_json_is_tried_again(nominatim, tmp_path):
+    nominatim.failures = [b"<html>Busy</html>"]
+    assert geo.query_nominatim("Springfield", "me@example.org", tmp_path)
+    assert len(nominatim.requests) == 2
+
+
+def test_nominatim_answers_that_stay_not_json(nominatim, tmp_path):
+    nominatim.failures = [b"<html>Busy</html>"] * 3
+    with pytest.raises(OSError, match="something other than JSON"):
+        geo.query_nominatim("Springfield", "me@example.org", tmp_path)
+
+
 @pytest.mark.parametrize(
     "error", [http_error(503), urllib.error.URLError("down")], ids=["503", "down"]
 )
@@ -401,7 +511,8 @@ def test_nominatim_gives_up_after_its_attempts(nominatim, tmp_path, error):
     with pytest.raises(type(error)):
         geo.query_nominatim("Springfield", "me@example.org", tmp_path)
     assert len(nominatim.requests) == 3
-    assert not list(tmp_path.iterdir())
+    # Nothing is cached, so the name is asked for again later
+    assert not list(tmp_path.glob("*.json"))
 
 
 def test_nominatim_does_not_retry_a_refused_request(nominatim, tmp_path):
@@ -442,32 +553,92 @@ def test_nominatim_contact_needs_a_cache(boundaries):
         geo.lookup_region(["Alpha"], boundaries, nominatim_contact="me@example.org")
 
 
-# Natural Earth's real countries
+# Natural Earth's real boundaries
 
 
 @pytest.fixture(scope="module")
-def real_countries(tmp_path_factory):
-    """Download Natural Earth's countries, with a stand-in for its states."""
+def real_boundaries(tmp_path_factory):
+    """Download Natural Earth's real countries and states, about 45 MB."""
     directory = tmp_path_factory.mktemp("natural-earth")
-    plot.download_map_data(directory, layers=[geo.COUNTRIES])
-    path = plot.layer_path(directory, geo.STATES)
-    with shapefile.Writer(str(path), shapeType=shapefile.POLYGON) as writer:
-        for field in ("name", "name_en", "gn_name", "woe_name", "name_alt", "admin"):
-            writer.field(field, "C")
-        writer.poly([square(-109.05, 37, 7)])
-        writer.record("Colorado", "Colorado", "", "", "", "United States of America")
+    geo.download_boundaries(directory)
     return directory
 
 
-def test_real_countries(real_countries):
+def lookup(names, data, **kwargs):
+    return geo.lookup_region(names, data, **kwargs)
+
+
+def test_real_countries(real_boundaries):
     # France without French Guiana
-    assert geo.lookup_region(["France"], real_countries).bounds[0] > -10
+    assert lookup(["France"], real_boundaries).bounds[0] > -10
     # Russia in one piece across the 180th meridian
-    russia = geo.lookup_region(["Russia"], real_countries)
-    assert 180 < russia.bounds[2] < 200
-    # Europe without Russia keeps Iceland and Portugal
-    europe = geo.lookup_region(["Europe"], real_countries, exclude_names=["Russia"])
+    assert 180 < lookup(["Russia"], real_boundaries).bounds[2] < 200
+    # The detailed layer keeps small islands and small countries: Bornholm,
+    # the Dodecanese, the Ryukyus, and Singapore, Bahrain and Hong Kong
+    assert lookup(["Denmark"], real_boundaries).bounds[2] > 15
+    assert lookup(["Greece"], real_boundaries).bounds[2] > 28
+    assert lookup(["Japan"], real_boundaries).bounds[0] < 124
+    for name in ("Singapore", "Bahrain", "Hong Kong", "Maldives"):
+        assert lookup([name], real_boundaries).area > 0
+
+
+def test_real_europe_leaves_russia_out_unless_named(real_boundaries):
+    europe = lookup(["Europe"], real_boundaries)
+    # Iceland and Portugal in the west, and nothing past the Urals
     assert europe.bounds[0] < -20
     assert europe.bounds[2] < 50
-    colorado = geo.lookup_region(["Colorado"], real_countries)
-    assert bounds(colorado) == [-109.05, 37, -102.05, 44]
+    with_russia = lookup(["Europe", "Russia"], real_boundaries)
+    assert with_russia.bounds[2] > 180
+    # Leaving Russia out, as a prompt may, is no error
+    assert lookup(["Europe"], real_boundaries, exclude_names=["Russia"]).equals(europe)
+
+
+def test_real_state_names(real_boundaries):
+    # Washington is the state, though another name of the District of
+    # Columbia is "Washington"
+    washington = lookup(["Washington"], real_boundaries)
+    assert [round(b) for b in washington.bounds] == [-125, 46, -117, 49]
+    # Florida is a US state and a department of Uruguay, so it alone is
+    # ambiguous, and settled by the US states next to it
+    with pytest.raises(geo.RegionNotFound, match="Florida .*Uruguay"):
+        lookup(["Florida"], real_boundaries)
+    south = lookup(["Florida", "Alabama"], real_boundaries)
+    assert -88.5 < south.bounds[0] and south.bounds[2] < -79.5
+    # Georgia alone is the country, and next to Alabama the US state
+    assert lookup(["Georgia"], real_boundaries).bounds[0] > 39
+    assert lookup(["Georgia", "Alabama"], real_boundaries).bounds[0] < -84
+
+
+def test_real_states_of_countries_with_other_names(real_boundaries):
+    # The state layer names Czechia "Czech Republic", and the layers are joined
+    # by code, so Prague can be left out of it
+    czechia = lookup(["Czechia"], real_boundaries)
+    without = lookup(["Czechia"], real_boundaries, exclude_names=["Prague"])
+    assert without.area < czechia.area
+
+
+def test_real_country_named_with_its_states(real_boundaries):
+    # As small models answer "a mesh over Washington": the country only says
+    # which Washington, and is not part of the region
+    both = lookup(["Washington", "United States of America"], real_boundaries)
+    assert both.equals(lookup(["Washington"], real_boundaries))
+    # A country with states of another country stays
+    mixed = lookup(["Ontario", "United States of America"], real_boundaries)
+    assert mixed.bounds[0] < -150
+
+
+def test_real_contiguous_states(real_boundaries):
+    conus = lookup(
+        ["United States of America"],
+        real_boundaries,
+        exclude_names=["Alaska", "Hawaii"],
+    )
+    assert [round(b) for b in conus.bounds] == [-125, 25, -67, 49]
+    # A region's own names stand for the same
+    for name in ("Contiguous United States", "CONUS", "the Lower 48"):
+        assert lookup([name], real_boundaries).equals(conus), name
+    # With the places it leaves out left out again, or another place
+    again = lookup(["CONUS"], real_boundaries, exclude_names=["Alaska"])
+    assert again.equals(conus)
+    with_ontario = lookup(["CONUS", "Ontario"], real_boundaries)
+    assert with_ontario.bounds[3] > 55
