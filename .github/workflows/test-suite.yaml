@@ -6,6 +6,12 @@ env:
   LATEST_PYTHON_VERSION: '3.13'
   # Version of uv that installs Python in the cluster containers
   UV_VERSION: '0.13.6'
+  # Ollama release and local model the MPAS mesh agent's prompt test uses, on
+  # the latest Python only. The checksum is that release's sha256sum.txt entry
+  # for ollama-linux-amd64.tar.zst.
+  OLLAMA_VERSION: '0.40.16'
+  OLLAMA_SHA256: '87bfafb2acbc89b2e6a1be0a9043de6aa75fb450696f86bc426e65fc448f788d'
+  OLLAMA_MODEL: 'qwen3:8b'
 
 on:
   push:
@@ -130,13 +136,30 @@ jobs:
           docker exec chiltepin-frontend bash -l -c "cd work ; ~/.local/bin/uv venv --seed --managed-python --python ${{ matrix.python-version }} .venv-py${{ matrix.python-version }}"
           docker exec chiltepin-frontend bash -l -c "cd work ; source .venv-py${{ matrix.python-version }}/bin/activate ; pip install -e .[test]"
       -
+        name: Start a local model for the prompt test
+        if: matrix.python-version == env.LATEST_PYTHON_VERSION
+        run: |
+          # On the frontend, where the compute nodes running the agent's tasks
+          # reach it. It needs no credentials.
+          docker exec chiltepin-frontend bash -c "/home/admin/chiltepin/.github/scripts/start-ollama.sh /home/admin/ollama ${{ env.OLLAMA_MODEL }} ${{ env.OLLAMA_VERSION }} ${{ env.OLLAMA_SHA256 }}"
+      -
         name: Run test suite with coverage
         id: pytest
         env:
           GLOBUS_COMPUTE_CLIENT_ID: ${{ secrets.GC_CLIENT_ID }}
           GLOBUS_COMPUTE_CLIENT_SECRET: ${{ secrets.GC_CLIENT_SECRET }}
+          # The prompt test reads prompts with the local model, on the latest
+          # Python only, and skips without these settings
+          CHILTEPIN_TEST_LLM_ENV: ${{ matrix.python-version == env.LATEST_PYTHON_VERSION && '/home/admin/ollama/ollama.env' || '' }}
+          CHILTEPIN_TEST_LLM_MODEL: ollama_chat/chiltepin-test
+          CHILTEPIN_TEST_LLM_REASONING: none
         run: |
-          docker exec -e GLOBUS_COMPUTE_CLIENT_ID="$GLOBUS_COMPUTE_CLIENT_ID" -e GLOBUS_COMPUTE_CLIENT_SECRET="$GLOBUS_COMPUTE_CLIENT_SECRET" chiltepin-frontend bash -l -c "cd work; source .venv-py${{ matrix.python-version }}/bin/activate; chiltepin login --non-interactive && pytest -s -v --cov=src/chiltepin --cov-report=term-missing --cov-report=markdown:coverage.md --cov-report=xml --cov-report=html --cov-fail-under=0 --config=tests/configs/docker.yaml"
+          docker exec -e GLOBUS_COMPUTE_CLIENT_ID="$GLOBUS_COMPUTE_CLIENT_ID" -e GLOBUS_COMPUTE_CLIENT_SECRET="$GLOBUS_COMPUTE_CLIENT_SECRET" -e CHILTEPIN_TEST_LLM_ENV -e CHILTEPIN_TEST_LLM_MODEL -e CHILTEPIN_TEST_LLM_REASONING chiltepin-frontend bash -l -c "cd work; source .venv-py${{ matrix.python-version }}/bin/activate; chiltepin login --non-interactive && pytest -s -v --cov=src/chiltepin --cov-report=term-missing --cov-report=markdown:coverage.md --cov-report=xml --cov-report=html --cov-fail-under=0 --config=tests/configs/docker.yaml"
+      -
+        name: Show the local model's log
+        if: failure() && matrix.python-version == env.LATEST_PYTHON_VERSION
+        run: |
+          docker exec chiltepin-frontend bash -c "tail -n 100 /home/admin/ollama/serve.log" || true
       -
         name: Copy coverage reports from container
         if: always()
