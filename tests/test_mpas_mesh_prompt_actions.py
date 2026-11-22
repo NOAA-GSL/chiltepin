@@ -461,6 +461,17 @@ async def test_invalid_request_from_a_prompt_is_rejected(monkeypatch, behavior):
         await behavior.mesh_config_from_prompt("Texas", MODEL)
 
 
+async def test_request_from_a_prompt_with_a_prompt_is_rejected(monkeypatch, behavior):
+    # It would pass as a request with a prompt, which would be read again
+    mark_prompting_installed(behavior)
+    request = {"prompt": "Texas", "model": MODEL}
+    fake_read_prompt(monkeypatch, behavior, {"mesh_config": request})
+    with pytest.raises(RuntimeError, match="gave a request with a prompt"):
+        await behavior.mesh_config_from_prompt("Texas", MODEL)
+    with pytest.raises(RuntimeError, match="gave a request with a prompt"):
+        await behavior.generate_mesh(request, "/meshes")
+
+
 async def test_mesh_config_from_prompt_needs_service(monkeypatch, behavior):
     mark_prompting_installed(behavior)
     define_resources(monkeypatch, "compute")

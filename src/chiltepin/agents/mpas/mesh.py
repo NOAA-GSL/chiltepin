@@ -2099,6 +2099,12 @@ class _MeshBehavior:
                 f"The prompt cannot be made into a mesh: {result['error']}"
             )
         mesh_config = result["mesh_config"]
+        # A request with a prompt would have generate_mesh read one again
+        if isinstance(mesh_config, dict) and "prompt" in mesh_config:
+            raise RuntimeError(
+                "Reading the prompt failed: it gave a request with a prompt, not "
+                "a full request"
+            )
         self._validate_mesh_config(mesh_config)
         return mesh_config
 
