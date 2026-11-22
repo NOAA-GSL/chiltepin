@@ -19,12 +19,19 @@ from parsl.app.errors import BashExitFailure
 from parsl.errors import NoDataFlowKernelError
 
 from chiltepin.agents import agent_action, chiltepin_agent
+from chiltepin.agents.mpas._geo_lookup import BOUNDARY_LAYERS
 from chiltepin.agents.mpas._plot_mesh import (
     EXIT_MISSING_MAP,
     EXIT_VIEW_OF_REGIONAL_MESH,
     MAP_LAYERS,
     REQUIRED_PARTS,
+    layer_complete,
     layer_path,
+)
+from chiltepin.agents.mpas._region_shapes import (
+    lambert_apex_km,
+    project_hexes_reach_km,
+    standard_parallel,
 )
 from chiltepin.tasks import bash_task, python_task
 
@@ -37,6 +44,16 @@ _VERSION_RE = re.compile(r"[0-9][0-9a-zA-Z._-]*")
 _SHARED_MESH_FILE_RE = re.compile(r"x1\.[0-9]+\.(static\.nc|graph\.info)")
 
 
+# Longest prompt a prompt action takes, in characters
+_MAX_PROMPT_CHARS = 10_000
+# Largest margin around a prompt's region, in km
+_MAX_BUFFER_KM = 5000.0
+# Margin around a prompt's region unless another is given, in km
+_DEFAULT_BUFFER_KM = 50.0
+# A reasoning effort litellm passes to a model, such as "none" or "low"
+_REASONING_EFFORT_RE = re.compile(r"[a-z]{1,16}")
+# A contact for Nominatim: an email address, without spaces or control characters
+_CONTACT_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 # Most rank counts one partition_mesh call may request, since each one is a task
 _MAX_PARTITION_RANKS = 16
 
@@ -50,6 +67,20 @@ _MAX_MESH_NAME_BYTES = 200
 # Keys a mesh request may contain
 _MESH_CONFIG_KEYS = frozenset(
     {"resolution", "name", "init_ranks", "forecast_ranks", "regional", "plot"}
+)
+# Keys a mesh request made from a prompt may contain. The prompt gives the
+# resolution and the region, and a name unless one is given.
+_PROMPT_CONFIG_KEYS = frozenset(
+    {
+        "prompt",
+        "model",
+        "name",
+        "init_ranks",
+        "forecast_ranks",
+        "plot",
+        "buffer_km",
+        "reasoning_effort",
+    }
 )
 
 # Methods a regional request may name, and the keys of a project_hexes block
@@ -99,6 +130,7 @@ class _MeshBehavior:
         metis_version: str = "5.2.1",
         mpas_tools_version: str = "2.0.0",
         limited_area_version: str = "2.2",
+        nominatim_contact: Optional[str] = None,
     ):
         """Initialize the mesh behavior.
 
@@ -113,12 +145,17 @@ class _MeshBehavior:
         limited_area_version : str, optional
             MPAS-Limited-Area version to install, by default "2.2". The tag is
             this version with a ``v`` added, such as ``v2.2``.
+        nominatim_contact : str, optional
+            Email address of whoever runs the agent, sent to OpenStreetMap's
+            Nominatim service when a prompt names a place Natural Earth lacks,
+            such as a city. Without it, such places are not looked up.
 
         Raises
         ------
         ValueError
             If ``metis_version``, ``mpas_tools_version`` or
-            ``limited_area_version`` is not a plain version string.
+            ``limited_area_version`` is not a plain version string, or
+            ``nominatim_contact`` is not an email address.
         """
         for name, version in (
             ("metis_version", metis_version),
@@ -127,6 +164,12 @@ class _MeshBehavior:
         ):
             if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
                 raise ValueError(f"Invalid {name}: {version!r}")
+        if nominatim_contact is not None and (
+            not isinstance(nominatim_contact, str)
+            or len(nominatim_contact) > 254
+            or not _CONTACT_RE.fullmatch(nominatim_contact)
+        ):
+            raise ValueError("nominatim_contact must be an email address")
 
         # Tasks run elsewhere with their own working directory, so use an absolute path
         self.work_dir = Path(os.path.abspath(Path(work_dir).expanduser()))
@@ -147,6 +190,10 @@ class _MeshBehavior:
 
         # Plotting state (the map layers plots use)
         self.plotting_built = False
+
+        # Prompt state (the boundaries places are looked up in)
+        self.nominatim_contact = nominatim_contact
+        self.prompting_built = False
 
         # Serializes tool installs, so concurrent requests that need a tool wait
         # for one install instead of each starting their own
@@ -233,6 +280,9 @@ class _MeshBehavior:
         invalid requests fail before any resource check, install or download.
         New keys and rules for them belong here.
 
+        A request with a ``prompt`` is checked as the prompt's own request: it
+        needs a ``model``, and the prompt gives its resolution and region.
+
         Raises
         ------
         ValueError
@@ -240,12 +290,18 @@ class _MeshBehavior:
             invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``,
             ``regional`` block or ``plot``. A name must be at most 200 bytes long, must
             not contain control characters, and must not be that of a downloaded
-            global mesh file.
+            global mesh file. A ``project_hexes`` mesh must not reach a pole. A
+            request with a ``prompt`` must not have a ``resolution`` or
+            ``regional`` block, and must have a valid ``model``, ``buffer_km``
+            and ``reasoning_effort``.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
                 f"mesh_config must be a dict, got {type(mesh_config).__name__}"
             )
+        if "prompt" in mesh_config:
+            self._validate_prompt_config(mesh_config)
+            return
         unknown = sorted(str(k) for k in mesh_config if k not in _MESH_CONFIG_KEYS)
         if unknown:
             raise ValueError(
@@ -268,8 +324,20 @@ class _MeshBehavior:
                     f"Available: {list(self.resolution_cells.keys())}"
                 )
         else:
-            self._parse_resolution_km(resolution)
-        mesh_name = mesh_config.get("name", f"mesh_{resolution}")
+            spacing = self._parse_resolution_km(resolution)
+            self._check_project_hexes_reach(regional["project_hexes"], spacing)
+        self._validate_name(mesh_config.get("name", f"mesh_{resolution}"))
+        self._validate_ranks_and_plot(mesh_config)
+
+    @staticmethod
+    def _validate_name(mesh_name: Any) -> None:
+        """Check a request's mesh name.
+
+        Raises
+        ------
+        ValueError
+            As ``_validate_mesh_config()`` raises for a name.
+        """
         if (
             not isinstance(mesh_name, str)
             or mesh_name in ("", ".", "..")
@@ -291,6 +359,16 @@ class _MeshBehavior:
             raise ValueError(
                 f"Mesh name {mesh_name!r} is the name of a downloaded global mesh file"
             )
+
+    @staticmethod
+    def _validate_ranks_and_plot(mesh_config: Dict[str, Any]) -> None:
+        """Check a request's rank counts and ``plot``.
+
+        Raises
+        ------
+        ValueError
+            As ``_validate_mesh_config()`` raises for these.
+        """
         for key in ("init_ranks", "forecast_ranks"):
             value = mesh_config.get(key)
             if value is None:
@@ -300,6 +378,42 @@ class _MeshBehavior:
         plot = mesh_config.get("plot", False)
         if not isinstance(plot, bool):
             raise ValueError(f"plot must be True or False, got {plot!r}")
+
+    def _validate_prompt_config(self, mesh_config: Dict[str, Any]) -> None:
+        """Check a mesh request made from a prompt.
+
+        Raises
+        ------
+        ValueError
+            As ``_validate_mesh_config()`` raises for a request with a prompt.
+        """
+        decided = sorted(k for k in ("resolution", "regional") if k in mesh_config)
+        if decided:
+            raise ValueError(
+                f"A mesh_config with a prompt cannot have {' or '.join(decided)}, "
+                "which the prompt gives. Put it in the prompt, or leave out the "
+                "prompt."
+            )
+        unknown = sorted(str(k) for k in mesh_config if k not in _PROMPT_CONFIG_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unknown mesh_config keys with a prompt: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(sorted(_PROMPT_CONFIG_KEYS))}"
+            )
+        if "model" not in mesh_config:
+            raise ValueError(
+                "A mesh_config with a prompt needs a model, a litellm model "
+                "string such as 'bedrock/us.anthropic.claude-sonnet-5-5'"
+            )
+        self._validate_prompt(
+            mesh_config["prompt"],
+            mesh_config["model"],
+            mesh_config.get("buffer_km", _DEFAULT_BUFFER_KM),
+            mesh_config.get("reasoning_effort"),
+        )
+        if "name" in mesh_config:
+            self._validate_name(mesh_config["name"])
+        self._validate_ranks_and_plot(mesh_config)
 
     @staticmethod
     def _parse_resolution_km(resolution: Any) -> float:
@@ -399,6 +513,31 @@ class _MeshBehavior:
             cls._positive(config[key], f"{where}.{key}")
         if "rotation_degrees" in config:
             cls._number(config, "rotation_degrees", where)
+
+    @staticmethod
+    def _check_project_hexes_reach(config: Dict[str, Any], spacing_km: float) -> None:
+        """Check that a valid ``project_hexes`` block's mesh does not reach a pole.
+
+        project_hexes' cone has its apex at the pole, and cells at or past it
+        are misplaced. The mesh reaches past ``extent_y_km`` by its boundary
+        layers, whose size is set by the cell spacing.
+
+        Raises
+        ------
+        ValueError
+            If the mesh reaches the pole.
+        """
+        center_lat = float(config["center_lat"])
+        apex = lambert_apex_km(center_lat)
+        reach = project_hexes_reach_km(float(config["extent_y_km"]), spacing_km)
+        if reach >= apex:
+            limit = 2 * (apex - project_hexes_reach_km(0.0, spacing_km))
+            raise ValueError(
+                "regional.project_hexes reaches the pole, which project_hexes "
+                f"cannot make a mesh around. At center_lat {center_lat} with "
+                f"{spacing_km:g} km cells, extent_y_km must be less than "
+                f"{max(limit, 0.0):.1f}. Use create_region instead."
+            )
 
     @classmethod
     def _latitude(cls, value: Any, label: str) -> float:
@@ -568,8 +707,16 @@ class _MeshBehavior:
         center_lat: float,
         center_lon: float,
     ) -> str:
-        """Return the ``namelist.projections`` text that project_hexes reads."""
+        """Return the ``namelist.projections`` text that project_hexes reads.
+
+        The Lambert conformal cone touches the sphere at the center, unless the
+        center is within 0.0001 degrees of the equator, where project_hexes
+        would divide by zero or lose all precision. Its cone then touches 0.0001
+        degrees from the equator, which moves its cells by at most about 40 m
+        on a mesh 10000 km across.
+        """
         r = cls._real
+        parallel = standard_parallel(center_lat)
         return (
             "&mesh\n"
             f"  cell_spacing_km = {r(cell_spacing_km)}\n"
@@ -584,8 +731,8 @@ class _MeshBehavior:
             f"  reference_longitude_degrees = {r(center_lon)}\n"
             f"  standard_longitude_degrees = {r(center_lon)}\n"
             f"  reference_latitude_degrees = {r(center_lat)}\n"
-            f"  standard_parallel_1_degrees = {r(center_lat)}\n"
-            f"  standard_parallel_2_degrees = {r(center_lat)}\n"
+            f"  standard_parallel_1_degrees = {r(parallel)}\n"
+            f"  standard_parallel_2_degrees = {r(parallel)}\n"
             "/\n"
         )
 
@@ -721,11 +868,13 @@ class _MeshBehavior:
         download_task: Callable[..., Any],
         build_task: Callable[..., Any],
         stages: Tuple[str, str] = ("download", "build"),
+        executors: Tuple[str, str] = ("service", "compute"),
     ) -> None:
         """Download and build a tool, and report the first failure.
 
-        The download runs on ``service`` and the build on ``compute``. ``stages``
-        names the two steps in logs and messages. Logs are
+        The download runs on ``service`` and the build on ``compute``, unless
+        ``executors`` names others. ``stages`` names the two steps in logs and
+        messages. Logs are
         ``<log_name>_<stage>.*`` in ``log_dir``, such as
         ``metis_download.stderr``. The caller holds the install lock and has
         checked that the resources exist.
@@ -737,12 +886,12 @@ class _MeshBehavior:
         """
         first, second = stages
         download_future = download_task(
-            executor=["service"],
+            executor=[executors[0]],
             stdout=str(self.log_dir / f"{log_name}_{first}.stdout"),
             stderr=str(self.log_dir / f"{log_name}_{first}.stderr"),
         )
         build_future = build_task(
-            executor=["compute"],
+            executor=[executors[1]],
             stdout=str(self.log_dir / f"{log_name}_{second}.stdout"),
             stderr=str(self.log_dir / f"{log_name}_{second}.stderr"),
             inputs=[download_future],
@@ -834,6 +983,32 @@ class _MeshBehavior:
         installation the worker runs, which the compute resource can read.
         """
         return Path(__file__).with_name("_plot_mesh.py")
+
+    def _prompting_usable(self) -> bool:
+        """Whether the boundaries are installed and prompting was checked.
+
+        Every boundary layer must be complete, so an install made before a
+        layer was added is replaced.
+        """
+        return (self._geo_prefix / ".installed").is_file() and all(
+            layer_complete(layer_path(self._boundaries_dir, layer))
+            for layer in BOUNDARY_LAYERS
+        )
+
+    @property
+    def _geo_prefix(self) -> Path:
+        """Directory the boundaries and Nominatim's answers are kept in."""
+        return self.work_dir / "geo"
+
+    @property
+    def _boundaries_dir(self) -> Path:
+        """Directory the Natural Earth boundaries are downloaded to."""
+        return self._geo_prefix / "natural_earth"
+
+    @property
+    def _nominatim_cache_dir(self) -> Path:
+        """Directory Nominatim's answers are kept in."""
+        return self._geo_prefix / "nominatim"
 
     def _plotting_usable(self) -> bool:
         """Whether the map layers are installed and plotting was checked."""
@@ -1096,6 +1271,73 @@ class _MeshBehavior:
         )
 
     @bash_task
+    def _download_boundaries(self) -> str:
+        """Download the Natural Earth boundaries places are looked up in.
+
+        It needs only the standard library. Boundaries already downloaded are
+        kept, so prompts being read meanwhile keep them.
+        """
+        import sys
+        import textwrap
+
+        code = (
+            "import sys; from pathlib import Path; "
+            "from chiltepin.agents.mpas._geo_lookup import download_boundaries; "
+            "download_boundaries(Path(sys.argv[1]))"
+        )
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started download at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._geo_prefix)}
+            # The install counts again only once the check passes
+            mkdir -p "$prefix"
+            rm -f "$prefix/.installed"
+            {self._q(sys.executable)} -c {self._q(code)} {self._q(self._boundaries_dir)}
+            echo "Completed download at $(date)"
+            """
+        )
+
+    @bash_task
+    def _check_prompting(self) -> str:
+        """Check that prompts can be read on ``service``, and mark the install.
+
+        The Python of the tasks there must have the ``chiltepin[mpas,llm]``
+        extras, and the boundaries must be complete.
+        """
+        import sys
+        import textwrap
+
+        code = (
+            "import sys; from pathlib import Path; "
+            "import instructor, litellm, shapefile, shapely; "
+            "from chiltepin.agents.mpas._geo_lookup import BOUNDARY_LAYERS; "
+            "from chiltepin.agents.mpas._plot_mesh import layer_complete, layer_path; "
+            "missing = [str(layer_path(Path(sys.argv[1]), layer)) "
+            "for layer in BOUNDARY_LAYERS "
+            "if not layer_complete(layer_path(Path(sys.argv[1]), layer))]; "
+            "sys.exit('Boundaries are missing: ' + ', '.join(missing) "
+            "if missing else 0)"
+        )
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started check at $(date)"
+            echo "Executing on $(hostname)"
+            prefix={self._q(self._geo_prefix)}
+            if ! {self._q(sys.executable)} -c "import instructor, litellm, shapefile, shapely"; then
+                echo "The Python of the service resource cannot import the packages prompts need. Install chiltepin[mpas,llm] in the environment of the service resource." >&2
+                exit 1
+            fi
+            {self._q(sys.executable)} -c {self._q(code)} {self._q(self._boundaries_dir)}
+            # Mark the install complete. The agent only uses a marked install.
+            touch "$prefix/.installed"
+            echo "Completed check at $(date)"
+            """
+        )
+
+    @bash_task
     def _run_plot_mesh(
         self, mesh_path: str, output_path: str, options: List[str]
     ) -> str:
@@ -1248,6 +1490,57 @@ class _MeshBehavior:
 
             for name in expected:
                 (extracted / name).replace(directory / name)
+
+    @python_task
+    def _read_prompt(
+        self,
+        prompt: str,
+        model: str,
+        buffer_km: float,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Ask the model what mesh a prompt describes, and return its request.
+
+        Runs on ``service``, whose environment holds the model's credentials.
+        If the places of the model's answer cannot be looked up, the model is
+        told why, and asked once more. The request is returned as
+        ``{"mesh_config": ...}``, or why the prompt cannot be made into a mesh
+        as ``{"error": ...}``, which every executor returns as it is. Other
+        failures raise a RuntimeError. Neither holds credentials.
+        """
+        from chiltepin.agents.mpas._geo_lookup import RegionNotFound
+        from chiltepin.agents.mpas._mesh_prompt import ask, mesh_config, redact
+
+        resolutions = list(self.resolution_cells)
+
+        def config_of(answer):
+            return mesh_config(
+                answer,
+                resolutions,
+                self._boundaries_dir,
+                buffer_km,
+                nominatim_contact=self.nominatim_contact,
+                cache_dir=self._nominatim_cache_dir,
+                prompt=prompt,
+            )
+
+        try:
+            answer = ask(prompt, model, resolutions, reasoning_effort=reasoning_effort)
+            try:
+                return {"mesh_config": config_of(answer)}
+            except RegionNotFound as e:
+                answer = ask(
+                    prompt,
+                    model,
+                    resolutions,
+                    reasoning_effort=reasoning_effort,
+                    correction=(answer, str(e)),
+                )
+                return {"mesh_config": config_of(answer)}
+        except ValueError as e:
+            return {"error": redact(str(e))}
+        except Exception as e:
+            raise RuntimeError(redact(f"{type(e).__name__}: {e}")) from None
 
     # -------------------------------------------------------------------------
     # Public agent actions — Metis
@@ -1665,6 +1958,156 @@ class _MeshBehavior:
     # Public agent actions — Tools
     # -------------------------------------------------------------------------
 
+    # -------------------------------------------------------------------------
+    # Public agent actions — Prompts
+    # -------------------------------------------------------------------------
+
+    @agent_action
+    async def install_prompting(self) -> None:
+        """Download the boundaries prompts are read with, and check, unless done.
+
+        Prompts are read on the ``service`` resource, where the model is asked
+        and its places are looked up, with the ``chiltepin[mpas,llm]`` extras.
+        The Natural Earth countries and states or provinces are downloaded to
+        ``work_dir/geo/natural_earth`` there, and a check confirms that the
+        extras import and the boundaries are complete. It counts as installed
+        once that check has passed. Called automatically when a prompt is read,
+        but can be called earlier to have it ready.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` resource is not defined, or the download or
+            check fails. The message names the log file.
+        """
+        async with self._install_lock:
+            if not self._prompting_usable():
+                self.prompting_built = False
+                self._require_resources("Installing prompting", "service")
+                await self._run_install(
+                    "Prompting",
+                    "prompt",
+                    self._download_boundaries,
+                    self._check_prompting,
+                    stages=("download", "check"),
+                    executors=("service", "service"),
+                )
+                if not self._prompting_usable():
+                    raise RuntimeError(
+                        "Prompting check finished but the install in "
+                        f"{self._geo_prefix} is not usable, see "
+                        f"{self.log_dir}/prompt_check.stderr"
+                    )
+            self.prompting_built = True
+
+    @staticmethod
+    def _validate_prompt(
+        prompt: Any, model: Any, buffer_km: Any, reasoning_effort: Any = None
+    ) -> float:
+        """Check a prompt action's arguments, and return the margin in km.
+
+        Raises
+        ------
+        ValueError
+            If the prompt is not a non-empty string of at most 10000
+            characters, the model is not a non-empty string without spaces,
+            ``buffer_km`` is not a number from 0 to 5000, or
+            ``reasoning_effort`` is not None or a short lower-case word.
+        """
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must be a non-empty string")
+        if len(prompt) > _MAX_PROMPT_CHARS:
+            raise ValueError(
+                f"prompt must be at most {_MAX_PROMPT_CHARS} characters long"
+            )
+        if (
+            not isinstance(model, str)
+            or not model
+            or any(char.isspace() or not char.isprintable() for char in model)
+        ):
+            raise ValueError(
+                "model must be a litellm model string, such as "
+                "'bedrock/us.anthropic.claude-sonnet-5-5'"
+            )
+        if isinstance(buffer_km, bool) or not isinstance(buffer_km, (int, float)):
+            raise ValueError(f"buffer_km must be a number, got {buffer_km!r}")
+        if not math.isfinite(buffer_km) or not 0 <= buffer_km <= _MAX_BUFFER_KM:
+            raise ValueError(f"buffer_km must be from 0 to {_MAX_BUFFER_KM:g}")
+        if reasoning_effort is not None and (
+            not isinstance(reasoning_effort, str)
+            or not _REASONING_EFFORT_RE.fullmatch(reasoning_effort)
+        ):
+            raise ValueError(
+                "reasoning_effort must be None or a word such as 'none' or 'low'"
+            )
+        return float(buffer_km)
+
+    @agent_action
+    async def mesh_config_from_prompt(
+        self,
+        prompt: str,
+        model: str,
+        buffer_km: float = _DEFAULT_BUFFER_KM,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return the mesh request a prompt describes, without making the mesh.
+
+        An LLM reads the prompt on the ``service`` resource, and answers with
+        a resolution, a name, and the places the mesh covers, and optionally
+        a shape, a method and a channel's latitudes. The places are looked up,
+        and the region is fitted to the shape, so the request is in the form
+        ``generate_mesh()`` takes, without ``plot`` or rank counts.
+
+        Parameters
+        ----------
+        prompt : str
+            What mesh to make, such as "a 15 km mesh over Texas".
+        model : str
+            The litellm model string, such as
+            ``"bedrock/us.anthropic.claude-sonnet-5-5"``. The model's
+            credentials must be in the environment of the ``service`` resource.
+        buffer_km : float, optional
+            Margin around the region, by default 50. It is at least a tenth of
+            the region's diameter.
+        reasoning_effort : str, optional
+            How much the model reasons before answering, passed to litellm,
+            such as ``"none"`` to turn reasoning off for Ollama's Qwen and
+            Gemma models, or ``"low"`` for GPT-OSS. Reasoning is slow without
+            a GPU. By default the model's own setting is used.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or the prompt asks for a mesh that
+            cannot be made, such as a place that is not found.
+        RuntimeError
+            If prompting cannot be installed, the ``service`` resource is not
+            defined, or the model cannot be reached or gives no valid answer.
+        """
+        margin = self._validate_prompt(prompt, model, buffer_km, reasoning_effort)
+        await self.install_prompting()
+        self._require_resources("Reading a prompt", "service")
+        future = self._read_prompt(
+            prompt, model, margin, reasoning_effort, executor=["service"]
+        )
+        try:
+            result = await asyncio.wrap_future(future)
+        except Exception as e:
+            raise RuntimeError(f"Reading the prompt failed: {e}") from None
+        if "error" in result:
+            raise ValueError(
+                f"The prompt cannot be made into a mesh: {result['error']}"
+            )
+        mesh_config = result["mesh_config"]
+        # A request with a prompt would have generate_mesh read one again
+        if isinstance(mesh_config, dict) and "prompt" in mesh_config:
+            raise RuntimeError(
+                "Reading the prompt failed: it gave a request with a prompt, not "
+                "a full request"
+            )
+        self._validate_mesh_config(mesh_config)
+        return mesh_config
+
     @agent_action
     async def ensure_tools_installed(self, mesh_config: Dict[str, Any]) -> None:
         """Install the tools a mesh request needs.
@@ -1674,6 +2117,11 @@ class _MeshBehavior:
         mesh, so a failed install does not waste a download, except that it
         installs plotting only when it plots, so a failed plotting install
         cannot fail the request.
+
+        For a request with a ``prompt``, prompting is installed, and Metis and
+        plotting if the request asks for them. The program that makes the
+        prompt's regional mesh, if it is one, is known only once the prompt is
+        read, so ``generate_mesh()`` installs it.
 
         Parameters
         ----------
@@ -1695,6 +2143,8 @@ class _MeshBehavior:
         when it plots, so that a plotting install that fails cannot fail the
         request.
         """
+        if "prompt" in mesh_config:
+            await self.install_prompting()
         if self._partition_ranks(mesh_config):
             await self.install_metis()
         regional = mesh_config.get("regional") or {}
@@ -1962,6 +2412,27 @@ class _MeshBehavior:
             "graph": str(request_mesh_data_dir / f"x1.{cells}.graph.info"),
         }
 
+    async def _generate_mesh_from_prompt(
+        self, mesh_config: Dict[str, Any], mesh_data_dir: str
+    ) -> Dict[str, Any]:
+        """Make the mesh a validated request with a prompt describes.
+
+        The prompt is read into a request, the request's own keys are added to
+        it, and the mesh is made from that, which is returned with the result
+        as ``mesh_config``.
+        """
+        made_config = await self.mesh_config_from_prompt(
+            mesh_config["prompt"],
+            mesh_config["model"],
+            mesh_config.get("buffer_km", _DEFAULT_BUFFER_KM),
+            mesh_config.get("reasoning_effort"),
+        )
+        for key in ("name", "init_ranks", "forecast_ranks", "plot"):
+            if key in mesh_config:
+                made_config[key] = mesh_config[key]
+        result = await self.generate_mesh(dict(made_config), mesh_data_dir)
+        return {**result, "mesh_config": made_config}
+
     @agent_action
     async def generate_mesh(
         self,
@@ -2000,6 +2471,15 @@ class _MeshBehavior:
             ``inside_lon``) or ``channel`` (``upper_lat``, ``lower_lat``).
             An optional ``plot`` of True draws an image of the mesh, as
             ``plot_mesh()`` does with its defaults.
+
+            Or a ``prompt`` describing the mesh, such as ``"a 15 km mesh over
+            Texas"``, with the ``model`` that reads it, as for
+            ``mesh_config_from_prompt()``. The prompt gives the resolution,
+            the region and the name, so ``resolution`` and ``regional`` are
+            not allowed. A ``name`` replaces the prompt's, and ``init_ranks``,
+            ``forecast_ranks`` and ``plot`` are as above. Optional
+            ``buffer_km`` and ``reasoning_effort`` are as for
+            ``mesh_config_from_prompt()``.
         mesh_data_dir : str
             Directory where this request's mesh files are written
 
@@ -2015,6 +2495,8 @@ class _MeshBehavior:
             - plot_error: why the plot failed, or that it was drawn without
               some map layers, present only then. A plot that fails does not
               fail the request.
+            - mesh_config: for a request with a prompt, the request it was
+              made into, which makes the same mesh again without the prompt
 
         Raises
         ------
@@ -2024,13 +2506,18 @@ class _MeshBehavior:
             If ``mesh_config`` is not a dict, or the name, resolution, a rank
             count or the ``regional`` block is invalid. A name must not be that
             of a downloaded global mesh file such as ``x1.2562.graph.info``.
+            For a request with a prompt, also as ``mesh_config_from_prompt()``
+            raises.
         RuntimeError
             If a resource the request needs is not defined (``service`` for a
             global or ``create_region`` mesh, ``compute`` for a regional mesh or
             partitioning), or a download, tool install, program run or partition
-            fails.
+            fails, or for a request with a prompt, as
+            ``mesh_config_from_prompt()`` raises.
         """
         self._validate_mesh_config(mesh_config)
+        if "prompt" in mesh_config:
+            return await self._generate_mesh_from_prompt(mesh_config, mesh_data_dir)
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
@@ -2111,4 +2598,8 @@ class MeshAgent(_MeshBehavior):
     limited_area_version : str, optional
         MPAS-Limited-Area version to install for ``create_region`` meshes, by
         default "2.2"
+    nominatim_contact : str, optional
+        Email address sent to OpenStreetMap's Nominatim service when a prompt
+        names a place Natural Earth lacks, such as a city. Without it, such
+        places are not looked up.
     """

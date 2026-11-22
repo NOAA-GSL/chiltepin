@@ -173,8 +173,15 @@ def layer_url(layer: Tuple[str, str, str]) -> str:
     return NATURAL_EARTH_URL.format(resolution=resolution, category=category, name=name)
 
 
-def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) -> None:
-    """Download the map layers to where cartopy finds them in ``map_data``.
+def download_map_data(
+    map_data: Path,
+    attempts: int = 3,
+    timeout: float = 60,
+    layers: Sequence[Tuple[str, str, str]] = MAP_LAYERS,
+) -> None:
+    """Download Natural Earth layers to where cartopy finds them in ``map_data``.
+
+    ``layers`` are the plots' map layers unless given.
 
     Each layer's shapefile parts are extracted from its zip file, and the
     ``.shp`` file is written last, so a plot never reads a layer whose other
@@ -197,7 +204,7 @@ def download_map_data(map_data: Path, attempts: int = 3, timeout: float = 60) ->
     import urllib.error
     import urllib.request
 
-    for layer in MAP_LAYERS:
+    for layer in layers:
         url = layer_url(layer)
         target = layer_path(map_data, layer)
         if layer_complete(target):

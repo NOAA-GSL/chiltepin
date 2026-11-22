@@ -59,16 +59,31 @@ test = [
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=7.0.0",
     "ruff==0.15.4",
-    # The MPAS mesh agent's tests run its plotting script
+    # The MPAS mesh agent's tests run its plotting script, and its prompt
+    # parsing with the model's answers stood in
     "chiltepin[mpas]",
+    "chiltepin[llm]",
 ]
-# Packages the MPAS mesh agent's tasks use to read, cut and plot meshes. Install
-# them where its tasks run on the compute resource.
+# Packages for asking LLMs for structured answers, in any chiltepin agent. The
+# model's provider reads its own credentials from the environment, so install
+# them where the calls run, such as the MPAS mesh agent's service resource.
+llm = [
+    "instructor>=1.17",
+    "litellm>=1.110",
+    "pydantic>=2.5",
+    # litellm calls Bedrock models with it
+    "boto3>=1.40",
+]
+# Packages the MPAS mesh agent's tasks use to read, cut and plot meshes, and to
+# look up regions by name. Install them where its tasks run on the compute
+# resource, and on the service resource to make meshes from prompts.
 mpas = [
     "numpy>=1.24",
     "netCDF4>=1.6",
     "matplotlib>=3.8",
     "cartopy>=0.24",
+    "shapely>=2.0",
+    "pyshp>=2.3",
 ]
 docs = [
     "sphinx==7.1.2",

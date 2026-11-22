@@ -48,7 +48,9 @@ def launch_mesh_agent(config_file, mesh_test_directory):
     ``compute`` resources. Each launch has its own run directories, named after
     its ``tag``, and all launches in a module share ``work`` in
     ``mesh_test_directory``, so a later one finds what an earlier one installed.
-    Extra keyword arguments are passed to the agent, such as tool versions.
+    ``service_environment`` adds commands to the ``service`` resource's
+    environment, such as reading a model's credentials. Extra keyword arguments
+    are passed to the agent, such as tool versions.
     """
     import chiltepin.configure
     from chiltepin import AgentRuntime, Workflow
@@ -57,7 +59,7 @@ def launch_mesh_agent(config_file, mesh_test_directory):
     directory = mesh_test_directory
 
     @asynccontextmanager
-    async def launch(tag, **agent_kwargs):
+    async def launch(tag, service_environment=(), **agent_kwargs):
         platform = chiltepin.configure.parse_file(config_file)
         src = Path(__file__).parent.parent.resolve() / "src"
         agent_config = {}
@@ -66,6 +68,8 @@ def launch_mesh_agent(config_file, mesh_test_directory):
             resource["environment"] = list(resource.get("environment", [])) + [
                 f"export PYTHONPATH={src}${{PYTHONPATH:+:$PYTHONPATH}}"
             ]
+            if name == "service":
+                resource["environment"] += list(service_environment)
             agent_config[name] = resource
         controller_config = {"agent-executor": {"provider": "localhost"}}
         workflow = Workflow(

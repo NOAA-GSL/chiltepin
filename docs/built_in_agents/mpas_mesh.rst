@@ -5,7 +5,9 @@ MPAS Mesh Agent
 workflows. It downloads precomputed global MPAS meshes from UCAR, generates
 regional meshes with the MPAS-Tools ``project_hexes`` program or cuts them from
 a global mesh with the MPAS-Limited-Area ``create_region`` program, can
-partition mesh graphs for MPI with Metis, and can draw images of meshes.
+partition mesh graphs for MPI with Metis, and can draw images of meshes. It
+can also make a mesh from a prompt such as "a 15 km mesh over Texas", read by
+an LLM, as described in `Meshes from Prompts`_.
 
 For the API reference, see :doc:`../api/agents/mpas_mesh`.
 
@@ -42,6 +44,14 @@ Requirements
   Python 3.10 only for x86_64, so on an ARM machine with Python 3.10 the
   ``mpas`` extra tries to build cartopy, which needs the GEOS and PROJ
   libraries. Use Python 3.11 or newer there.
+* For meshes from prompts, the ``mpas`` and ``llm`` extras on the ``service``
+  resource, where prompts are read, network access there to the model's
+  provider and to Natural Earth, and the model's credentials in its
+  environment, as described in `Meshes from Prompts`_:
+
+  .. code-block:: console
+
+     $ pip install "chiltepin[mpas,llm]"
 
 Launch Arguments
 ----------------
@@ -70,6 +80,13 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
    leading ``v``, such as ``2.2``. Defaults to ``2.2``. Anything else raises
    ``ValueError``.
 
+``kwargs={"nominatim_contact": "you@example.org"}``
+   Optional agent argument. The email address of whoever runs the agent, sent
+   to OpenStreetMap's Nominatim service with each request when a prompt names
+   a place Natural Earth lacks, such as a city or county, as Nominatim's usage
+   policy asks. Without it, such places are not looked up and the prompt fails
+   naming them. Anything but an email address raises ``ValueError``.
+
 ``executor``
    Resource in the launching workflow on which to deploy the agent.
 
@@ -96,7 +113,7 @@ The agent workflow configuration must contain these resources:
 ``service``
    Runs agent tasks that require internet access, such as downloading meshes,
    Metis, MPAS-Tools, MPAS-Limited-Area, and the map
-   layers plots draw. It must
+   layers plots draw, and reading prompts with an LLM. It must
    have write access to the mesh output directory and to
    ``work_dir``. The agent and this resource must share these directories at
    the same absolute paths.
@@ -167,7 +184,9 @@ Actions
      must not contain control characters such as a newline, and must not be
      that of a downloaded global mesh file, such as ``x1.2562.graph.info``. Any other key
      raises ``ValueError``, so a misspelled key is not silently ignored.
-     ``plot`` is ``True`` or ``False``, by default ``False``.
+     ``plot`` is ``True`` or ``False``, by default ``False``. Or a
+     dictionary with a ``prompt``, which describes the mesh instead, as in
+     `Meshes from Prompts`_.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
 
    Without ``regional``, the request is for a global mesh, which is downloaded.
@@ -208,6 +227,21 @@ Actions
               }
           },
       }
+
+   The mesh holds the cells of the region and also 7 layers of cells around
+   it, which limited-area MPAS uses for its boundary, so it extends about 8
+   cells beyond ``extent_x_km`` and ``extent_y_km`` on each side.
+
+   ``project_hexes`` draws the rectangle on a Lambert conformal cone touching
+   the sphere at ``center_lat``. The cone's apex is at the pole, and cells at or
+   past it are misplaced, so a mesh, with its boundary layers, must not reach
+   the pole: ``extent_y_km / 2`` plus 8 cells must be less than ``6371.229 /
+   tan(|center_lat|)`` km. A request that reaches it raises ``ValueError``
+   giving the largest ``extent_y_km`` for its center and cell size. Use
+   ``create_region`` for a region around a pole. A center on the equator is
+   allowed: the cone then touches 0.0001 degrees north of it, since
+   ``project_hexes`` divides by the sine of the latitude it touches at. This
+   moves cells by at most about 40 m on a mesh 10000 km across.
 
    A region that covers only a few cells can make ``project_hexes`` crash or
    write no mesh. The request then raises ``RuntimeError`` naming the log file,
@@ -430,6 +464,19 @@ Actions
    naming the log is logged. Each plot writes its own logs, ``plot_mesh.<id>.*``
    in ``work_dir/logs``, and a failure raises ``RuntimeError`` naming both.
    ``FileNotFoundError`` is raised for a mesh file that does not exist.
+``install_prompting()``
+   Prepares reading prompts, unless it is already prepared. On the ``service``
+   resource, the Natural Earth countries and states or provinces are
+   downloaded to ``work_dir/geo/natural_earth``, and a check confirms that the
+   Python of the agent's tasks has the ``mpas`` and ``llm`` extras and that the
+   boundaries are complete, and only then writes the ``work_dir/geo/.installed``
+   marker. The logs are ``prompt_download.*`` and ``prompt_check.*`` in
+   ``work_dir/logs``. Installing needs the ``service`` resource, and raises
+   ``RuntimeError`` if it is not defined. This runs automatically when a prompt
+   is read, so calling it is optional.
+``mesh_config_from_prompt(prompt, model, buffer_km=50.0, reasoning_effort=None)``
+   Returns the mesh request a prompt describes, in the form ``generate_mesh``
+   takes, without making the mesh. See `Meshes from Prompts`_.
 ``partition_mesh(mesh_path, num_ranks)``
    Partitions a graph file with Metis, installing Metis first if needed.
    ``mesh_path`` must be a non-empty string. A relative path or one starting
@@ -449,7 +496,10 @@ Actions
    raised here, though ``generate_mesh`` would only report it in
    ``"plot_error"``. It checks the
    configuration first, exactly as ``generate_mesh`` does, and raises
-   ``ValueError`` if it is invalid.
+   ``ValueError`` if it is invalid. For a request with a ``prompt``, it
+   prepares prompting, and Metis and plotting if the request asks for them.
+   The tool for the prompt's regional mesh is known only once the prompt is
+   read, so ``generate_mesh`` installs it.
 
 The download and generate actions return absolute paths and reuse mesh files
 already downloaded to ``mesh_data_dir``.
@@ -467,6 +517,146 @@ Supported global resolutions, for meshes without ``regional`` and for
 ``48km``, ``30km``, ``24km``, ``15km``, ``12km``, ``10km``, ``7.5km``, ``5km``,
 ``4km``, ``3.75km``, and ``3km``.
 
+
+Meshes from Prompts
+-------------------
+
+``generate_mesh`` makes the mesh a prompt describes, such as "a 3 km CONUS
+mesh" or "a 60 km limited area ellipse over Europe without Russia", when its
+``mesh_config`` has a ``prompt`` and the ``model`` that reads it:
+
+.. code-block:: python
+
+   result = await mesh.generate_mesh(
+       {
+           "prompt": "A 15 km mesh of Japan",
+           "model": "bedrock/us.anthropic.claude-sonnet-5-5",
+           "init_ranks": 4,
+           "forecast_ranks": 36,
+           "plot": True,
+       },
+       mesh_data_dir,
+   )
+   result["mesh_config"]  # The request the prompt became
+
+The prompt gives the resolution, the region and the name, so ``resolution``
+and ``regional`` are refused with a prompt. A ``name`` replaces the name the
+model gives, ``init_ranks``, ``forecast_ranks`` and ``plot`` are as for any
+request, and ``buffer_km`` and ``reasoning_effort`` are as for
+``mesh_config_from_prompt``. Any other key raises ``ValueError``. The result
+is what ``generate_mesh`` returns for the request the prompt became, with that
+request as ``"mesh_config"``, which makes the same mesh again without the
+prompt. ``mesh_config_from_prompt`` only reads a prompt, and returns that
+request without making the mesh.
+
+A prompt is read with an LLM on the ``service`` resource:
+
+1. The model answers in fixed fields: the resolution, a name, the places the
+   mesh covers and those it leaves out, and, if the prompt names them, a shape
+   and a method, and a channel's latitudes. The model never writes a mesh
+   request, so its answer can only name places and choices, which are checked.
+   Answers written in different ways, such as ``"15 km"`` or ``"limited area"``,
+   are normalized, and an answer that cannot be is sent back to the model with
+   the reason, up to three times.
+2. The method follows from the answer. A prompt naming no places asks for a
+   global mesh, which is downloaded, so its resolution must be one of the
+   supported global resolutions. A circle, ellipse, polygon or channel is cut
+   from a global mesh with ``create_region``, so it needs a global resolution
+   too. A rectangle, or a region of no shape, is made with ``project_hexes`` at
+   any resolution, unless ``create_region`` is chosen, which then cuts a
+   polygon around the region. The model may choose a method or shape the
+   prompt does not name. If that choice cannot be made, such as a cut at a
+   resolution that cannot be downloaded, or a shape the region does not fit
+   or that is too small for its cells, the mesh is made the first other way
+   that works: a ``project_hexes`` rectangle, or a ``create_region`` polygon,
+   circle, ellipse or rectangle. What the prompt names stays as it is,
+   except that a polygon it names can be made as a rectangle, which is one,
+   so "a 7 km polygon" is a ``project_hexes`` rectangle. A prompt names a method or shape by its words, such as "limited area",
+   "circles" or "polygonal", but not by the names of its places, so "Round
+   Rock" names no circle.
+3. The places are looked up in Natural Earth's detailed countries,
+   continents, and states or provinces. A continent stands for its countries,
+   and "Europe" leaves Russia out unless Russia is named too. Natural Earth
+   puts all of Russia in Europe, so "Asia" leaves it out as well, and a
+   prompt names it for its Asian part. "Contiguous United States", "CONUS"
+   and "Lower 48" stand for the United States without Alaska and Hawaii. A
+   country can leave out states, and a country named with some of its own
+   states only says which states they are. A name used for states in
+   several countries, such as "Florida", or for a country and a state, such
+   as "Georgia", stands for the one in the country the prompt's other places
+   are in, as "Florida" next to "Uruguay" does for Uruguay's department.
+   Otherwise a US state's name means the US state, so "Florida" and "Georgia"
+   alone are the US states. A prompt names the others with their country, as
+   "Florida, Uruguay" or "Punjab, India", or as a country, as "Georgia
+   (country)" or "the country of Georgia". If the places cannot be found,
+   the model is told why and asked once more. A place
+   Natural Earth lacks is looked up with Nominatim, only if
+   ``nominatim_contact`` is given. Answers are kept in
+   ``work_dir/geo/nominatim``, so each place is asked for once, and requests
+   from every process sharing that directory are at least a second apart,
+   where its filesystem supports locks. Parts of a place more than 1000 km
+   from the rest of it, as Hawaii is, are left out, while a chain of islands,
+   as the Ryukyus are, stays.
+4. The region is fitted to the shape in the frame its tool draws it in, with a
+   margin of ``buffer_km`` and at least a tenth of the region's diameter, so
+   the shape holds the whole region. The boundary layers both tools add are
+   outside the shape. A shape must reach at least two cells from its center,
+   since the tools cannot make a mesh of one about a cell across, so a small
+   region needs small cells.
+
+A prompt that asks for a mesh that cannot be made raises ``ValueError`` saying
+why, such as a place that is not found, a circle it names at a resolution that
+cannot be downloaded, a rectangle it names made with ``project_hexes`` around
+a pole, a global mesh or channel that leaves out places, or a region too small
+for its cells as every shape it could be made as. When several ways were
+tried, the message gives each one's reason. It names other ways only if they
+could work, with what they need: a resolution that can be downloaded, or a
+prompt asking for them. A model that cannot be reached,
+or gives no valid answer, raises ``RuntimeError``. A request made from a
+prompt is then checked as any other is.
+
+``model`` is a litellm model string, such as
+``"bedrock/us.anthropic.claude-sonnet-5-5"`` for Amazon Bedrock or
+``"ollama_chat/qwen3:8b"`` for Ollama. Models that cannot be made to answer
+in the fields, as some Bedrock models cannot, are asked to instead.
+``reasoning_effort``, passed to litellm, sets how much the model reasons before
+answering: ``"none"`` turns reasoning off for Ollama's Qwen 3 and Gemma 4
+models, and ``"low"`` keeps it short for GPT-OSS. Without a GPU, reasoning can
+take minutes, while ``qwen3:8b`` with reasoning off answers in under a minute
+on 8 CPUs.
+
+Credentials
+~~~~~~~~~~~
+
+The model's provider reads its credentials from the environment of the
+``service`` resource, such as ``AWS_BEARER_TOKEN_BEDROCK`` and
+``AWS_REGION_NAME`` for a Bedrock API key, ``OPENAI_API_KEY``, or
+``OLLAMA_API_BASE``. They are never arguments of an action, which would send
+them with the request, and are removed from error messages.
+
+Do not write a credential into a resource's ``environment`` setting, which
+Parsl writes into the scripts it runs, in the workflow's run directory. Keep it
+in a file only you can read on the ``service`` resource's system, and have the
+setting read it:
+
+.. code-block:: console
+
+   $ mkdir -p ~/.config/chiltepin && chmod 700 ~/.config/chiltepin
+   $ cat > ~/.config/chiltepin/bedrock.env
+   export AWS_BEARER_TOKEN_BEDROCK="..."
+   export AWS_REGION_NAME="us-east-1"
+   $ chmod 600 ~/.config/chiltepin/bedrock.env
+
+.. code-block:: python
+
+   "service": {
+       "provider": "localhost",
+       "environment": ["source ~/.config/chiltepin/bedrock.env"],
+   },
+
+Credentials that the provider reads from files, such as AWS access keys in
+``~/.aws/credentials``, need no setting. Prefer short-lived credentials, with
+only the permissions the model needs.
 
 Deployment Example
 ------------------
