@@ -583,7 +583,9 @@ why, such as a place that is not found, a circle it names at a resolution that
 cannot be downloaded, a rectangle it names made with ``project_hexes`` around
 a pole, a global mesh or channel that leaves out places, or a region too small
 for its cells as every shape it could be made as. When several ways were
-tried, the message gives each one's reason. A model that cannot be reached,
+tried, the message gives each one's reason. It names other ways only if they
+could work, with what they need: a resolution that can be downloaded, or a
+prompt asking for them. A model that cannot be reached,
 or gives no valid answer, raises ``RuntimeError``. A request made from a
 prompt is then checked as any other is.
 

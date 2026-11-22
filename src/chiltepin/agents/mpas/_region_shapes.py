@@ -22,7 +22,7 @@ shapely, which the ``chiltepin[mpas]`` extra installs.
 """
 
 import math
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Sequence, Tuple
 
 EARTH_RADIUS_KM = 6371.229
 
@@ -80,7 +80,28 @@ SHAPES = ("circle", "ellipse", "polygon", "rectangle")
 
 
 class RegionTooLarge(ValueError):
-    """The region does not fit the shape asked for."""
+    """The region does not fit the shape asked for.
+
+    ``reason`` says why, and ``suggest`` holds the ways the region could be
+    made instead, as ``(method, shape)``, where a shape of None is any of the
+    method's. The message is the reason and that advice.
+    """
+
+    def __init__(self, reason: str, suggest: Sequence[Tuple[str, Any]] = ()):
+        self.reason, self.suggest = reason, tuple(suggest)
+        use = f" Use {ways_named(self.suggest)}." if self.suggest else ""
+        super().__init__(reason + use)
+
+
+def ways_named(ways: Sequence[Tuple[str, Any]]) -> str:
+    """Return ways to make a region in words, as "a circle or an ellipse".
+
+    A way of no shape is named by its method, as "create_region".
+    """
+    return " or ".join(
+        (f"an {shape}" if shape[0] in "aeiou" else f"a {shape}") if shape else method
+        for method, shape in ways
+    )
 
 
 class RegionTooSmall(ValueError):
@@ -418,8 +439,8 @@ def _flat_center(points, what: str):
     if reach > MAX_FLAT_RADIUS_DEGREES:
         raise RegionTooLarge(
             f"The region reaches {reach:.0f} degrees from its center, and a {what} "
-            f"can reach at most {MAX_FLAT_RADIUS_DEGREES:.0f}. Use a circle or an "
-            "ellipse."
+            f"can reach at most {MAX_FLAT_RADIUS_DEGREES:.0f}.",
+            [("create_region", "circle"), ("create_region", "ellipse")],
         )
     return center
 
@@ -603,7 +624,8 @@ def fit_project_hexes(
         raise RegionTooLarge(
             f"The region reaches around or past the pole on project_hexes' cone at "
             f"{lat:.1f} degrees, where a mesh can reach less than {apex:.0f} km "
-            "north or south of its center. Use create_region."
+            "north or south of its center.",
+            [("create_region", None)],
         )
     block = {
         **written,

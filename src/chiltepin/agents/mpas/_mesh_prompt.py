@@ -650,16 +650,47 @@ def mesh_config(
             return config
         except (RegionTooLarge, RegionTooSmall) as e:
             errors.append(e)
-    if len(errors) == 1:
-        raise errors[0]
-    # Each way's reason, as its advice can be to try one of the others, with
-    # the ways of one reason together
+    raise _no_fit(errors, choices, answer.resolution, downloadable)
+
+
+def _no_fit(errors, choices, resolution: str, downloadable: Sequence[str]):
+    """Return the error for a region that fits none of the ways it was tried.
+
+    It gives each way's reason, the ways of one reason together, and of the
+    ways the reasons suggest, those not tried, with what makes them: a
+    resolution that can be downloaded, or a prompt asking for them.
+    """
+    from chiltepin.agents.mpas._region_shapes import ways_named
+
     ways: Dict[str, List[str]] = {}
+    suggested: List[Tuple[str, Optional[str]]] = []
     for (method, shape), error in zip(choices, errors):
-        ways.setdefault(str(error), []).append(f"{method} {shape}")
-    reasons = " ".join(
-        f"As a {' or '.join(names)}: {reason}" for reason, names in ways.items()
-    )
-    raise type(errors[0])(
-        f"The region fits none of the ways it could be made. {reasons}"
-    )
+        reason = getattr(error, "reason", str(error))
+        ways.setdefault(reason, []).append(f"{method} {shape}")
+        for way in getattr(error, "suggest", ()):
+            if way not in suggested:
+                suggested.append(way)
+    if len(errors) == 1:
+        message = next(iter(ways))
+    else:
+        message = "The region fits none of the ways it could be made. " + " ".join(
+            f"As a {' or '.join(names)}: {reason}" for reason, names in ways.items()
+        )
+    untried = [
+        (method, shape)
+        for method, shape in suggested
+        if not any(
+            method == tried and shape in (None, tried_shape)
+            for tried, tried_shape in choices
+        )
+    ]
+    if untried and resolution in downloadable:
+        # The prompt asks for another way
+        message += f" Ask for {ways_named(untried)} instead."
+    elif untried:
+        shapes = ways_named([way for way in untried if way[1]]) or "the region"
+        message += (
+            f" create_region can cut {shapes} from a global mesh at "
+            f"{', '.join(downloadable)}, not {resolution}."
+        )
+    return type(errors[0])(message)

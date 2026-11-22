@@ -730,6 +730,57 @@ def test_mesh_config_when_no_shape_fits(monkeypatch, region_tools):
     assert str(error.value) == "No circle."
 
 
+CUT = [("create_region", "circle"), ("create_region", "ellipse")]
+
+
+@pytest.mark.parametrize(
+    ("text", "fields", "suggest", "advice"),
+    [
+        # Ways the resolution rules out are named with the resolutions they
+        # can be made at
+        (
+            "a 7 km polygon of Texas",
+            {"resolution": "7km", "shape": "polygon"},
+            CUT,
+            "Reason. create_region can cut a circle or an ellipse from a global "
+            "mesh at 480km, 120km, 60km, 15km, not 7km.",
+        ),
+        (
+            "a 7 km mesh of Texas",
+            {"resolution": "7km"},
+            [("create_region", None)],
+            "Reason. create_region can cut the region from a global mesh at "
+            "480km, 120km, 60km, 15km, not 7km.",
+        ),
+        # Ways the prompt rules out are to be asked for
+        (
+            "a hex projection mesh of Texas",
+            {"method": "project_hexes"},
+            [("create_region", None)],
+            "Reason. Ask for create_region instead.",
+        ),
+        # Ways tried already are not advised
+        ("a mesh of Texas", {"shape": "circle"}, CUT, None),
+    ],
+)
+def test_mesh_config_advises_only_ways_not_tried(
+    monkeypatch, region_tools, text, fields, suggest, advice
+):
+    from chiltepin.agents.mpas import _region_shapes
+
+    def fit(region, method, shape, resolution_km, buffer_km):
+        raise _region_shapes.RegionTooLarge("Reason.", suggest)
+
+    monkeypatch.setattr(_region_shapes, "regional_config", fit)
+    with pytest.raises(_region_shapes.RegionTooLarge) as error:
+        prompt.mesh_config(response(**fields), DOWNLOADABLE, "/data", 50, prompt=text)
+    if advice:
+        assert str(error.value) == advice
+    else:
+        assert "Ask for" not in str(error.value)
+        assert "Use " not in str(error.value)
+
+
 def test_mesh_config_falls_back_for_a_region_too_small(monkeypatch, region_tools):
     from chiltepin.agents.mpas import _region_shapes
 

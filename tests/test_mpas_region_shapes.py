@@ -130,6 +130,18 @@ def inside_rectangle(block, points):
     )
 
 
+def test_region_too_large_advises_its_ways():
+    error = shapes.RegionTooLarge("Too far.", [("create_region", "ellipse")])
+    assert (error.reason, error.suggest) == (
+        "Too far.",
+        (("create_region", "ellipse"),),
+    )
+    assert str(error) == "Too far. Use an ellipse."
+    assert str(shapes.RegionTooLarge("Too far.")) == "Too far."
+    ways = [("create_region", "circle"), ("create_region", None)]
+    assert shapes.ways_named(ways) == "a circle or create_region"
+
+
 def test_module_imports_only_the_standard_library():
     code = (
         "import sys\n"
