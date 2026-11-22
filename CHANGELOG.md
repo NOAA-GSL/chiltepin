@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the endpoint online, within its timeout. `endpoint.stop()` raises `RuntimeError` if the
   endpoint's configuration cannot be loaded or it fails to stop
 - **AgentRuntime**: Gets executor names from the Workflow's DataFlowKernel
+- **Reserved Agent Arguments**: `@chiltepin_agent` raises `TypeError` for a behavior whose
+  `__init__` has an `agent_workflow_config`, `agent_workflow_include` or
+  `agent_workflow_run_dir` argument. The agent keeps those for itself, so the behavior's
+  argument silently never got its value
 - **Dependency Updates**: `academy-py>=1.0.0`, and `globus-compute-sdk` and
   `globus-compute-endpoint` 4.14.0 or later, which fixes a psutil bug
 - **Test Containers**: CI installs Python in the test cluster with uv instead of the

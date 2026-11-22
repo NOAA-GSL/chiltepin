@@ -1813,7 +1813,7 @@ def test_agents_keep_their_behavior_arguments(agent, arguments):
 
 
 def test_agent_signatures_of_other_behaviors():
-    """Behaviors without an __init__, inheriting one, or clashing with launch()."""
+    """Behaviors without an __init__, or inheriting one."""
     import inspect
 
     class Base:
@@ -1828,11 +1828,6 @@ def test_agent_signatures_of_other_behaviors():
     class NoInit:
         pass
 
-    @chiltepin_agent()
-    class Clash:
-        def __init__(self, agent_workflow_include, y):
-            pass
-
     own = "agent_workflow_config"
     # An inherited __init__'s arguments, in their kinds
     assert str(inspect.signature(Inherits)).startswith(
@@ -1840,11 +1835,30 @@ def test_agent_signatures_of_other_behaviors():
     )
     # object() takes no arguments
     assert str(inspect.signature(NoInit)).startswith(f"(*, {own}")
-    # A behavior argument launch() would take never gets a value by keyword, so
-    # the agent shows its own (*args, **kwargs) rather than a false signature
-    parameters = inspect.signature(Clash).parameters
-    assert [p.kind for p in parameters.values()][0] is inspect.Parameter.VAR_POSITIONAL
-    assert "y" not in parameters
+
+
+class RequiredClash:
+    def __init__(self, agent_workflow_include, y):
+        pass
+
+
+class DefaultedClash:
+    def __init__(self, *, agent_workflow_run_dir=None):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("behavior", "name"),
+    [
+        (RequiredClash, "agent_workflow_include"),
+        # A default would otherwise hide that the value never arrives
+        (DefaultedClash, "agent_workflow_run_dir"),
+    ],
+)
+def test_behavior_arguments_named_like_launch_arguments_are_refused(behavior, name):
+    """The agent keeps launch()'s arguments, which the behavior would never get."""
+    with pytest.raises(TypeError, match=f"'{name}'.*Rename the argument"):
+        chiltepin_agent()(behavior)
 
 
 def test_init_signature_without_one():

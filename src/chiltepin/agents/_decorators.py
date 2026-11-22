@@ -52,6 +52,14 @@ else:
     AgentT = TypeVar("AgentT")
 
 
+# Arguments manager.launch() gives an agent, which it keeps for itself
+_LAUNCH_ARGUMENTS = (
+    "agent_workflow_config",
+    "agent_workflow_include",
+    "agent_workflow_run_dir",
+)
+
+
 def _signature_of(func: Callable) -> Optional[inspect.Signature]:
     """Return the signature of a behavior's method, or None if it has none.
 
@@ -72,9 +80,8 @@ def _init_signature(
     The agent takes the behavior's arguments and passes them on, with the
     keyword-only ``agent_workflow_*`` arguments of its own, which
     ``manager.launch()`` gives it. A behavior without an ``__init__`` takes
-    no arguments. A behavior argument named like one of the agent's own never
-    gets a value by keyword, which the agent takes, so no signature can show
-    such an agent truthfully, and it has none.
+    no arguments. The decorator refuses a behavior with an argument named like
+    one of the agent's own.
     """
     behavior = _signature_of(behavior_init)
     wrapper = _signature_of(wrapper_init)
@@ -89,8 +96,6 @@ def _init_signature(
     if behavior_init is object.__init__:
         # Only self, since object() takes no other arguments
         parameters = parameters[:1]
-    if any(parameter.name in behavior.parameters for parameter in own):
-        return None
     # Keyword-only arguments come before any **kwargs
     at = len(parameters)
     if parameters and parameters[-1].kind is inspect.Parameter.VAR_KEYWORD:
@@ -436,6 +441,22 @@ def chiltepin_agent(
                     f"       async def custom_method(self): ...\n\n"
                     f"See the 'Agent Inheritance' section in the documentation for details."
                 )
+
+        # The agent keeps manager.launch()'s arguments for itself, so a behavior
+        # argument of the same name would silently never get its value
+        behavior_signature = _signature_of(behavior_class.__init__)
+        reserved = [
+            name
+            for name in _LAUNCH_ARGUMENTS
+            if behavior_signature is not None and name in behavior_signature.parameters
+        ]
+        if reserved:
+            raise TypeError(
+                f"Cannot apply @chiltepin_agent to '{behavior_class.__name__}': its "
+                f"__init__ has {', '.join(repr(name) for name in reserved)}, which "
+                f"manager.launch() gives the agent itself, so the behavior would "
+                f"never get its value. Rename the argument."
+            )
 
         # Create a wrapper Agent class dynamically
         class ChiltepinAgentWrapper(Agent):

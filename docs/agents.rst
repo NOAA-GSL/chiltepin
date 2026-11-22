@@ -81,6 +81,16 @@ included with Chiltepin, see :doc:`built_in_agents/index`.
           agent_workflow_run_dir="/scratch/agent2_runinfo"  # Different path
       )
 
+.. note::
+
+   **Reserved Arguments:**
+
+   ``manager.launch()`` gives an agent ``agent_workflow_config``,
+   ``agent_workflow_include`` and ``agent_workflow_run_dir``, which the agent keeps
+   for itself. A behavior's ``__init__`` must not have arguments of these names,
+   which would never get their values, and ``@chiltepin_agent`` raises ``TypeError``
+   for one that does.
+
 Overview
 --------
 
