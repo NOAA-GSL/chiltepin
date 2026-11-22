@@ -423,22 +423,54 @@ FALLBACKS = (
 MADE_AS = {"polygon": ("polygon", "rectangle")}
 
 
+# Letters with no decomposition into a plain letter and an accent
+_PLAIN_LETTERS = str.maketrans(
+    {"đ": "d", "Đ": "D", "ł": "l", "Ł": "L", "ø": "o", "Ø": "O", "ı": "i"}
+)
+
+
+def _plain(text: str) -> str:
+    """Return text without accents, "_" and "-" as spaces, in its own case."""
+    decomposed = unicodedata.normalize("NFKD", text.translate(_PLAIN_LETTERS))
+    text = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return " ".join(text.replace("_", " ").replace("-", " ").split())
+
+
 def _words(text: str) -> str:
-    """Return text as names are compared: lower case, "_" and "-" as spaces."""
-    return " ".join(text.casefold().replace("_", " ").replace("-", " ").split())
+    """Return text as names are compared: plain and lower case."""
+    return _plain(text).casefold()
+
+
+def _without_places(text: str, places: Sequence[str]) -> str:
+    """Return plain text without the names of places, or of their parts.
+
+    A place's parts are what its commas separate, so "Round Rock, TX" takes
+    "Round Rock" out of the text too. A name is taken out where the text has
+    it in the same case, if the prompt has it so anywhere, so "Hull" leaves
+    "convex hull".
+    """
+    text = original = _plain(text)
+    names = set()
+    for place in places:
+        place = _plain(place)
+        names.add(place.strip(" .,;:"))
+        names.update(part.strip(" .,;:") for part in place.split(","))
+    for name in sorted(filter(None, names), key=len, reverse=True):
+        pattern = rf"(?<!\w){re.escape(name)}(?!\w)"
+        if not re.search(pattern, original):
+            pattern = rf"(?i){pattern}"
+        text = re.sub(pattern, " ", text)
+    return text
 
 
 def _named(prompt: str, table, places: Sequence[str] = ()) -> set:
     """Return the keys of ``table`` the prompt names by any of their names.
 
     A name counts as whole words, alone or plural, so "lam" counts in "a LAM
-    mesh" and "circles" in "two circles", but not "lam" in "Alabama". Words
+    mesh" and "circles" in "two circles", but not "lam" in "Alabama". Names
     of ``places`` do not count, so "Round Rock" names no circle.
     """
-    text = _words(prompt)
-    for place in sorted(map(_words, places), key=len, reverse=True):
-        if place:
-            text = re.sub(rf"\b{re.escape(place)}\b", " ", text)
+    text = _words(_without_places(prompt, places))
     return {
         key
         for key, names in table.items()
@@ -620,10 +652,13 @@ def mesh_config(
             errors.append(e)
     if len(errors) == 1:
         raise errors[0]
-    # Each way's reason, as its advice can be to try one of the others
+    # Each way's reason, as its advice can be to try one of the others, with
+    # the ways of one reason together
+    ways: Dict[str, List[str]] = {}
+    for (method, shape), error in zip(choices, errors):
+        ways.setdefault(str(error), []).append(f"{method} {shape}")
     reasons = " ".join(
-        f"As a {method} {shape}: {error}"
-        for (method, shape), error in zip(choices, errors)
+        f"As a {' or '.join(names)}: {reason}" for reason, names in ways.items()
     )
     raise type(errors[0])(
         f"The region fits none of the ways it could be made. {reasons}"
