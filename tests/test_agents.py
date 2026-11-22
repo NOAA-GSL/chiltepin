@@ -1812,6 +1812,41 @@ def test_agents_keep_their_behavior_arguments(agent, arguments):
         assert list(parameters)[-1] == "extra_kwargs"
 
 
+def test_agent_signatures_of_other_behaviors():
+    """Behaviors without an __init__, inheriting one, or clashing with launch()."""
+    import inspect
+
+    class Base:
+        def __init__(self, x: int, /, *rest, flag: bool = False):
+            pass
+
+    @chiltepin_agent()
+    class Inherits(Base):
+        pass
+
+    @chiltepin_agent()
+    class NoInit:
+        pass
+
+    @chiltepin_agent()
+    class Clash:
+        def __init__(self, agent_workflow_include, y):
+            pass
+
+    own = "agent_workflow_config"
+    # An inherited __init__'s arguments, in their kinds
+    assert str(inspect.signature(Inherits)).startswith(
+        f"(x: int, /, *rest, flag: bool = False, {own}"
+    )
+    # object() takes no arguments
+    assert str(inspect.signature(NoInit)).startswith(f"(*, {own}")
+    # A behavior argument launch() would take never gets a value by keyword, so
+    # the agent shows its own (*args, **kwargs) rather than a false signature
+    parameters = inspect.signature(Clash).parameters
+    assert [p.kind for p in parameters.values()][0] is inspect.Parameter.VAR_POSITIONAL
+    assert "y" not in parameters
+
+
 def test_init_signature_without_one():
     """An __init__ inspect cannot read leaves the agent's as it is."""
     from chiltepin.agents._decorators import _init_signature

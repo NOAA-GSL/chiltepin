@@ -71,7 +71,10 @@ def _init_signature(
 
     The agent takes the behavior's arguments and passes them on, with the
     keyword-only ``agent_workflow_*`` arguments of its own, which
-    ``manager.launch()`` gives it.
+    ``manager.launch()`` gives it. A behavior without an ``__init__`` takes
+    no arguments. A behavior argument named like one of the agent's own never
+    gets a value by keyword, which the agent takes, so no signature can show
+    such an agent truthfully, and it has none.
     """
     behavior = _signature_of(behavior_init)
     wrapper = _signature_of(wrapper_init)
@@ -81,9 +84,13 @@ def _init_signature(
         parameter
         for parameter in wrapper.parameters.values()
         if parameter.kind is inspect.Parameter.KEYWORD_ONLY
-        and parameter.name not in behavior.parameters
     ]
     parameters = list(behavior.parameters.values())
+    if behavior_init is object.__init__:
+        # Only self, since object() takes no other arguments
+        parameters = parameters[:1]
+    if any(parameter.name in behavior.parameters for parameter in own):
+        return None
     # Keyword-only arguments come before any **kwargs
     at = len(parameters)
     if parameters and parameters[-1].kind is inspect.Parameter.VAR_KEYWORD:
