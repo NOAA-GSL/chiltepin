@@ -1757,6 +1757,134 @@ def test_agent_loop_rejects_optional_params():
                 pass
 
 
+@pytest.mark.parametrize(
+    ("agent", "action", "signature"),
+    [
+        (PositionalArgsAgent, "multiply_numbers", "(self, x: int, y: int) -> int"),
+        (
+            PositionalArgsAgent,
+            "concat_strings",
+            "(self, s1: str, s2: str, sep: str = ' ') -> str",
+        ),
+        # A task's action keeps the task's own arguments
+        (
+            PositionalArgsAgent,
+            "add_numbers",
+            "(self, a: int, b: int, c: int = 0) -> int",
+        ),
+        (BashTaskAgent, "echo_message", "(self, message)"),
+    ],
+)
+def test_actions_keep_their_signatures(agent, action, signature):
+    """An action's wrapper shows the behavior method's arguments, as Sphinx does."""
+    import inspect
+
+    wrapper = getattr(agent, action)
+    assert str(inspect.signature(wrapper)) == signature
+
+
+@pytest.mark.parametrize(
+    ("agent", "arguments"),
+    [
+        (BasicTestAgent, "value: int, *, "),
+        # The agent's own keyword-only arguments come before **kwargs
+        (KwargsAgent, "name: str, value: int, *, "),
+    ],
+)
+def test_agents_keep_their_behavior_arguments(agent, arguments):
+    """An agent shows its behavior's arguments, and the ones launch() gives it."""
+    import inspect
+
+    signature = str(inspect.signature(agent))
+    assert signature.startswith(f"({arguments}agent_workflow_config")
+    # As Sphinx reads it, before Academy's Agent.__new__
+    assert str(agent.__signature__) == signature
+    assert str(inspect.signature(agent.__init__)).startswith(f"(self, {arguments}")
+    parameters = inspect.signature(agent).parameters
+    for name in (
+        "agent_workflow_config",
+        "agent_workflow_include",
+        "agent_workflow_run_dir",
+    ):
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters[name].default is None
+    if agent is KwargsAgent:
+        assert list(parameters)[-1] == "extra_kwargs"
+
+
+def test_agent_signatures_of_other_behaviors():
+    """Behaviors without an __init__, or inheriting one."""
+    import inspect
+
+    class Base:
+        def __init__(self, x: int, /, *rest, flag: bool = False):
+            pass
+
+    @chiltepin_agent()
+    class Inherits(Base):
+        pass
+
+    @chiltepin_agent()
+    class NoInit:
+        pass
+
+    own = "agent_workflow_config"
+    # An inherited __init__'s arguments, in their kinds
+    assert str(inspect.signature(Inherits)).startswith(
+        f"(x: int, /, *rest, flag: bool = False, {own}"
+    )
+    # object() takes no arguments
+    assert str(inspect.signature(NoInit)).startswith(f"(*, {own}")
+
+
+class RequiredClash:
+    def __init__(self, agent_workflow_include, y):
+        pass
+
+
+class DefaultedClash:
+    def __init__(self, *, agent_workflow_run_dir=None):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("behavior", "name"),
+    [
+        (RequiredClash, "agent_workflow_include"),
+        # A default would otherwise hide that the value never arrives
+        (DefaultedClash, "agent_workflow_run_dir"),
+    ],
+)
+def test_behavior_arguments_named_like_launch_arguments_are_refused(behavior, name):
+    """The agent keeps launch()'s arguments, which the behavior would never get."""
+    with pytest.raises(TypeError, match=f"'{name}'.*Rename the argument"):
+        chiltepin_agent()(behavior)
+
+
+def test_init_signature_without_one():
+    """An __init__ inspect cannot read leaves the agent's as it is."""
+    from chiltepin.agents._decorators import _init_signature
+
+    def unreadable(self):
+        pass
+
+    unreadable.__signature__ = "not a signature"
+    assert _init_signature(unreadable, lambda self, *, run=None: None) is None
+    assert _init_signature(lambda self: None, unreadable) is None
+
+
+def test_signature_of_a_method_without_one():
+    """A method inspect cannot read leaves its action's wrapper as it is."""
+    from chiltepin.agents._decorators import _signature_of
+
+    def method():
+        pass
+
+    method.__signature__ = "not a signature"
+    assert _signature_of(method) is None
+    assert str(_signature_of(lambda self, x=1: x)) == "(self, x=1)"
+
+
 def test_bash_task_decorator_compatibility():
     """Test that @agent_action works with @bash_task decorator.
 

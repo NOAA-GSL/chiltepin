@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the endpoint online, within its timeout. `endpoint.stop()` raises `RuntimeError` if the
   endpoint's configuration cannot be loaded or it fails to stop
 - **AgentRuntime**: Gets executor names from the Workflow's DataFlowKernel
+- **Reserved Agent Arguments**: `@chiltepin_agent` raises `TypeError` for a behavior whose
+  `__init__` has an `agent_workflow_config`, `agent_workflow_include` or
+  `agent_workflow_run_dir` argument. The agent keeps those for itself, so the behavior's
+  argument silently never got its value
 - **Dependency Updates**: `academy-py>=1.0.0`, and `globus-compute-sdk` and
   `globus-compute-endpoint` 4.14.0 or later, which fixes a psutil bug
 - **Test Containers**: CI installs Python in the test cluster with uv instead of the
@@ -64,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `client` argument. They use the shared login
 
 ### Fixed
+- **Agent Signatures**: `@chiltepin_agent` agents and their actions show their real
+  arguments to `inspect.signature()` and in the API reference, instead of
+  `(*args, **kwargs)`. An agent shows its behavior's arguments followed by the keyword-only
+  `agent_workflow_config`, `agent_workflow_include` and `agent_workflow_run_dir`
 - **Shutdown Warning**: Manager shutdown no longer warns that it canceled pending Parsl tasks.
   Parsl cannot cancel them, so shutdown waits for them
 - **Workflow Logger Test**: Fixed a bug in the workflow logger cleanup test
