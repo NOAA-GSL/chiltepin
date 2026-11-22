@@ -131,12 +131,65 @@ The test suite is organized into several files:
 * ``test_cli.py`` - Tests for command-line interface functionality
 * ``test_auth.py`` - Offline tests for shared Chiltepin authentication, CI, and service consumers
 * ``test_tasks.py`` - Tests for task decorators
+* ``test_init.py`` - Tests for the chiltepin package initialization
+* ``test_workflow.py`` - Tests for the ``Workflow`` context manager
+* ``test_agents.py`` - Tests for the agent decorators, runtime and manager
+* ``test_agents_package.py`` - Import and serialization compatibility for the agents package
 * ``test_endpoint.py`` - Tests for Globus Compute endpoint management (Linux only, except platform-check tests)
 * ``test_data.py`` - Tests for data handling utilities
 * ``test_parsl_hello.py`` - Basic Parsl integration tests
 * ``test_parsl_mpi.py`` - MPI-enabled Parsl integration tests
 * ``test_globus_compute_hello.py`` - Basic Globus Compute integration tests (Linux only)
 * ``test_globus_compute_mpi.py`` - MPI-enabled Globus Compute integration tests (Linux only)
+* ``test_mpas_*.py`` - Tests for the MPAS mesh agent, as described below
+
+MPAS Mesh Agent Tests
+---------------------
+
+Most of the MPAS mesh agent's tests run without ``--config``, with its programs
+and downloads stood in, and need the ``mpas`` and ``llm`` extras, which the
+``test`` extra includes. ``test_mpas_mesh.py`` also launches a local agent,
+which needs Globus authentication. ``test_mpas_geo_lookup.py`` downloads
+Natural Earth's countries and states, about 45 MB, and
+``test_mpas_plot_script.py`` the 480km global mesh from UCAR:
+
+* ``test_mpas_mesh.py`` - Request checks, installs and actions, and a local agent
+  launched through the agent runtime
+* ``test_mpas_plot_script.py`` - The plotting script
+* ``test_mpas_geo_lookup.py`` - Looking up places in Natural Earth and Nominatim
+* ``test_mpas_region_shapes.py`` - Fitting regions to the shapes the mesh tools make
+* ``test_mpas_mesh_prompt.py`` - Reading a mesh request from a prompt with an LLM
+* ``test_mpas_mesh_prompt_actions.py`` - The prompt actions
+
+The others make real meshes through a launched agent, and run only with
+``--config``. They download from UCAR, GitHub and Natural Earth, and build
+Metis and the MPAS-Tools programs, so the platform's ``compute`` resource needs
+the compilers and netCDF described in :doc:`built_in_agents/mpas_mesh`, as the
+Docker cluster has:
+
+* ``test_mpas_mesh_metis.py`` - Installing Metis and partitioning meshes
+* ``test_mpas_mesh_regional.py`` - ``project_hexes`` meshes
+* ``test_mpas_mesh_create_region.py`` - ``create_region`` meshes
+* ``test_mpas_mesh_plot.py`` - Plots of meshes
+* ``test_mpas_mesh_from_prompt.py`` - Meshes from prompts read by a real LLM
+
+``test_mpas_mesh_from_prompt.py`` also runs only when ``CHILTEPIN_TEST_LLM_ENV``
+names a file that the ``service`` resource sources before its tasks, holding
+what the model needs, such as credentials or a server's address.
+``CHILTEPIN_TEST_LLM_MODEL`` names the model, by default Claude Sonnet 5.5 on
+Bedrock, and ``CHILTEPIN_TEST_LLM_REASONING`` its reasoning effort, if any. CI
+uses a local Ollama model, which needs no credentials, started on the cluster's
+frontend with ``.github/scripts/start-ollama.sh``:
+
+.. code-block:: console
+
+   $ .github/scripts/start-ollama.sh ~/ollama qwen3:8b <version> <sha256>
+   $ CHILTEPIN_TEST_LLM_ENV=~/ollama/ollama.env \
+     CHILTEPIN_TEST_LLM_MODEL=ollama_chat/chiltepin-test \
+     CHILTEPIN_TEST_LLM_REASONING=none \
+     pytest --config=tests/configs/docker.yaml tests/test_mpas_mesh_from_prompt.py
+
+The Ollama version and its checksum are in ``.github/workflows/test-suite.yaml``.
 
 Docker Container Testing
 ------------------------

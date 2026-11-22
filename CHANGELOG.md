@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **MPAS Mesh Agent**: New built-in agent, `chiltepin.agents.mpas.MeshAgent`, that makes
+  MPAS meshes with its tasks on a `service` resource, for downloads and prompts, and a
+  `compute` resource, for builds
+  - `generate_mesh` downloads a precomputed global mesh, at any of 16 resolutions from
+    480km to 3km, and names it as requested, without overwriting an existing mesh
+  - Partitions the mesh graph for `init_ranks` and `forecast_ranks` with Metis
+    (`install_metis`, `partition_mesh`)
+  - Makes rectangular regional meshes at any resolution with MPAS-Tools' `project_hexes`,
+    optionally rotated with `grid_rotate`
+  - Cuts circle, ellipse, polygon and latitude-channel regional meshes from a global mesh
+    with MPAS-Limited-Area's `create_region`
+  - Draws an image of a mesh with `plot_mesh`, or with `"plot": True` in a request, where a
+    plot that fails does not fail the request
+  - Makes the mesh a prompt such as "a 15 km mesh of Japan" describes, when a request has a
+    `prompt` and the `model` that reads it. An LLM reads the prompt, the places are looked up
+    in Natural Earth, and in Nominatim with the agent's `nominatim_contact`, and the region is
+    fitted to a shape. `mesh_config_from_prompt` reads a prompt without making the mesh
+  - Builds each tool once in `work_dir`, at the versions `metis_version`,
+    `mpas_tools_version` and `limited_area_version` choose, and checks each request before
+    installing or downloading anything
+- **`mpas` and `llm` Extras**: `chiltepin[mpas]` holds the packages the mesh agent's tasks use
+  to read, cut and plot meshes and to look up regions, and `chiltepin[llm]` holds instructor,
+  litellm, pydantic and boto3, for asking an LLM for structured answers. The `test` extra
+  includes both
+- **Concurrent Container Clusters**: Several Docker Compose clusters can run at once, each
+  with its own Compose project name (`-p`), which keeps its network and volumes apart, and
+  its own `CLUSTER_NAME`, which names its containers. No host ports are published.
+  `docker/generate-compose.py` writes a Compose file for 1 to 10 compute nodes
+- **Non-Interactive Login**: `chiltepin login --non-interactive`, and
+  `endpoint.login(interactive=False)`, never prompt for authentication, for CI
+- **Endpoint Status**: `endpoint.is_online()` says whether an endpoint is online to the
+  Compute service
+- **`unified-workflow-tools` Dependency**: `unified-workflow-tools>=2.21.0`
+
+### Changed
+- **Agents Package**: `chiltepin.agents` is now a package, ready for built-in agents. Imports
+  from `chiltepin.agents` are unchanged
+- **Single Login Flow**: `chiltepin login` asks for the Compute, Transfer and Academy Exchange
+  scopes in one authorization, and keeps all tokens in the shared Compute-compatible token
+  store. `data.transfer` and `data.delete` use that login without prompting.
+  `endpoint.get_chiltepin_apps()` is replaced by `endpoint.get_chiltepin_app()`
+- **Python Versions**: Requires Python 3.10.12 or later, excluding 3.11.0 to 3.11.3
+- **Endpoint Start and Stop**: `endpoint.start()` also waits until the Compute service reports
+  the endpoint online, within its timeout. `endpoint.stop()` raises `RuntimeError` if the
+  endpoint's configuration cannot be loaded or it fails to stop
+- **AgentRuntime**: Gets executor names from the Workflow's DataFlowKernel
+- **Dependency Updates**: `academy-py>=1.0.0`, and `globus-compute-sdk` and
+  `globus-compute-endpoint` 4.14.0 or later, which fixes a psutil bug
+- **Test Containers**: CI installs Python in the test cluster with uv instead of the
+  deadsnakes PPA, once for the whole cluster
+
+### Removed
+- **Transfer Clients**: `data.transfer_task()` and `data.delete_task()` no longer take a
+  `client` argument. They use the shared login
+
+### Fixed
+- **Shutdown Warning**: Manager shutdown no longer warns that it canceled pending Parsl tasks.
+  Parsl cannot cancel them, so shutdown waits for them
+- **Workflow Logger Test**: Fixed a bug in the workflow logger cleanup test
+
+[Unreleased]: https://github.com/NOAA-GSL/chiltepin/compare/v0.1.7...HEAD
+
 ## [0.1.7] - 2026-07-08
 
 ### Changed

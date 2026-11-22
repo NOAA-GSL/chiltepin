@@ -1,7 +1,7 @@
 MPAS Mesh Agent
 ===============
 
-``chiltepin.agents.mpas.MeshAgent`` Generates MPAS meshes for use in NWP
+``chiltepin.agents.mpas.MeshAgent`` generates MPAS meshes for use in NWP
 workflows. It downloads precomputed global MPAS meshes from UCAR, generates
 regional meshes with the MPAS-Tools ``project_hexes`` program or cuts them from
 a global mesh with the MPAS-Limited-Area ``create_region`` program, can
@@ -17,7 +17,7 @@ Requirements
 * Chiltepin installed in the agent and task execution environments.
   ``create_region`` regional meshes and plotting also need the ``mpas`` extra
   where the agent's tasks run on the ``compute`` resource, which installs
-  numpy, netCDF4, matplotlib and cartopy:
+  numpy, netCDF4, matplotlib, cartopy, shapely and pyshp:
 
   .. code-block:: console
 
@@ -70,10 +70,12 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
    Optional agent argument. The Metis version to install for partitioning, as
    it appears in the release tag without the leading ``v``, such as ``5.2.1``.
    Defaults to ``5.2.1``. Anything else raises ``ValueError``.
+
 ``kwargs={"mpas_tools_version": "2.0.0"}``
    Optional agent argument. The MPAS-Tools tag to install for regional meshes,
    such as ``2.0.0``, written without a ``v`` prefix, since the MPAS-Tools tags
    have none. Defaults to ``2.0.0``. Anything else raises ``ValueError``.
+
 ``kwargs={"limited_area_version": "2.2"}``
    Optional agent argument. The MPAS-Limited-Area version to install for
    ``create_region`` meshes, as it appears in the release tag without the
@@ -112,22 +114,21 @@ The agent workflow configuration must contain these resources:
 
 ``service``
    Runs agent tasks that require internet access, such as downloading meshes,
-   Metis, MPAS-Tools, MPAS-Limited-Area, and the map
-   layers plots draw, and reading prompts with an LLM. It must
-   have write access to the mesh output directory and to
-   ``work_dir``. The agent and this resource must share these directories at
-   the same absolute paths.
+   Metis, MPAS-Tools, MPAS-Limited-Area, and the map layers plots draw, and
+   reading prompts with an LLM. It must have write access to the mesh output
+   directory and to ``work_dir``. The agent and this resource must share these
+   directories at the same absolute paths.
 
 ``compute``
    Runs tasks that do not need the internet, such as building Metis and
    MPAS-Tools, running ``project_hexes``, ``grid_rotate`` and ``create_region``,
    partitioning meshes, and plotting them. ``create_region`` and plotting need
-   the ``mpas`` extra. It needs ``cmake``, ``make`` and a C compiler to build Metis, and
-   ``make``, a Fortran compiler and netCDF-C and netCDF-Fortran to build and run
-   the MPAS-Tools programs. It must have
-   write access to ``work_dir`` and the mesh output directory at the same
-   absolute paths as the agent. Requests that only download global meshes
-   without partitioning do not use it.
+   the ``mpas`` extra. It needs ``cmake``, ``make`` and a C compiler to build
+   Metis, and ``make``, a Fortran compiler and netCDF-C and netCDF-Fortran to
+   build and run the MPAS-Tools programs. It must have write access to
+   ``work_dir`` and the mesh output directory at the same absolute paths as the
+   agent. Requests that only download global meshes without partitioning do
+   not use it.
 
 For local execution:
 
@@ -177,16 +178,15 @@ Actions
    * ``mesh_config``: Dictionary with optional ``resolution`` (default
      ``"120km"``), mesh ``name`` (default ``"mesh_<resolution>"``),
      ``init_ranks`` and ``forecast_ranks``, ``regional``, and ``plot``. The
-     rank entries
-     are positive integers giving MPI rank counts to partition the mesh graph
-     for. A count of 1 needs no partition. A name can be at most 200
-     bytes long, which is 200 characters unless it has non-ASCII characters,
-     must not contain control characters such as a newline, and must not be
-     that of a downloaded global mesh file, such as ``x1.2562.graph.info``. Any other key
-     raises ``ValueError``, so a misspelled key is not silently ignored.
-     ``plot`` is ``True`` or ``False``, by default ``False``. Or a
-     dictionary with a ``prompt``, which describes the mesh instead, as in
-     `Meshes from Prompts`_.
+     rank entries are positive integers giving MPI rank counts to partition
+     the mesh graph for. A count of 1 needs no partition. A name can be at
+     most 200 bytes long, which is 200 characters unless it has non-ASCII
+     characters, must not contain control characters such as a newline, and
+     must not be that of a downloaded global mesh file, such as
+     ``x1.2562.graph.info``. ``plot`` is ``True`` or ``False``, by default
+     ``False``. Any other key raises ``ValueError``, so a misspelled key is
+     not silently ignored. Or a dictionary with a ``prompt``, which describes
+     the mesh instead, as in `Meshes from Prompts`_.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
 
    Without ``regional``, the request is for a global mesh, which is downloaded.
@@ -259,8 +259,7 @@ Actions
    ``mesh_data_dir`` unless it is already there and is kept for reuse.
    Requests that need the same global mesh in the same ``mesh_data_dir`` at the
    same time wait for one download, so none replaces a file another is reading.
-   The
-   region keeps the global mesh's cells, so its ``resolution`` must be one of
+   The region keeps the global mesh's cells, so its ``resolution`` must be one of
    the supported global resolutions listed below. Its value is a dictionary
    with exactly one shape, whose value holds that shape's numbers. Sizes are in
    kilometers, latitudes from -90 to 90 degrees, and longitudes from -180 to 360
@@ -272,7 +271,6 @@ Actions
      and optionally ``orientation_degrees``, the clockwise rotation of the major
      axis from due north, by default 0. Any angle can be given, and it is
      written as the same direction within one turn.
-
    * ``polygon``: ``vertices``, a list of at least 3 ``[lat, lon]`` pairs in
      order around the boundary, and ``inside_lat`` and ``inside_lon``, a point
      inside the region. MPAS-Limited-Area warns that a concave polygon can give
@@ -326,11 +324,12 @@ Actions
    missing ``compute`` resource, a missing ``mpas`` extra, or a failed plotting
    install. A plot drawn without some map layers has both ``"plot"`` and
    ``"plot_error"``.
+
    Before it creates anything or downloads anything, the action checks that the
    workflow defines the resources the request needs: ``service`` for a global
    or ``create_region`` mesh, and ``compute`` for a regional mesh or if
-   partitions are requested. If
-   one is missing it raises ``RuntimeError`` naming it. Installing a tool that
+   partitions are requested. If one is missing it raises ``RuntimeError``
+   naming it. Installing a tool that
    is missing also needs both ``service`` and ``compute``, and checks for them
    when it runs.
 
@@ -342,82 +341,25 @@ Actions
    ``mesh_data_dir`` are kept for reuse. If cleanup itself fails, for example
    because the request was interrupted while a partition was still running, the
    agent logs a warning naming the leftover directory, which must be removed
-   before the name can be used again. A ``mesh_config`` that is not a
-   dictionary, or a ``resolution`` that is not a supported string, raises
-   ``ValueError``.
+   before the name can be used again. An invalid ``mesh_config`` raises
+   ``ValueError`` before anything is checked, created or downloaded.
 
-``install_metis()``
-   Downloads and builds Metis in ``work_dir``, unless a finished install is
-   already there. A finished build leaves a marker file,
-   ``work_dir/metis/<metis_version>/.installed``, which is also how a restarted
-   agent finds an earlier installation. An install counts only if the marker
-   exists and ``bin/gpmetis`` is an executable file, and this is checked on every
-   call, so a damaged or removed install is rebuilt, even in a running agent.
-   A build always starts from an empty ``work_dir/metis/<metis_version>``, so an
-   interrupted or failed install is replaced by the next one. After a successful
-   build the downloaded sources in ``work_dir/metis/build`` are removed. After a
-   failed build they stay for debugging. This runs
-   automatically when a request needs Metis, so calling it is optional, but it
-   can be called early to have Metis ready. Requests that need Metis while it
-   is being installed wait for that install. If it fails, each waiting request
-   tries again in turn and reports its own error. The install logs are
-   ``metis_download.*`` and ``metis_build.*`` in ``work_dir/logs``. Installing
-   needs both the ``service`` and ``compute`` resources. If one is missing, the
-   action raises ``RuntimeError`` naming it, before it starts any download.
-``install_mpas_tools()``
-   Downloads and builds the ``project_hexes`` and ``grid_rotate`` programs from
-   MPAS-Tools in ``work_dir``, unless a finished install is already there. The
-   tag named by ``mpas_tools_version`` is cloned on the ``service`` resource and
-   built on the ``compute`` resource, which needs a Fortran compiler and netCDF
-   as described above. The programs are installed in
-   ``work_dir/mpas-tools/<mpas_tools_version>/bin``. Like ``install_metis()``,
-   a finished build leaves a ``.installed`` marker, an install counts only if the
-   marker and both executable programs exist, and this is checked on every
-   call, so a damaged install is rebuilt. A build starts from an empty install
-   directory, the sources in ``work_dir/mpas-tools/build`` are removed after a
-   successful build, and requests that need the programs while they are being
-   installed wait for that install. The logs are ``mpas_tools_download.*`` and
-   ``mpas_tools_build.*`` in ``work_dir/logs``. If ``nf-config`` or
-   ``nc-config`` is missing on the ``compute`` resource, the build stops with a
-   message saying so and leaves an existing install alone. Installing needs both
-   the ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming
-   a missing one before it starts any download. This runs automatically when a
-   ``project_hexes`` request needs it, so calling it is optional.
-``install_limited_area()``
-   Installs MPAS-Limited-Area, whose ``create_region`` program is a Python
-   script, in ``work_dir``, unless a finished install is already there. On the
-   ``service`` resource, the tag named by ``limited_area_version`` is cloned
-   into ``work_dir/limited-area/<limited_area_version>/src``. A check on the
-   ``compute`` resource then imports numpy and netCDF4 with the Python of the
-   agent's tasks and runs the program with it, and only then writes the
-   ``.installed`` marker. If the ``mpas`` extra is missing, the check fails with
-   a message saying to install it. Like the other installs, an install counts
-   only if the marker and the program exist, and this is checked on every call,
-   so a damaged install is replaced. An install made by an earlier chiltepin,
-   which ran ``create_region`` in its own virtual environment in ``venv``, is
-   replaced too, so stop agents of that chiltepin sharing ``work_dir`` before
-   upgrading. An install starts from an empty
-   install directory, and requests that need it while it is being installed
-   wait for that install. The logs are ``limited_area_install.*`` and
-   ``limited_area_check.*`` in ``work_dir/logs``. Installing needs both the
-   ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming a
-   missing one before it starts. This runs automatically when a
-   ``create_region`` request needs it, so calling it is optional.
-``install_plotting()``
-   Prepares plotting, unless it is already prepared. The Natural Earth map
-   layers the plots draw, coastlines, country borders, and state and province
-   lines, are downloaded to ``work_dir/plot/natural_earth`` on the ``service``
-   resource, since the ``compute`` resource may have no internet access. A check
-   on the ``compute`` resource then confirms that the Python of its tasks has the
-   ``mpas`` extra and that every layer has its ``.shp``, ``.shx`` and ``.dbf``
-   files, and only then writes the
-   ``work_dir/plot/.installed`` marker, so a restarted agent reuses it. The logs
-   are ``plot_download.*`` and ``plot_check.*`` in ``work_dir/logs``. If the
-   extra is missing, the check fails with a message saying to install it.
-   Requests that need plotting while it is being prepared wait for that
-   install. Installing needs both the ``service`` and ``compute`` resources, and
-   raises ``RuntimeError`` naming a missing one before it starts. This runs
-   automatically when a plot is requested, so calling it is optional.
+``mesh_config_from_prompt(prompt, model, buffer_km=50.0, reasoning_effort=None)``
+   Returns the mesh request a prompt describes, in the form ``generate_mesh``
+   takes, without making the mesh. See `Meshes from Prompts`_.
+
+``partition_mesh(mesh_path, num_ranks)``
+   Partitions a graph file with Metis, installing Metis first if needed.
+   ``mesh_path`` must be a non-empty string. A relative path or one starting
+   with ``~`` is made absolute on the agent, and the returned paths are
+   absolute. Partition files are written next to the graph file. ``num_ranks``
+   is one integer greater than 1 or a non-empty list of at most 16 distinct
+   ones; anything else raises ``ValueError``. Returns the partition file path
+   for an integer, or a dictionary of ``{rank: path}`` for a list. Each call
+   writes its own logs, ``partition_mesh.<rank>.<id>.stdout`` and ``.stderr``
+   in ``work_dir/logs``, whose first lines show the graph file, and a failure
+   names its ``.stderr`` file.
+
 ``plot_mesh(mesh_path, title=None, zoom=None, center_lat=None, center_lon=None)``
    Draws a PNG image of a mesh on the ``compute`` resource, and returns its
    absolute path. The image is written next to the mesh as ``<name>.png``, for
@@ -464,6 +406,94 @@ Actions
    naming the log is logged. Each plot writes its own logs, ``plot_mesh.<id>.*``
    in ``work_dir/logs``, and a failure raises ``RuntimeError`` naming both.
    ``FileNotFoundError`` is raised for a mesh file that does not exist.
+
+``ensure_tools_installed(mesh_config)``
+   Installs the tools that a ``generate_mesh`` request with this configuration
+   needs, so installation can overlap with other work. That includes preparing
+   plotting for a request with ``"plot": True``, and a failure to prepare it is
+   raised here, though ``generate_mesh`` would only report it in
+   ``"plot_error"``. It checks the configuration first, exactly as
+   ``generate_mesh`` does, and raises ``ValueError`` if it is invalid. For a
+   request with a ``prompt``, it prepares prompting, and Metis and plotting if
+   the request asks for them. The tool for the prompt's regional mesh is known
+   only once the prompt is read, so ``generate_mesh`` installs it.
+
+``install_metis()``
+   Downloads and builds Metis in ``work_dir``, unless a finished install is
+   already there. A finished build leaves a marker file,
+   ``work_dir/metis/<metis_version>/.installed``, which is also how a restarted
+   agent finds an earlier installation. An install counts only if the marker
+   exists and ``bin/gpmetis`` is an executable file, and this is checked on every
+   call, so a damaged or removed install is rebuilt, even in a running agent.
+   A build always starts from an empty ``work_dir/metis/<metis_version>``, so an
+   interrupted or failed install is replaced by the next one. After a successful
+   build the downloaded sources in ``work_dir/metis/build`` are removed. After a
+   failed build they stay for debugging. This runs automatically when a request
+   needs Metis, so calling it is optional, but it
+   can be called early to have Metis ready. Requests that need Metis while it
+   is being installed wait for that install. If it fails, each waiting request
+   tries again in turn and reports its own error. The install logs are
+   ``metis_download.*`` and ``metis_build.*`` in ``work_dir/logs``. Installing
+   needs both the ``service`` and ``compute`` resources. If one is missing, the
+   action raises ``RuntimeError`` naming it, before it starts any download.
+
+``install_mpas_tools()``
+   Downloads and builds the ``project_hexes`` and ``grid_rotate`` programs from
+   MPAS-Tools in ``work_dir``, unless a finished install is already there. The
+   tag named by ``mpas_tools_version`` is cloned on the ``service`` resource and
+   built on the ``compute`` resource, which needs a Fortran compiler and netCDF
+   as described above. The programs are installed in
+   ``work_dir/mpas-tools/<mpas_tools_version>/bin``. Like ``install_metis()``,
+   a finished build leaves a ``.installed`` marker, an install counts only if the
+   marker and both executable programs exist, and this is checked on every
+   call, so a damaged install is rebuilt. A build starts from an empty install
+   directory, the sources in ``work_dir/mpas-tools/build`` are removed after a
+   successful build, and requests that need the programs while they are being
+   installed wait for that install. The logs are ``mpas_tools_download.*`` and
+   ``mpas_tools_build.*`` in ``work_dir/logs``. If ``nf-config`` or
+   ``nc-config`` is missing on the ``compute`` resource, the build stops with a
+   message saying so and leaves an existing install alone. Installing needs both
+   the ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming
+   a missing one before it starts any download. This runs automatically when a
+   ``project_hexes`` request needs it, so calling it is optional.
+
+``install_limited_area()``
+   Installs MPAS-Limited-Area, whose ``create_region`` program is a Python
+   script, in ``work_dir``, unless a finished install is already there. On the
+   ``service`` resource, the tag named by ``limited_area_version`` is cloned
+   into ``work_dir/limited-area/<limited_area_version>/src``. A check on the
+   ``compute`` resource then imports numpy and netCDF4 with the Python of the
+   agent's tasks and runs the program with it, and only then writes the
+   ``.installed`` marker. If the ``mpas`` extra is missing, the check fails
+   with a message saying to install it. Like the other installs, an install
+   counts only if the marker and the program exist, and this is checked on
+   every call, so a damaged install is replaced. An install made by an earlier
+   chiltepin, which ran ``create_region`` in its own virtual environment in
+   ``venv``, is replaced too, so stop agents of that chiltepin sharing
+   ``work_dir`` before upgrading. An install starts from an empty install
+   directory, and requests that need it while it is being installed wait for
+   that install. The logs are ``limited_area_install.*`` and
+   ``limited_area_check.*`` in ``work_dir/logs``. Installing needs both the
+   ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming a
+   missing one before it starts. This runs automatically when a
+   ``create_region`` request needs it, so calling it is optional.
+
+``install_plotting()``
+   Prepares plotting, unless it is already prepared. The Natural Earth map
+   layers the plots draw, coastlines, country borders, and state and province
+   lines, are downloaded to ``work_dir/plot/natural_earth`` on the ``service``
+   resource, since the ``compute`` resource may have no internet access. A
+   check on the ``compute`` resource then confirms that the Python of its tasks
+   has the ``mpas`` extra and that every layer has its ``.shp``, ``.shx`` and
+   ``.dbf`` files, and only then writes the ``work_dir/plot/.installed``
+   marker, so a restarted agent reuses it. The logs are ``plot_download.*`` and
+   ``plot_check.*`` in ``work_dir/logs``. If the extra is missing, the check
+   fails with a message saying to install it. Requests that need plotting while
+   it is being prepared wait for that install. Installing needs both the
+   ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming a
+   missing one before it starts. This runs automatically when a plot is
+   requested, so calling it is optional.
+
 ``install_prompting()``
    Prepares reading prompts, unless it is already prepared. On the ``service``
    resource, the Natural Earth countries and states or provinces are
@@ -474,32 +504,6 @@ Actions
    ``work_dir/logs``. Installing needs the ``service`` resource, and raises
    ``RuntimeError`` if it is not defined. This runs automatically when a prompt
    is read, so calling it is optional.
-``mesh_config_from_prompt(prompt, model, buffer_km=50.0, reasoning_effort=None)``
-   Returns the mesh request a prompt describes, in the form ``generate_mesh``
-   takes, without making the mesh. See `Meshes from Prompts`_.
-``partition_mesh(mesh_path, num_ranks)``
-   Partitions a graph file with Metis, installing Metis first if needed.
-   ``mesh_path`` must be a non-empty string. A relative path or one starting
-   with ``~`` is made absolute on the agent, and the returned paths are
-   absolute. Partition files are written next to the graph file.
-   ``num_ranks`` is one integer greater than 1 or a non-empty list of at most 16
-   distinct ones; anything else raises ``ValueError``. Returns the partition file path for an
-   integer, or a dictionary of ``{rank: path}`` for a list. Each call writes its
-   own logs, ``partition_mesh.<rank>.<id>.stdout`` and ``.stderr`` in
-   ``work_dir/logs``, whose first lines show the graph file, and a failure
-   names its ``.stderr`` file.
-
-``ensure_tools_installed(mesh_config)``
-   Installs the tools that a ``generate_mesh`` request with this configuration
-   needs, so installation can overlap with other work. That includes preparing
-   plotting for a request with ``"plot": True``, and a failure to prepare it is
-   raised here, though ``generate_mesh`` would only report it in
-   ``"plot_error"``. It checks the
-   configuration first, exactly as ``generate_mesh`` does, and raises
-   ``ValueError`` if it is invalid. For a request with a ``prompt``, it
-   prepares prompting, and Metis and plotting if the request asks for them.
-   The tool for the prompt's regional mesh is known only once the prompt is
-   read, so ``generate_mesh`` installs it.
 
 The download and generate actions return absolute paths and reuse mesh files
 already downloaded to ``mesh_data_dir``.
@@ -571,32 +575,32 @@ A prompt is read with an LLM on the ``service`` resource:
    that works: a ``project_hexes`` rectangle, or a ``create_region`` polygon,
    circle, ellipse or rectangle. What the prompt names stays as it is,
    except that a polygon it names can be made as a rectangle, which is one,
-   so "a 7 km polygon" is a ``project_hexes`` rectangle. A prompt names a method or shape by its words, such as "limited area",
-   "circles" or "polygonal", but not by the names of its places, so "Round
-   Rock" names no circle.
+   so "a 7 km polygon" is a ``project_hexes`` rectangle. A prompt names a
+   method or shape by its words, such as "limited area", "circles" or
+   "polygonal", but not by the names of its places, so "Round Rock" names no
+   circle.
 3. The places are looked up in Natural Earth's detailed countries,
    continents, and states or provinces. A continent stands for its countries,
    and "Europe" leaves Russia out unless Russia is named too. Natural Earth
-   puts all of Russia in Europe, so "Asia" leaves it out as well, and a
-   prompt names it for its Asian part. "Contiguous United States", "CONUS"
-   and "Lower 48" stand for the United States without Alaska and Hawaii. A
-   country can leave out states, and a country named with some of its own
-   states only says which states they are. A name used for states in
-   several countries, such as "Florida", or for a country and a state, such
-   as "Georgia", stands for the one in the country the prompt's other places
-   are in, as "Florida" next to "Uruguay" does for Uruguay's department.
-   Otherwise a US state's name means the US state, so "Florida" and "Georgia"
-   alone are the US states. A prompt names the others with their country, as
-   "Florida, Uruguay" or "Punjab, India", or as a country, as "Georgia
-   (country)" or "the country of Georgia". If the places cannot be found,
-   the model is told why and asked once more. A place
-   Natural Earth lacks is looked up with Nominatim, only if
+   puts all of Russia in Europe, so "Asia" leaves it out as well, and a prompt
+   names it for its Asian part. "Contiguous United States", "CONUS" and "Lower
+   48" stand for the United States without Alaska and Hawaii. A country can
+   leave out states, and a country named with some of its own states only says
+   which states they are. A name used for states in several countries, such as
+   "Florida", or for a country and a state, such as "Georgia", stands for the
+   one in the country the prompt's other places are in, as "Florida" next to
+   "Uruguay" does for Uruguay's department. Otherwise a US state's name means
+   the US state, so "Florida" and "Georgia" alone are the US states. A prompt
+   names the others with their country, as "Florida, Uruguay" or "Punjab,
+   India", or as a country, as "Georgia (country)" or "the country of Georgia".
+   If the places cannot be found, the model is told why and asked once more. A
+   place Natural Earth lacks is looked up with Nominatim, only if
    ``nominatim_contact`` is given. Answers are kept in
    ``work_dir/geo/nominatim``, so each place is asked for once, and requests
-   from every process sharing that directory are at least a second apart,
-   where its filesystem supports locks. Parts of a place more than 1000 km
-   from the rest of it, as Hawaii is, are left out, while a chain of islands,
-   as the Ryukyus are, stays.
+   from every process sharing that directory are at least a second apart, where
+   its filesystem supports locks. Parts of a place more than 1000 km from the
+   rest of it, as Hawaii is, are left out, while a chain of islands, as the
+   Ryukyus are, stays.
 4. The region is fitted to the shape in the frame its tool draws it in, with a
    margin of ``buffer_km`` and at least a tenth of the region's diameter, so
    the shape holds the whole region. The boundary layers both tools add are
@@ -611,9 +615,9 @@ a pole, a global mesh or channel that leaves out places, or a region too small
 for its cells as every shape it could be made as. When several ways were
 tried, the message gives each one's reason. It names other ways only if they
 could work, with what they need: a resolution that can be downloaded, or a
-prompt asking for them. A model that cannot be reached,
-or gives no valid answer, raises ``RuntimeError``. A request made from a
-prompt is then checked as any other is.
+prompt asking for them. A model that cannot be reached, or gives no valid
+answer, raises ``RuntimeError``. A request made from a prompt is then checked
+as any other is.
 
 ``model`` is a litellm model string, such as
 ``"bedrock/us.anthropic.claude-sonnet-5-5"`` for Amazon Bedrock or
