@@ -33,9 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   litellm, pydantic and boto3, for asking an LLM for structured answers. The `test` extra
   includes both
 - **Concurrent Container Clusters**: Several Docker Compose clusters can run at once, each
-  named with `CLUSTER_NAME` and with its own network and volumes, and no host ports are
-  published. `docker/generate-compose.py` writes a Compose file for any number of compute
-  nodes
+  with its own Compose project name (`-p`), which keeps its network and volumes apart, and
+  its own `CLUSTER_NAME`, which names its containers. No host ports are published.
+  `docker/generate-compose.py` writes a Compose file for 1 to 10 compute nodes
+- **Non-Interactive Login**: `chiltepin login --non-interactive`, and
+  `endpoint.login(interactive=False)`, never prompt for authentication, for CI
+- **Endpoint Status**: `endpoint.is_online()` says whether an endpoint is online to the
+  Compute service
 - **`unified-workflow-tools` Dependency**: `unified-workflow-tools>=2.21.0`
 
 ### Changed
@@ -43,12 +47,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `chiltepin.agents` are unchanged
 - **Single Login Flow**: `chiltepin login` asks for the Compute, Transfer and Academy Exchange
   scopes in one authorization, and keeps all tokens in the shared Compute-compatible token
-  store
+  store. `data.transfer` and `data.delete` use that login without prompting.
+  `endpoint.get_chiltepin_apps()` is replaced by `endpoint.get_chiltepin_app()`
+- **Python Versions**: Requires Python 3.10.12 or later, excluding 3.11.0 to 3.11.3
+- **Endpoint Start and Stop**: `endpoint.start()` also waits until the Compute service reports
+  the endpoint online, within its timeout. `endpoint.stop()` raises `RuntimeError` if the
+  endpoint's configuration cannot be loaded or it fails to stop
 - **AgentRuntime**: Gets executor names from the Workflow's DataFlowKernel
 - **Dependency Updates**: `academy-py>=1.0.0`, and `globus-compute-sdk` and
   `globus-compute-endpoint` 4.14.0 or later, which fixes a psutil bug
 - **Test Containers**: CI installs Python in the test cluster with uv instead of the
   deadsnakes PPA, once for the whole cluster
+
+### Removed
+- **Transfer Clients**: `data.transfer_task()` and `data.delete_task()` no longer take a
+  `client` argument. They use the shared login
 
 ### Fixed
 - **Shutdown Warning**: Manager shutdown no longer warns that it canceled pending Parsl tasks.

@@ -149,8 +149,9 @@ MPAS Mesh Agent Tests
 Most of the MPAS mesh agent's tests run without ``--config``, with its programs
 and downloads stood in, and need the ``mpas`` and ``llm`` extras, which the
 ``test`` extra includes. ``test_mpas_mesh.py`` also launches a local agent,
-which needs Globus authentication, and ``test_mpas_geo_lookup.py`` downloads
-Natural Earth's countries and states, about 45 MB:
+which needs Globus authentication. ``test_mpas_geo_lookup.py`` downloads
+Natural Earth's countries and states, about 45 MB, and
+``test_mpas_plot_script.py`` the 480km global mesh from UCAR:
 
 * ``test_mpas_mesh.py`` - Request checks, installs and actions, and a local agent
   launched through the agent runtime
