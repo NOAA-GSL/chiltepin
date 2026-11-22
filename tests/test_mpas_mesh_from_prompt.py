@@ -29,6 +29,7 @@ at a time, and the mocked tests in ``test_mpas_mesh.py`` keep one loaded.
 
 import os
 import re
+import secrets
 from pathlib import Path
 
 import pytest
@@ -86,9 +87,14 @@ async def test_real_meshes_from_prompts(mesh_test_directory, launch_mesh_agent):
     settings = str(Path(SETTINGS).expanduser())
     assert Path(settings).is_file()
     options = {"reasoning_effort": REASONING}
-    async with launch_mesh_agent(
-        "prompt", service_environment=[f"source {settings}"]
-    ) as agent:
+    # A credential of the run's own, so the check below for leaked ones has
+    # one to find with settings that hold none, as Ollama's do. It is read
+    # from a file, as credentials are, so it is not in the configuration.
+    canary = f"chiltepin-canary-{secrets.token_hex(8)}"
+    canary_file = directory / "canary.env"
+    canary_file.write_text(f"export CHILTEPIN_TEST_TOKEN={canary}\n")
+    environment = [f"source {settings}", f"source {canary_file}"]
+    async with launch_mesh_agent("prompt", service_environment=environment) as agent:
         # A resolution that cannot be downloaded, over the 48 states
         conus = await agent.mesh_config_from_prompt(
             "A 3 km mesh of the contiguous United States", MODEL, **options
@@ -134,13 +140,13 @@ async def test_real_meshes_from_prompts(mesh_test_directory, launch_mesh_agent):
     assert (work / "geo" / ".installed").is_file()
     assert (work / "logs" / "prompt_check.stdout").is_file()
     # No file the run wrote holds a credential from the settings file
-    secrets = []
+    leaks = [canary]
     for line in Path(settings).read_text().splitlines():
         name, _, value = line.removeprefix("export ").partition("=")
         if re.search("KEY|TOKEN|SECRET|PASSWORD", name) and len(value) >= 16:
-            secrets.append(value.strip().strip("\"'"))
+            leaks.append(value.strip().strip("\"'"))
     for path in directory.rglob("*"):
-        if path.is_file() and path.stat().st_size < 10_000_000:
+        if path.is_file() and path != canary_file and path.stat().st_size < 10_000_000:
             text = path.read_bytes()
-            for secret in secrets:
-                assert secret.encode() not in text, path
+            for leak in leaks:
+                assert leak.encode() not in text, path

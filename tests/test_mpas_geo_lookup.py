@@ -702,3 +702,43 @@ def test_real_contiguous_states(real_boundaries):
     assert again.equals(conus)
     with_ontario = lookup(["CONUS", "Ontario"], real_boundaries)
     assert with_ontario.bounds[3] > 55
+
+
+@pytest.mark.parametrize("name", ["Alaska", "Fiji", "Antarctica"])
+@pytest.mark.parametrize(
+    ("method", "shape"),
+    [
+        ("project_hexes", "rectangle"),
+        ("create_region", "polygon"),
+        ("create_region", "circle"),
+        ("create_region", "ellipse"),
+        ("create_region", "rectangle"),
+    ],
+)
+def test_real_outlines_fit_every_shape(real_boundaries, name, method, shape):
+    # Alaska and Fiji cross the 180th meridian, and Antarctica holds a pole,
+    # around which project_hexes cannot draw
+    from chiltepin.agents.mpas import _region_shapes as shapes
+    from tests.test_mpas_region_shapes import (
+        inside_circle,
+        inside_ellipse,
+        inside_polygon,
+        inside_rectangle,
+    )
+
+    region = lookup([name], real_boundaries)
+    if name == "Antarctica" and method == "project_hexes":
+        with pytest.raises(shapes.RegionTooLarge, match="pole"):
+            shapes.regional_config(region, method, shape, 60, 100)
+        return
+    block = shapes.regional_config(region, method, shape, 60, 100)[method]
+    if method == "project_hexes":
+        inside = inside_rectangle
+    else:
+        ((kind, block),) = block.items()
+        inside = {
+            "circle": inside_circle,
+            "ellipse": inside_ellipse,
+            "polygon": inside_polygon,
+        }[kind]
+    assert inside(block, shapes._points(region)).all()
