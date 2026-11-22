@@ -184,7 +184,9 @@ Actions
      must not contain control characters such as a newline, and must not be
      that of a downloaded global mesh file, such as ``x1.2562.graph.info``. Any other key
      raises ``ValueError``, so a misspelled key is not silently ignored.
-     ``plot`` is ``True`` or ``False``, by default ``False``.
+     ``plot`` is ``True`` or ``False``, by default ``False``. Or a
+     dictionary with a ``prompt``, which describes the mesh instead, as in
+     `Meshes from Prompts`_.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
 
    Without ``regional``, the request is for a global mesh, which is downloaded.
@@ -475,11 +477,6 @@ Actions
 ``mesh_config_from_prompt(prompt, model, buffer_km=50.0, reasoning_effort=None)``
    Returns the mesh request a prompt describes, in the form ``generate_mesh``
    takes, without making the mesh. See `Meshes from Prompts`_.
-``create_mesh_from_prompt(prompt, mesh_data_dir, model, mesh_name=None, plot=False, buffer_km=50.0, reasoning_effort=None)``
-   Makes the mesh a prompt describes, and returns a dictionary of
-   ``mesh_config``, the request it was made into, and ``mesh_result``, what
-   ``generate_mesh`` returned for it. ``mesh_name`` replaces the name the model
-   gives, and ``plot`` draws an image of the mesh. See `Meshes from Prompts`_.
 ``partition_mesh(mesh_path, num_ranks)``
    Partitions a graph file with Metis, installing Metis first if needed.
    ``mesh_path`` must be a non-empty string. A relative path or one starting
@@ -499,7 +496,10 @@ Actions
    raised here, though ``generate_mesh`` would only report it in
    ``"plot_error"``. It checks the
    configuration first, exactly as ``generate_mesh`` does, and raises
-   ``ValueError`` if it is invalid.
+   ``ValueError`` if it is invalid. For a request with a ``prompt``, it
+   prepares prompting, and Metis and plotting if the request asks for them.
+   The tool for the prompt's regional mesh is known only once the prompt is
+   read, so ``generate_mesh`` installs it.
 
 The download and generate actions return absolute paths and reuse mesh files
 already downloaded to ``mesh_data_dir``.
@@ -521,9 +521,35 @@ Supported global resolutions, for meshes without ``regional`` and for
 Meshes from Prompts
 -------------------
 
-``mesh_config_from_prompt`` and ``create_mesh_from_prompt`` read a prompt, such
-as "a 3 km CONUS mesh" or "a 60 km limited area ellipse over Europe without
-Russia", with an LLM on the ``service`` resource:
+``generate_mesh`` makes the mesh a prompt describes, such as "a 3 km CONUS
+mesh" or "a 60 km limited area ellipse over Europe without Russia", when its
+``mesh_config`` has a ``prompt`` and the ``model`` that reads it:
+
+.. code-block:: python
+
+   result = await mesh.generate_mesh(
+       {
+           "prompt": "A 15 km mesh of Japan",
+           "model": "bedrock/us.anthropic.claude-sonnet-5-5",
+           "init_ranks": 4,
+           "forecast_ranks": 36,
+           "plot": True,
+       },
+       mesh_data_dir,
+   )
+   result["mesh_config"]  # The request the prompt became
+
+The prompt gives the resolution, the region and the name, so ``resolution``
+and ``regional`` are refused with a prompt. A ``name`` replaces the name the
+model gives, ``init_ranks``, ``forecast_ranks`` and ``plot`` are as for any
+request, and ``buffer_km`` and ``reasoning_effort`` are as for
+``mesh_config_from_prompt``. Any other key raises ``ValueError``. The result
+is what ``generate_mesh`` returns for the request the prompt became, with that
+request as ``"mesh_config"``, which makes the same mesh again without the
+prompt. ``mesh_config_from_prompt`` only reads a prompt, and returns that
+request without making the mesh.
+
+A prompt is read with an LLM on the ``service`` resource:
 
 1. The model answers in fixed fields: the resolution, a name, the places the
    mesh covers and those it leaves out, and, if the prompt names them, a shape

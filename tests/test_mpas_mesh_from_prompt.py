@@ -104,29 +104,31 @@ async def test_real_meshes_from_prompts(mesh_test_directory, launch_mesh_agent):
 
         # A small mesh cut from the 480km global mesh, and drawn. A region
         # must reach at least two cells from its center, as this one does.
-        made = await agent.create_mesh_from_prompt(
-            "a 480 km limited area circle mesh around Colorado, Utah, Wyoming, "
-            "Nevada, Arizona and New Mexico",
+        result = await agent.generate_mesh(
+            {
+                "prompt": "a 480 km limited area circle mesh around Colorado, "
+                "Utah, Wyoming, Nevada, Arizona and New Mexico",
+                "model": MODEL,
+                "name": "west",
+                "plot": True,
+                **options,
+            },
             mesh_data_dir,
-            MODEL,
-            mesh_name="west",
-            plot=True,
-            **options,
         )
-        circle = made["mesh_config"]["regional"]["create_region"]["circle"]
-        assert made["mesh_config"]["resolution"] == "480km"
-        assert made["mesh_config"]["name"] == "west"
+        made = result["mesh_config"]
+        circle = made["regional"]["create_region"]["circle"]
+        assert made["resolution"] == "480km"
+        assert made["name"] == "west"
+        assert made["plot"] is True
         # The six states reach about 940 km from their middle, near 38.0N
         # 110.3W, and the margin adds a tenth of their diameter
         middle = distance_km(38.0, -110.3, circle["center_lat"], circle["center_lon"])
         assert middle < 250
         assert 960 <= circle["radius_km"] < 1350
-        result = made["mesh_result"]
         mesh_dir = Path(mesh_data_dir) / "west"
         assert result["static"] == str(mesh_dir / "west.static.nc")
         assert Path(result["static"]).stat().st_size > 0
         assert Path(result["plot"]).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
-
         # A global mesh at a resolution that cannot be downloaded is refused,
         # saying which can, and so is a region too small for its cells
         with pytest.raises(ValueError, match="Global meshes are available at"):

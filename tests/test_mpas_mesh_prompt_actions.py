@@ -470,44 +470,115 @@ async def test_mesh_config_from_prompt_needs_service(monkeypatch, behavior):
     task.assert_not_called()
 
 
+def fake_full_generate(monkeypatch, behavior):
+    """Make only full requests with a mock, leaving prompts to generate_mesh."""
+    generate_mesh = behavior.generate_mesh
+    made = Mock(return_value=done_future({"static": "/m/texas.static.nc"}))
+
+    async def generate(mesh_config, mesh_data_dir):
+        if "prompt" in mesh_config:
+            return await generate_mesh(mesh_config, mesh_data_dir)
+        return await asyncio.wrap_future(made(mesh_config, mesh_data_dir))
+
+    monkeypatch.setattr(behavior, "generate_mesh", generate)
+    return made
+
+
 @pytest.mark.parametrize(
     ("options", "changes"),
     [
         ({}, {}),
-        ({"mesh_name": "lone_star"}, {"name": "lone_star"}),
+        ({"name": "lone_star"}, {"name": "lone_star"}),
         ({"plot": True}, {"plot": True}),
-        ({"plot": False}, {}),
+        ({"plot": False}, {"plot": False}),
+        (
+            {"init_ranks": 4, "forecast_ranks": 36},
+            {"init_ranks": 4, "forecast_ranks": 36},
+        ),
     ],
 )
-async def test_create_mesh_from_prompt(monkeypatch, behavior, options, changes):
+async def test_generate_mesh_from_a_prompt(monkeypatch, behavior, options, changes):
     mark_prompting_installed(behavior)
     task = fake_read_prompt(monkeypatch, behavior)
-    generate = Mock(return_value=done_future({"static": "/m/texas.static.nc"}))
-
-    async def generate_mesh(mesh_config, mesh_data_dir):
-        return await asyncio.wrap_future(generate(mesh_config, mesh_data_dir))
-
-    monkeypatch.setattr(behavior, "generate_mesh", generate_mesh)
-    result = await behavior.create_mesh_from_prompt(
-        "Texas", "/meshes", MODEL, buffer_km=60, reasoning_effort="low", **options
-    )
-    expected = {**CONFIG, **changes}
-    assert result == {
-        "mesh_config": expected,
-        "mesh_result": {"static": "/m/texas.static.nc"},
+    made = fake_full_generate(monkeypatch, behavior)
+    request = {
+        "prompt": "Texas",
+        "model": MODEL,
+        "buffer_km": 60,
+        "reasoning_effort": "low",
+        **options,
     }
-    generate.assert_called_once_with(expected, "/meshes")
+    result = await behavior.generate_mesh(request, "/meshes")
+    expected = {**CONFIG, **changes}
+    # What generate_mesh returns, with the request the prompt became, which
+    # makes the same mesh without the prompt
+    assert result == {"static": "/m/texas.static.nc", "mesh_config": expected}
+    made.assert_called_once_with(expected, "/meshes")
     task.assert_called_once_with("Texas", MODEL, 60.0, "low", executor=["service"])
 
 
+async def test_generate_mesh_from_a_prompt_by_default(monkeypatch, behavior):
+    mark_prompting_installed(behavior)
+    task = fake_read_prompt(monkeypatch, behavior)
+    fake_full_generate(monkeypatch, behavior)
+    await behavior.generate_mesh({"prompt": "Texas", "model": MODEL}, "/meshes")
+    task.assert_called_once_with("Texas", MODEL, 50.0, None, executor=["service"])
+
+
 @pytest.mark.parametrize(
-    ("options", "message"),
-    [({"plot": "yes"}, "plot must be True or False"), ({"mesh_name": 5}, "string")],
+    ("request_", "message"),
+    [
+        (
+            {"prompt": "Texas", "model": MODEL, "resolution": "15km"},
+            "with a prompt cannot have resolution, which the prompt gives",
+        ),
+        (
+            {"prompt": "Texas", "model": MODEL, "regional": {}, "resolution": "1km"},
+            "cannot have regional or resolution",
+        ),
+        ({"prompt": "Texas", "model": MODEL, "size": 3}, "Unknown mesh_config keys"),
+        ({"prompt": "Texas"}, "with a prompt needs a model"),
+        ({"prompt": "", "model": MODEL}, "prompt must be a non-empty string"),
+        ({"prompt": "Texas", "model": "a b"}, "model must be a litellm"),
+        ({"prompt": "Texas", "model": MODEL, "buffer_km": -1}, "buffer_km must be"),
+        (
+            {"prompt": "Texas", "model": MODEL, "reasoning_effort": "LOTS"},
+            "reasoning_effort must be",
+        ),
+        ({"prompt": "Texas", "model": MODEL, "name": "a/b"}, "valid file name"),
+        ({"prompt": "Texas", "model": MODEL, "init_ranks": 0}, "init_ranks must be"),
+        ({"prompt": "Texas", "model": MODEL, "plot": "yes"}, "plot must be True"),
+    ],
 )
-async def test_create_mesh_from_prompt_rejects(monkeypatch, behavior, options, message):
+async def test_generate_mesh_rejects_prompt_requests(
+    monkeypatch, behavior, request_, message
+):
     task = fake_read_prompt(monkeypatch, behavior)
     with pytest.raises(ValueError, match=message):
-        await behavior.create_mesh_from_prompt("Texas", "/meshes", MODEL, **options)
+        await behavior.generate_mesh(request_, "/meshes")
+    task.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("request_", "installed"),
+    [
+        ({}, ["prompting"]),
+        ({"init_ranks": 4, "plot": True}, ["prompting", "metis", "plotting"]),
+    ],
+)
+async def test_tools_for_a_prompt_request(monkeypatch, behavior, request_, installed):
+    # The program for the prompt's region is known only once it is read
+    calls = []
+    for tool in ("prompting", "metis", "plotting", "mpas_tools", "limited_area"):
+
+        async def install(tool=tool):
+            calls.append(tool)
+
+        monkeypatch.setattr(behavior, f"install_{tool}", install)
+    task = fake_read_prompt(monkeypatch, behavior)
+    request = {"prompt": "Texas", "model": MODEL, **request_}
+    await behavior.ensure_tools_installed(request)
+    assert calls == installed
     task.assert_not_called()
 
 

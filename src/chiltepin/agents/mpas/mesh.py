@@ -48,6 +48,8 @@ _SHARED_MESH_FILE_RE = re.compile(r"x1\.[0-9]+\.(static\.nc|graph\.info)")
 _MAX_PROMPT_CHARS = 10_000
 # Largest margin around a prompt's region, in km
 _MAX_BUFFER_KM = 5000.0
+# Margin around a prompt's region unless another is given, in km
+_DEFAULT_BUFFER_KM = 50.0
 # A reasoning effort litellm passes to a model, such as "none" or "low"
 _REASONING_EFFORT_RE = re.compile(r"[a-z]{1,16}")
 # A contact for Nominatim: an email address, without spaces or control characters
@@ -65,6 +67,20 @@ _MAX_MESH_NAME_BYTES = 200
 # Keys a mesh request may contain
 _MESH_CONFIG_KEYS = frozenset(
     {"resolution", "name", "init_ranks", "forecast_ranks", "regional", "plot"}
+)
+# Keys a mesh request made from a prompt may contain. The prompt gives the
+# resolution and the region, and a name unless one is given.
+_PROMPT_CONFIG_KEYS = frozenset(
+    {
+        "prompt",
+        "model",
+        "name",
+        "init_ranks",
+        "forecast_ranks",
+        "plot",
+        "buffer_km",
+        "reasoning_effort",
+    }
 )
 
 # Methods a regional request may name, and the keys of a project_hexes block
@@ -264,6 +280,9 @@ class _MeshBehavior:
         invalid requests fail before any resource check, install or download.
         New keys and rules for them belong here.
 
+        A request with a ``prompt`` is checked as the prompt's own request: it
+        needs a ``model``, and the prompt gives its resolution and region.
+
         Raises
         ------
         ValueError
@@ -271,12 +290,18 @@ class _MeshBehavior:
             invalid ``resolution``, ``name``, ``init_ranks``, ``forecast_ranks``,
             ``regional`` block or ``plot``. A name must be at most 200 bytes long, must
             not contain control characters, and must not be that of a downloaded
-            global mesh file. A ``project_hexes`` mesh must not reach a pole.
+            global mesh file. A ``project_hexes`` mesh must not reach a pole. A
+            request with a ``prompt`` must not have a ``resolution`` or
+            ``regional`` block, and must have a valid ``model``, ``buffer_km``
+            and ``reasoning_effort``.
         """
         if not isinstance(mesh_config, dict):
             raise ValueError(
                 f"mesh_config must be a dict, got {type(mesh_config).__name__}"
             )
+        if "prompt" in mesh_config:
+            self._validate_prompt_config(mesh_config)
+            return
         unknown = sorted(str(k) for k in mesh_config if k not in _MESH_CONFIG_KEYS)
         if unknown:
             raise ValueError(
@@ -301,7 +326,18 @@ class _MeshBehavior:
         else:
             spacing = self._parse_resolution_km(resolution)
             self._check_project_hexes_reach(regional["project_hexes"], spacing)
-        mesh_name = mesh_config.get("name", f"mesh_{resolution}")
+        self._validate_name(mesh_config.get("name", f"mesh_{resolution}"))
+        self._validate_ranks_and_plot(mesh_config)
+
+    @staticmethod
+    def _validate_name(mesh_name: Any) -> None:
+        """Check a request's mesh name.
+
+        Raises
+        ------
+        ValueError
+            As ``_validate_mesh_config()`` raises for a name.
+        """
         if (
             not isinstance(mesh_name, str)
             or mesh_name in ("", ".", "..")
@@ -323,6 +359,16 @@ class _MeshBehavior:
             raise ValueError(
                 f"Mesh name {mesh_name!r} is the name of a downloaded global mesh file"
             )
+
+    @staticmethod
+    def _validate_ranks_and_plot(mesh_config: Dict[str, Any]) -> None:
+        """Check a request's rank counts and ``plot``.
+
+        Raises
+        ------
+        ValueError
+            As ``_validate_mesh_config()`` raises for these.
+        """
         for key in ("init_ranks", "forecast_ranks"):
             value = mesh_config.get(key)
             if value is None:
@@ -332,6 +378,42 @@ class _MeshBehavior:
         plot = mesh_config.get("plot", False)
         if not isinstance(plot, bool):
             raise ValueError(f"plot must be True or False, got {plot!r}")
+
+    def _validate_prompt_config(self, mesh_config: Dict[str, Any]) -> None:
+        """Check a mesh request made from a prompt.
+
+        Raises
+        ------
+        ValueError
+            As ``_validate_mesh_config()`` raises for a request with a prompt.
+        """
+        decided = sorted(k for k in ("resolution", "regional") if k in mesh_config)
+        if decided:
+            raise ValueError(
+                f"A mesh_config with a prompt cannot have {' or '.join(decided)}, "
+                "which the prompt gives. Put it in the prompt, or leave out the "
+                "prompt."
+            )
+        unknown = sorted(str(k) for k in mesh_config if k not in _PROMPT_CONFIG_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unknown mesh_config keys with a prompt: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(sorted(_PROMPT_CONFIG_KEYS))}"
+            )
+        if "model" not in mesh_config:
+            raise ValueError(
+                "A mesh_config with a prompt needs a model, a litellm model "
+                "string such as 'bedrock/us.anthropic.claude-sonnet-5-5'"
+            )
+        self._validate_prompt(
+            mesh_config["prompt"],
+            mesh_config["model"],
+            mesh_config.get("buffer_km", _DEFAULT_BUFFER_KM),
+            mesh_config.get("reasoning_effort"),
+        )
+        if "name" in mesh_config:
+            self._validate_name(mesh_config["name"])
+        self._validate_ranks_and_plot(mesh_config)
 
     @staticmethod
     def _parse_resolution_km(resolution: Any) -> float:
@@ -1965,7 +2047,7 @@ class _MeshBehavior:
         self,
         prompt: str,
         model: str,
-        buffer_km: float = 50.0,
+        buffer_km: float = _DEFAULT_BUFFER_KM,
         reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return the mesh request a prompt describes, without making the mesh.
@@ -2021,62 +2103,6 @@ class _MeshBehavior:
         return mesh_config
 
     @agent_action
-    async def create_mesh_from_prompt(
-        self,
-        prompt: str,
-        mesh_data_dir: str,
-        model: str,
-        mesh_name: Optional[str] = None,
-        plot: bool = False,
-        buffer_km: float = 50.0,
-        reasoning_effort: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Make the mesh a prompt describes.
-
-        The prompt is read as ``mesh_config_from_prompt()`` reads it, and the
-        mesh is made as ``generate_mesh()`` makes it.
-
-        Parameters
-        ----------
-        prompt, model, buffer_km, reasoning_effort
-            As for ``mesh_config_from_prompt()``.
-        mesh_data_dir : str
-            Directory the mesh is written to, as for ``generate_mesh()``.
-        mesh_name : str, optional
-            Name of the mesh, instead of the one the model gives.
-        plot : bool, optional
-            Whether to draw an image of the mesh, by default False.
-
-        Returns
-        -------
-        dict
-            ``mesh_config``, the request the prompt was made into, and
-            ``mesh_result``, what ``generate_mesh()`` returned for it.
-
-        Raises
-        ------
-        ValueError
-            As for ``mesh_config_from_prompt()`` and ``generate_mesh()``.
-        FileExistsError
-            If a mesh of that name exists in ``mesh_data_dir``.
-        RuntimeError
-            As for ``mesh_config_from_prompt()`` and ``generate_mesh()``.
-        """
-        if not isinstance(plot, bool):
-            raise ValueError(f"plot must be True or False, got {plot!r}")
-        if mesh_name is not None and not isinstance(mesh_name, str):
-            raise ValueError("mesh_name must be a string")
-        mesh_config = await self.mesh_config_from_prompt(
-            prompt, model, buffer_km, reasoning_effort
-        )
-        if mesh_name is not None:
-            mesh_config["name"] = mesh_name
-        if plot:
-            mesh_config["plot"] = True
-        mesh_result = await self.generate_mesh(mesh_config, mesh_data_dir)
-        return {"mesh_config": mesh_config, "mesh_result": mesh_result}
-
-    @agent_action
     async def ensure_tools_installed(self, mesh_config: Dict[str, Any]) -> None:
         """Install the tools a mesh request needs.
 
@@ -2085,6 +2111,11 @@ class _MeshBehavior:
         mesh, so a failed install does not waste a download, except that it
         installs plotting only when it plots, so a failed plotting install
         cannot fail the request.
+
+        For a request with a ``prompt``, prompting is installed, and Metis and
+        plotting if the request asks for them. The program that makes the
+        prompt's regional mesh, if it is one, is known only once the prompt is
+        read, so ``generate_mesh()`` installs it.
 
         Parameters
         ----------
@@ -2106,6 +2137,8 @@ class _MeshBehavior:
         when it plots, so that a plotting install that fails cannot fail the
         request.
         """
+        if "prompt" in mesh_config:
+            await self.install_prompting()
         if self._partition_ranks(mesh_config):
             await self.install_metis()
         regional = mesh_config.get("regional") or {}
@@ -2373,6 +2406,27 @@ class _MeshBehavior:
             "graph": str(request_mesh_data_dir / f"x1.{cells}.graph.info"),
         }
 
+    async def _generate_mesh_from_prompt(
+        self, mesh_config: Dict[str, Any], mesh_data_dir: str
+    ) -> Dict[str, Any]:
+        """Make the mesh a validated request with a prompt describes.
+
+        The prompt is read into a request, the request's own keys are added to
+        it, and the mesh is made from that, which is returned with the result
+        as ``mesh_config``.
+        """
+        made_config = await self.mesh_config_from_prompt(
+            mesh_config["prompt"],
+            mesh_config["model"],
+            mesh_config.get("buffer_km", _DEFAULT_BUFFER_KM),
+            mesh_config.get("reasoning_effort"),
+        )
+        for key in ("name", "init_ranks", "forecast_ranks", "plot"):
+            if key in mesh_config:
+                made_config[key] = mesh_config[key]
+        result = await self.generate_mesh(dict(made_config), mesh_data_dir)
+        return {**result, "mesh_config": made_config}
+
     @agent_action
     async def generate_mesh(
         self,
@@ -2411,6 +2465,15 @@ class _MeshBehavior:
             ``inside_lon``) or ``channel`` (``upper_lat``, ``lower_lat``).
             An optional ``plot`` of True draws an image of the mesh, as
             ``plot_mesh()`` does with its defaults.
+
+            Or a ``prompt`` describing the mesh, such as ``"a 15 km mesh over
+            Texas"``, with the ``model`` that reads it, as for
+            ``mesh_config_from_prompt()``. The prompt gives the resolution,
+            the region and the name, so ``resolution`` and ``regional`` are
+            not allowed. A ``name`` replaces the prompt's, and ``init_ranks``,
+            ``forecast_ranks`` and ``plot`` are as above. Optional
+            ``buffer_km`` and ``reasoning_effort`` are as for
+            ``mesh_config_from_prompt()``.
         mesh_data_dir : str
             Directory where this request's mesh files are written
 
@@ -2426,6 +2489,8 @@ class _MeshBehavior:
             - plot_error: why the plot failed, or that it was drawn without
               some map layers, present only then. A plot that fails does not
               fail the request.
+            - mesh_config: for a request with a prompt, the request it was
+              made into, which makes the same mesh again without the prompt
 
         Raises
         ------
@@ -2435,13 +2500,18 @@ class _MeshBehavior:
             If ``mesh_config`` is not a dict, or the name, resolution, a rank
             count or the ``regional`` block is invalid. A name must not be that
             of a downloaded global mesh file such as ``x1.2562.graph.info``.
+            For a request with a prompt, also as ``mesh_config_from_prompt()``
+            raises.
         RuntimeError
             If a resource the request needs is not defined (``service`` for a
             global or ``create_region`` mesh, ``compute`` for a regional mesh or
             partitioning), or a download, tool install, program run or partition
-            fails.
+            fails, or for a request with a prompt, as
+            ``mesh_config_from_prompt()`` raises.
         """
         self._validate_mesh_config(mesh_config)
+        if "prompt" in mesh_config:
+            return await self._generate_mesh_from_prompt(mesh_config, mesh_data_dir)
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
