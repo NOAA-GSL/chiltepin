@@ -52,7 +52,6 @@ import fcntl
 import hashlib
 import http.client
 import json
-import math
 import os
 import re
 import time
@@ -427,21 +426,23 @@ def _unwrap(polygons: Sequence[Any], reference: float) -> List[Any]:
     return shifted
 
 
-def _km_between(polygon, other) -> float:
-    """Return about how far apart two polygons are, in km on the sphere.
+def _km_between(polygons, others) -> Any:
+    """Return about how far each of polygons is from each of others, in km.
 
-    The distance is between the points nearest each other in longitude and
-    latitude, which are near enough the nearest on the sphere.
+    The distance is on the sphere, between the points nearest each other in
+    longitude and latitude, which are near enough the nearest on the sphere.
     """
-    from shapely.ops import nearest_points
+    import numpy as np
+    import shapely
 
-    a, b = nearest_points(polygon, other)
-    lat1, lon1, lat2, lon2 = map(math.radians, (a.y, a.x, b.y, b.x))
+    ends = shapely.get_coordinates(shapely.shortest_line(polygons, others))
+    lon, lat = np.radians(ends[:, 0]), np.radians(ends[:, 1])
+    lon1, lon2, lat1, lat2 = lon[::2], lon[1::2], lat[::2], lat[1::2]
     h = (
-        math.sin((lat2 - lat1) / 2) ** 2
-        + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+        np.sin((lat2 - lat1) / 2) ** 2
+        + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
     )
-    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(min(1.0, h)))
+    return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.minimum(1.0, h)))
 
 
 def _near_largest(polygons: Sequence[Any], proximity_km: float) -> List[Any]:
@@ -450,32 +451,31 @@ def _near_largest(polygons: Sequence[Any], proximity_km: float) -> List[Any]:
     A chain of islands stays with its mainland, as the Ryukyus do with Japan,
     while parts far from every other, as Hawaii is, are left out.
     """
+    import numpy as np
     from shapely import STRtree
 
-    polygons = list(polygons)
-    tree = STRtree(polygons)
+    polygons = np.asarray(polygons, dtype=object)
     limit = proximity_km / KM_PER_DEGREE
     largest = max(range(len(polygons)), key=lambda i: polygons[i].area)
-    kept, frontier = {largest}, [largest]
-    while frontier:
-        near = set()
-        for i in frontier:
-            # A degree of longitude is shorter away from the equator, so
-            # parts that far in degrees east or west are checked in km
-            _, south, _, north = polygons[i].bounds
-            widest = min(max(abs(south), abs(north)) + limit, 89.0)
-            reach = limit / math.cos(math.radians(widest))
-            candidates = tree.query(polygons[i], predicate="dwithin", distance=reach)
-            near.update(
-                j
-                for j in candidates.tolist()
-                if j not in kept
-                and j not in near
-                and _km_between(polygons[i], polygons[j]) <= proximity_km
-            )
-        frontier = sorted(near)
-        kept.update(frontier)
-    return [polygons[i] for i in sorted(kept)]
+    kept = np.zeros(len(polygons), dtype=bool)
+    kept[largest] = True
+    frontier = np.array([largest])
+    while len(frontier) and not kept.all():
+        # The parts not kept yet near the last ones kept. A degree of
+        # longitude is shorter away from the equator, so they are looked for
+        # farther east and west there, and then measured in km.
+        rest = np.flatnonzero(~kept)
+        parts = polygons[frontier]
+        bounds = np.array([part.bounds for part in parts])
+        widest = np.minimum(np.abs(bounds[:, [1, 3]]).max(axis=1) + limit, 89.0)
+        reach = limit / np.cos(np.radians(widest))
+        near, other = STRtree(polygons[rest]).query(
+            parts, predicate="dwithin", distance=reach
+        )
+        distance = _km_between(parts[near], polygons[rest[other]])
+        frontier = np.unique(rest[other[distance <= proximity_km]])
+        kept[frontier] = True
+    return [polygons[i] for i in np.flatnonzero(kept)]
 
 
 def lookup_region(

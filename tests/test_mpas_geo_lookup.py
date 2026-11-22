@@ -173,6 +173,25 @@ def test_parts_are_kept_by_their_distance_in_km():
     assert len(geo._near_largest(equator, 1000)) == 1
 
 
+def test_parts_are_kept_across_a_pole():
+    # 88N on opposite sides of the pole are about 450 km apart, though 180
+    # degrees of longitude apart
+    from shapely.geometry import box
+
+    parts = [box(-10, 87, 10, 88), box(170, 87, 171, 88)]
+    assert len(geo._near_largest(parts, 600)) == 2
+    assert len(geo._near_largest(parts, 300)) == 1
+
+
+def test_parts_are_kept_across_the_180th_meridian():
+    # Parts are unwrapped before they are measured, so Fiji's islands either
+    # side of 180 degrees stay together
+    from shapely.geometry import box
+
+    parts = geo._unwrap([box(177, -18, 179.9, -16), box(-179.9, -17, -179, -16)], 178)
+    assert len(geo._near_largest(parts, 100)) == 2
+
+
 def test_continent_stands_for_its_countries(boundaries):
     # Each country keeps its own parts, so neither is dropped for being far
     # from the other
