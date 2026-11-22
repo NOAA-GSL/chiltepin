@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Endpoint Status**: `endpoint.is_online()` says whether an endpoint is online to the
   Compute service
 - **`unified-workflow-tools` Dependency**: `unified-workflow-tools>=2.21.0`
+- **Test Dependencies**: The `test` extra declares `pillow` and `requests`, which the tests
+  import directly. They were installed only as dependencies of matplotlib and globus-sdk
 
 ### Changed
 - **Agents Package**: `chiltepin.agents` is now a package, ready for built-in agents. Imports
