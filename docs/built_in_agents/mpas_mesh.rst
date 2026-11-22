@@ -543,8 +543,9 @@ Russia", with an LLM on the ``service`` resource:
    resolution that cannot be downloaded, or a shape the region does not fit
    or that is too small for its cells, the mesh is made the first other way
    that works: a ``project_hexes`` rectangle, or a ``create_region`` polygon,
-   circle, ellipse or rectangle. What the prompt names stays as it is. A
-   prompt names a method or shape by its words, such as "limited area",
+   circle, ellipse or rectangle. What the prompt names stays as it is,
+   except that a polygon it names can be made as a rectangle, which is one,
+   so "a 7 km polygon" is a ``project_hexes`` rectangle. A prompt names a method or shape by its words, such as "limited area",
    "circles" or "polygonal", but not by the names of its places, so "Round
    Rock" names no circle.
 3. The places are looked up in Natural Earth's detailed countries,

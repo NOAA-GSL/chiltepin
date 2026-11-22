@@ -467,6 +467,27 @@ def test_method_choices_of_what_the_model_chose(fields, choices):
         ("a 15 km circle mesh over Texas", {"shape": "circle"}, [CIRCLE]),
         ("a 15 km hex projection mesh over Texas", {"method": "project_hexes"}, [PH]),
         ("a 15 km rectangle over Texas", {"shape": "rectangle"}, [PH, CUT_RECTANGLE]),
+        # A polygon can be made as a rectangle, which is one
+        (
+            "a 15 km polygon mesh of Japan",
+            {"shape": "polygon"},
+            [POLYGON, PH, CUT_RECTANGLE],
+        ),
+        (
+            "a 7 km polygonal mesh of Japan",
+            {"resolution": "7km", "shape": "polygon"},
+            [PH],
+        ),
+        (
+            "a 7 km polygon made with project_hexes",
+            {"resolution": "7km", "shape": "polygon", "method": "project_hexes"},
+            [PH],
+        ),
+        (
+            "a 15 km limited area polygon of Japan",
+            {"shape": "polygon", "method": "create_region"},
+            [POLYGON, CUT_RECTANGLE],
+        ),
         # A method or shape the model added to a global mesh is no matter
         (
             "a global 120 km mesh",

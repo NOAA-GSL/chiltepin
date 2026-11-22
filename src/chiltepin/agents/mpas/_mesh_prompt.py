@@ -419,6 +419,10 @@ FALLBACKS = (
 )
 
 
+# The shapes that make a shape the prompt names. A rectangle is a polygon.
+MADE_AS = {"polygon": ("polygon", "rectangle")}
+
+
 def _words(text: str) -> str:
     """Return text as names are compared: lower case, "_" and "-" as spaces."""
     return " ".join(text.casefold().replace("_", " ").replace("-", " ").split())
@@ -477,7 +481,8 @@ def method_choices(
     The model's choice comes first, and then ``FALLBACKS``, for when its
     choice cannot be made: a cut at a resolution that cannot be downloaded,
     or a shape the region does not fit. What the prompt asks for, the method
-    and shape it names, stays, so a fallback never changes it. Without a
+    and shape it names, stays, so a fallback never changes it, except that a
+    polygon can be made as a rectangle, as ``MADE_AS`` has it. Without a
     prompt, the answer's method and shape count as asked for.
 
     Raises
@@ -534,7 +539,10 @@ def method_choices(
             candidate in choices
             or (candidate_method == "project_hexes" and candidate_shape != "rectangle")
             or (asked_method and candidate_method != asked_method)
-            or (asked_shape and candidate_shape != asked_shape)
+            or (
+                asked_shape
+                and candidate_shape not in MADE_AS.get(asked_shape, (asked_shape,))
+            )
             or (candidate_method == "create_region" and not downloaded)
         ):
             continue
