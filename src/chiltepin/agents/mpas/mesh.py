@@ -2585,7 +2585,11 @@ class _MeshBehavior:
 
 @chiltepin_agent()
 class MeshAgent(_MeshBehavior):
-    """Deployable agent for downloading, generating and partitioning MPAS meshes.
+    """Deployable agent that makes, partitions and plots MPAS meshes.
+
+    Global meshes are downloaded, and regional meshes are generated with
+    ``project_hexes`` or cut from a global mesh with ``create_region``, from a
+    full request or from a prompt an LLM reads.
 
     Parameters
     ----------
