@@ -253,8 +253,9 @@ class MeshPromptResponse(BaseModel):
             raise ValueError("A channel's upper_lat and lower_lat must differ")
         if self.upper_lat < self.lower_lat:
             self.upper_lat, self.lower_lat = self.lower_lat, self.upper_lat
-        # A channel goes around the globe, so it covers no named places
-        self.region_names, self.exclude_names = [], []
+        # A channel goes around the globe, so it covers no named places.
+        # Places it leaves out stay, as that cannot be made.
+        self.region_names = []
         return self
 
     @property
@@ -482,6 +483,13 @@ def method_choices(
         # A channel is a band of latitude, which needs no word for it
         if answer.shape == "channel":
             asked_shape = "channel"
+    if answer.exclude_names and (answer.is_global or answer.shape == "channel"):
+        mesh = "A global mesh" if answer.is_global else "A channel"
+        raise ValueError(
+            f"{mesh} goes around the whole globe, so it cannot leave out "
+            f"{', '.join(answer.exclude_names)}. Name the places the mesh covers "
+            "instead."
+        )
     if answer.is_global:
         if asked_shape or asked_method:
             raise ValueError(
@@ -500,7 +508,10 @@ def method_choices(
     )
     shape = answer.shape or ("rectangle" if method == "project_hexes" else "polygon")
     choices = []
-    for candidate in [(method, shape), *FALLBACKS]:
+    # A shape only create_region cuts is cut with it if the model chose
+    # project_hexes for it
+    cut = [("create_region", shape)] if shape in CUT_SHAPES else []
+    for candidate in [(method, shape), *cut, *FALLBACKS]:
         candidate_method, candidate_shape = candidate
         if (
             candidate in choices
@@ -548,7 +559,11 @@ def mesh_config(
         small for its cells.
     """
     from chiltepin.agents.mpas._geo_lookup import lookup_region
-    from chiltepin.agents.mpas._region_shapes import RegionTooLarge, regional_config
+    from chiltepin.agents.mpas._region_shapes import (
+        RegionTooLarge,
+        RegionTooSmall,
+        regional_config,
+    )
 
     choices = method_choices(answer, downloadable, prompt)
     config: Dict[str, Any] = {"resolution": answer.resolution, "name": answer.name}
@@ -567,8 +582,8 @@ def mesh_config(
         cache_dir=cache_dir,
     )
     resolution_km = float(answer.resolution[:-2])
-    # The first choice the region fits. A region too small for its cells is
-    # too small for every shape, so it is not tried again.
+    # The first choice the region fits. A region too small for its cells as
+    # one shape can be large enough as another, so every choice is tried.
     first = None
     for method, shape in choices:
         try:
@@ -576,8 +591,8 @@ def mesh_config(
                 region, method, shape, resolution_km, buffer_km
             )
             return config
-        except RegionTooLarge as e:
+        except (RegionTooLarge, RegionTooSmall) as e:
             first = first or e
     if len(choices) > 1:
-        raise RegionTooLarge(f"{first} No other shape fits the region either.")
+        raise type(first)(f"{first} No other shape fits the region either.")
     raise first

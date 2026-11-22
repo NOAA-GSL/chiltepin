@@ -540,15 +540,18 @@ Russia", with an LLM on the ``service`` resource:
    any resolution, unless ``create_region`` is chosen, which then cuts a
    polygon around the region. The model may choose a method or shape the
    prompt does not name. If that choice cannot be made, such as a cut at a
-   resolution that cannot be downloaded, or a shape the region does not fit,
-   the mesh is made the first other way that works: a ``project_hexes``
+   resolution that cannot be downloaded, or a shape the region does not fit
+   or that is too small for its cells, the mesh is made the first other way that works: a ``project_hexes``
    rectangle, or a ``create_region`` polygon, circle, ellipse or rectangle.
    What the prompt names stays as it is.
 3. The places are looked up in Natural Earth's detailed countries,
    continents, and states or provinces. A continent stands for its countries,
-   and "Europe" leaves Russia out unless Russia is named too. "Contiguous
-   United States", "CONUS" and "Lower 48" stand for the United States without
-   Alaska and Hawaii. A country can leave out states, and a country named withsome of its own states only says which states they are. A name used for
+   and "Europe" leaves Russia out unless Russia is named too. Natural Earth
+   puts all of Russia in Europe, so "Asia" leaves it out as well, and a
+   prompt names it for its Asian part. "Contiguous United States", "CONUS"
+   and "Lower 48" stand for the United States without Alaska and Hawaii. A
+   country can leave out states, and a country named with some of its own
+   states only says which states they are. A name used for
    states in several countries, such as "Florida", or for a country and a
    state, such as "Georgia", stands for the one in the country the prompt's
    other places are in, as "Florida" next to "Uruguay" does for Uruguay's
@@ -574,8 +577,9 @@ Russia", with an LLM on the ``service`` resource:
 A prompt that asks for a mesh that cannot be made raises ``ValueError`` saying
 why, such as a place that is not found, a circle it names at a resolution that
 cannot be downloaded, a rectangle it names made with ``project_hexes`` around
-a pole, or a region too small for its cells. A model that cannot be reached, or gives no valid answer, raises
-``RuntimeError``. The request is then checked as any other is.
+a pole, a global mesh or channel that leaves out places, or a region too small
+for its cells as every shape it could be made as. A model that cannot be
+reached, or gives no valid answer, raises ``RuntimeError``. The request is then checked as any other is.
 
 ``model`` is a litellm model string, such as
 ``"bedrock/us.anthropic.claude-sonnet-5-5"`` for Amazon Bedrock or

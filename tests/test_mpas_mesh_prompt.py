@@ -183,11 +183,14 @@ def test_too_many_names():
 
 
 def test_channel_latitudes_are_put_in_order():
-    answer = response(shape="channel", upper_lat=-23.4, lower_lat=23.4)
+    answer = response(
+        shape="channel", upper_lat=-23.4, lower_lat=23.4, exclude_names=["Africa"]
+    )
     assert (answer.upper_lat, answer.lower_lat) == (23.4, -23.4)
     # A channel goes around the globe, so it covers no named places, and is
-    # not a global mesh
+    # not a global mesh. Places it leaves out stay, to be refused.
     assert answer.region_names == []
+    assert answer.exclude_names == ["Africa"]
     assert not answer.is_global
 
 
@@ -417,6 +420,20 @@ CUT_RECTANGLE = ("create_region", "rectangle")
             {"shape": "channel", "upper_lat": 10, "lower_lat": -10},
             [("create_region", "channel")],
         ),
+        # A cut shape the model chose project_hexes for is cut
+        (
+            {"method": "project_hexes", "shape": "circle"},
+            [CIRCLE, PH, POLYGON, ELLIPSE, CUT_RECTANGLE],
+        ),
+        (
+            {
+                "method": "project_hexes",
+                "shape": "channel",
+                "upper_lat": 10,
+                "lower_lat": -10,
+            },
+            [("create_region", "channel")],
+        ),
     ],
 )
 def test_method_choices_of_what_the_model_chose(fields, choices):
@@ -517,6 +534,24 @@ def test_method_choices_keep_what_the_prompt_asks_for(text, fields, choices):
             "a 7 km limited area mesh",
             {"method": "create_region", "resolution": "7km"},
             "or for a rectangle",
+        ),
+        # A mesh around the globe cannot leave places out
+        (
+            "a global mesh without Antarctica",
+            {"region_names": [], "exclude_names": ["Antarctica"]},
+            "A global mesh goes around the whole globe, so it cannot leave out "
+            "Antarctica",
+        ),
+        (
+            "a mesh of the tropics without Africa",
+            {
+                "shape": "channel",
+                "upper_lat": 23.4,
+                "lower_lat": -23.4,
+                "exclude_names": ["Africa", "Asia"],
+            },
+            "A channel goes around the whole globe, so it cannot leave out "
+            "Africa, Asia",
         ),
     ],
 )
@@ -628,21 +663,34 @@ def test_mesh_config_when_no_shape_fits(monkeypatch, region_tools):
     assert str(error.value) == "No circle."
 
 
-def test_mesh_config_does_not_fall_back_for_a_region_too_small(
-    monkeypatch, region_tools
-):
+def test_mesh_config_falls_back_for_a_region_too_small(monkeypatch, region_tools):
     from chiltepin.agents.mpas import _region_shapes
 
+    # A long, thin region can be too small across for a rectangle or polygon
+    # and still fit a circle
     tried = []
 
     def fit(region, method, shape, resolution_km, buffer_km):
         tried.append(shape)
-        raise _region_shapes.RegionTooSmall("Ask for smaller cells.")
+        if shape != "circle":
+            raise _region_shapes.RegionTooSmall("Ask for smaller cells.")
+        return {method: {"fitted": shape}}
 
     monkeypatch.setattr(_region_shapes, "regional_config", fit)
-    with pytest.raises(_region_shapes.RegionTooSmall):
+    config = prompt.mesh_config(response(), DOWNLOADABLE, "/data", 50, prompt="Texas")
+    assert config["regional"] == {"create_region": {"fitted": "circle"}}
+    assert tried == ["rectangle", "polygon", "circle"]
+
+    # Too small as every shape, with the first shape's reason
+    def too_small(region, method, shape, resolution_km, buffer_km):
+        raise _region_shapes.RegionTooSmall("Ask for smaller cells.")
+
+    monkeypatch.setattr(_region_shapes, "regional_config", too_small)
+    with pytest.raises(_region_shapes.RegionTooSmall) as error:
         prompt.mesh_config(response(), DOWNLOADABLE, "/data", 50, prompt="Texas")
-    assert tried == ["rectangle"]
+    assert str(error.value) == (
+        "Ask for smaller cells. No other shape fits the region either."
+    )
 
 
 def test_mesh_config_of_a_region(region_tools):
