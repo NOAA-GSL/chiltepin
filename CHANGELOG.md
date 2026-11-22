@@ -64,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `client` argument. They use the shared login
 
 ### Fixed
+- **Agent Signatures**: `@chiltepin_agent` agents and their actions show their real
+  arguments to `inspect.signature()` and in the API reference, instead of
+  `(*args, **kwargs)`. An agent shows its behavior's arguments followed by the keyword-only
+  `agent_workflow_config`, `agent_workflow_include` and `agent_workflow_run_dir`
 - **Shutdown Warning**: Manager shutdown no longer warns that it canceled pending Parsl tasks.
   Parsl cannot cancel them, so shutdown waits for them
 - **Workflow Logger Test**: Fixed a bug in the workflow logger cleanup test

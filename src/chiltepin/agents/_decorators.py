@@ -52,6 +52,46 @@ else:
     AgentT = TypeVar("AgentT")
 
 
+def _signature_of(func: Callable) -> Optional[inspect.Signature]:
+    """Return the signature of a behavior's method, or None if it has none.
+
+    An action's wrapper takes ``*args, **kwargs`` and passes them on, so it is
+    given this signature, which ``inspect`` and Sphinx then show instead.
+    """
+    try:
+        return inspect.signature(func)
+    except (TypeError, ValueError):
+        return None
+
+
+def _init_signature(
+    behavior_init: Callable, wrapper_init: Callable
+) -> Optional[inspect.Signature]:
+    """Return the signature of an agent's ``__init__``, or None if it has none.
+
+    The agent takes the behavior's arguments and passes them on, with the
+    keyword-only ``agent_workflow_*`` arguments of its own, which
+    ``manager.launch()`` gives it.
+    """
+    behavior = _signature_of(behavior_init)
+    wrapper = _signature_of(wrapper_init)
+    if behavior is None or wrapper is None:
+        return None
+    own = [
+        parameter
+        for parameter in wrapper.parameters.values()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        and parameter.name not in behavior.parameters
+    ]
+    parameters = list(behavior.parameters.values())
+    # Keyword-only arguments come before any **kwargs
+    at = len(parameters)
+    if parameters and parameters[-1].kind is inspect.Parameter.VAR_KEYWORD:
+        at -= 1
+    parameters[at:at] = own
+    return wrapper.replace(parameters=parameters)
+
+
 def agent_action(func: Callable) -> Callable:
     """Marker decorator to indicate a method should be exposed as an agent action.
 
@@ -562,10 +602,12 @@ def chiltepin_agent(
                             method = getattr(self._behavior, method_name)
                             return await method(*args, **kwargs)
 
+                        method = getattr(behavior_class, method_name)
                         action_method.__name__ = method_name
-                        action_method.__doc__ = getattr(
-                            behavior_class, method_name
-                        ).__doc__
+                        action_method.__doc__ = method.__doc__
+                        signature = _signature_of(method)
+                        if signature is not None:
+                            action_method.__signature__ = signature
                         return action_method
 
                     setattr(ChiltepinAgentWrapper, name, make_async_action(name))
@@ -583,10 +625,12 @@ def chiltepin_agent(
                                 return await asyncio.wrap_future(result)
                             return result
 
+                        method = getattr(behavior_class, method_name)
                         action_method.__name__ = method_name
-                        action_method.__doc__ = getattr(
-                            behavior_class, method_name
-                        ).__doc__
+                        action_method.__doc__ = method.__doc__
+                        signature = _signature_of(method)
+                        if signature is not None:
+                            action_method.__signature__ = signature
                         return action_method
 
                     setattr(ChiltepinAgentWrapper, name, make_action(name))
@@ -596,6 +640,15 @@ def chiltepin_agent(
         ChiltepinAgentWrapper.__qualname__ = behavior_class.__qualname__
         ChiltepinAgentWrapper.__module__ = behavior_class.__module__
         ChiltepinAgentWrapper.__doc__ = behavior_class.__doc__
+        signature = _init_signature(
+            behavior_class.__init__, ChiltepinAgentWrapper.__init__
+        )
+        if signature is not None:
+            ChiltepinAgentWrapper.__init__.__signature__ = signature
+            # Academy's Agent defines __new__, which Sphinx would show instead
+            ChiltepinAgentWrapper.__signature__ = signature.replace(
+                parameters=list(signature.parameters.values())[1:]
+            )
 
         # Mark this as a chiltepin agent for Manager validation
         ChiltepinAgentWrapper._is_chiltepin_agent = True
