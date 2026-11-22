@@ -48,6 +48,18 @@ You can also install in a virtual environment (recommended):
    $ conda activate chiltepin
    $ pip install chiltepin
 
+Optional Extras
+---------------
+
+The built-in MPAS mesh agent's tasks need the ``mpas`` extra where they run, to
+cut and plot meshes, and the ``llm`` extra too where they read prompts with an
+LLM. See :doc:`built_in_agents/mpas_mesh` for which resource needs which:
+
+.. code-block:: console
+
+   $ pip install "chiltepin[mpas]"
+   $ pip install "chiltepin[mpas,llm]"
+
 Development Installation
 ------------------------
 
