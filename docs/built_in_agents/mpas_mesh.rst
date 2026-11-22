@@ -541,9 +541,12 @@ Russia", with an LLM on the ``service`` resource:
    polygon around the region. The model may choose a method or shape the
    prompt does not name. If that choice cannot be made, such as a cut at a
    resolution that cannot be downloaded, or a shape the region does not fit
-   or that is too small for its cells, the mesh is made the first other way that works: a ``project_hexes``
-   rectangle, or a ``create_region`` polygon, circle, ellipse or rectangle.
-   What the prompt names stays as it is.
+   or that is too small for its cells, the mesh is made the first other way
+   that works: a ``project_hexes`` rectangle, or a ``create_region`` polygon,
+   circle, ellipse or rectangle. What the prompt names stays as it is. A
+   prompt names a method or shape by its words, such as "limited area",
+   "circles" or "polygonal", but not by the names of its places, so "Round
+   Rock" names no circle.
 3. The places are looked up in Natural Earth's detailed countries,
    continents, and states or provinces. A continent stands for its countries,
    and "Europe" leaves Russia out unless Russia is named too. Natural Earth
@@ -551,22 +554,22 @@ Russia", with an LLM on the ``service`` resource:
    prompt names it for its Asian part. "Contiguous United States", "CONUS"
    and "Lower 48" stand for the United States without Alaska and Hawaii. A
    country can leave out states, and a country named with some of its own
-   states only says which states they are. A name used for
-   states in several countries, such as "Florida", or for a country and a
-   state, such as "Georgia", stands for the one in the country the prompt's
-   other places are in, as "Florida" next to "Uruguay" does for Uruguay's
-   department. Otherwise a US state's name means the US state, so "Florida"
-   and "Georgia" alone are the US states. A prompt names the others with their
-   country, as "Florida, Uruguay" or "Punjab, India", or as a country, as
-   "Georgia (country)" or "the country of Georgia". If the
-   places cannot be found, the model is told why and asked once more. A place
+   states only says which states they are. A name used for states in
+   several countries, such as "Florida", or for a country and a state, such
+   as "Georgia", stands for the one in the country the prompt's other places
+   are in, as "Florida" next to "Uruguay" does for Uruguay's department.
+   Otherwise a US state's name means the US state, so "Florida" and "Georgia"
+   alone are the US states. A prompt names the others with their country, as
+   "Florida, Uruguay" or "Punjab, India", or as a country, as "Georgia
+   (country)" or "the country of Georgia". If the places cannot be found,
+   the model is told why and asked once more. A place
    Natural Earth lacks is looked up with Nominatim, only if
    ``nominatim_contact`` is given. Answers are kept in
    ``work_dir/geo/nominatim``, so each place is asked for once, and requests
    from every process sharing that directory are at least a second apart,
-   where its filesystem supports locks. Parts of a place far from the rest of
-   it, as Hawaii is, are left out, while a chain of islands, as the Ryukyus
-   are, stays.
+   where its filesystem supports locks. Parts of a place more than 1000 km
+   from the rest of it, as Hawaii is, are left out, while a chain of islands,
+   as the Ryukyus are, stays.
 4. The region is fitted to the shape in the frame its tool draws it in, with a
    margin of ``buffer_km`` and at least a tenth of the region's diameter, so
    the shape holds the whole region. The boundary layers both tools add are
@@ -578,8 +581,10 @@ A prompt that asks for a mesh that cannot be made raises ``ValueError`` saying
 why, such as a place that is not found, a circle it names at a resolution that
 cannot be downloaded, a rectangle it names made with ``project_hexes`` around
 a pole, a global mesh or channel that leaves out places, or a region too small
-for its cells as every shape it could be made as. A model that cannot be
-reached, or gives no valid answer, raises ``RuntimeError``. The request is then checked as any other is.
+for its cells as every shape it could be made as. When several ways were
+tried, the message gives each one's reason. A model that cannot be reached,
+or gives no valid answer, raises ``RuntimeError``. A request made from a
+prompt is then checked as any other is.
 
 ``model`` is a litellm model string, such as
 ``"bedrock/us.anthropic.claude-sonnet-5-5"`` for Amazon Bedrock or

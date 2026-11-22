@@ -57,7 +57,7 @@ SHAPES = {
     "rectangle": ("rectangle", "rectangular", "square", "box", "bounding box", "rect"),
     "circle": ("circle", "circular", "round", "disk", "disc"),
     "ellipse": ("ellipse", "elliptical", "elliptic", "oval"),
-    "polygon": ("polygon", "convex hull", "hull", "outline"),
+    "polygon": ("polygon", "polygonal", "convex hull", "hull", "outline"),
     "channel": ("channel", "band", "latitude band", "zonal band", "belt", "strip"),
 }
 
@@ -424,28 +424,41 @@ def _words(text: str) -> str:
     return " ".join(text.casefold().replace("_", " ").replace("-", " ").split())
 
 
-def _named(prompt: str, table) -> set:
+def _named(prompt: str, table, places: Sequence[str] = ()) -> set:
     """Return the keys of ``table`` the prompt names by any of their names.
 
-    A name counts as whole words, so "lam" counts in "a LAM mesh" but not in
-    "Alabama".
+    A name counts as whole words, alone or plural, so "lam" counts in "a LAM
+    mesh" and "circles" in "two circles", but not "lam" in "Alabama". Words
+    of ``places`` do not count, so "Round Rock" names no circle.
     """
     text = _words(prompt)
+    for place in sorted(map(_words, places), key=len, reverse=True):
+        if place:
+            text = re.sub(rf"\b{re.escape(place)}\b", " ", text)
     return {
         key
         for key, names in table.items()
-        if any(re.search(rf"\b{re.escape(_words(name))}\b", text) for name in names)
+        if any(
+            re.search(rf"\b{re.escape(_words(name))}(?:s|es)?\b", text)
+            for name in names
+        )
     }
 
 
-def methods_named(prompt: str) -> set:
-    """Return the methods a prompt names, such as "limited area"."""
-    return _named(prompt, METHODS)
+def methods_named(prompt: str, places: Sequence[str] = ()) -> set:
+    """Return the methods a prompt names, such as "limited area".
+
+    Words of ``places`` do not count.
+    """
+    return _named(prompt, METHODS, places)
 
 
-def shapes_named(prompt: str) -> set:
-    """Return the shapes a prompt names, such as "oval"."""
-    return _named(prompt, SHAPES)
+def shapes_named(prompt: str, places: Sequence[str] = ()) -> set:
+    """Return the shapes a prompt names, such as "oval".
+
+    Words of ``places`` do not count.
+    """
+    return _named(prompt, SHAPES, places)
 
 
 def method_choices(
@@ -478,8 +491,12 @@ def method_choices(
     if prompt is None:
         asked_method, asked_shape = answer.method, answer.shape
     else:
-        asked_method = answer.method if answer.method in methods_named(prompt) else None
-        asked_shape = answer.shape if answer.shape in shapes_named(prompt) else None
+        places = [*answer.region_names, *answer.exclude_names]
+        named_methods = methods_named(prompt, places)
+        asked_method = answer.method if answer.method in named_methods else None
+        asked_shape = (
+            answer.shape if answer.shape in shapes_named(prompt, places) else None
+        )
         # A channel is a band of latitude, which needs no word for it
         if answer.shape == "channel":
             asked_shape = "channel"
@@ -584,7 +601,7 @@ def mesh_config(
     resolution_km = float(answer.resolution[:-2])
     # The first choice the region fits. A region too small for its cells as
     # one shape can be large enough as another, so every choice is tried.
-    first = None
+    errors = []
     for method, shape in choices:
         try:
             config["regional"] = regional_config(
@@ -592,7 +609,14 @@ def mesh_config(
             )
             return config
         except (RegionTooLarge, RegionTooSmall) as e:
-            first = first or e
-    if len(choices) > 1:
-        raise type(first)(f"{first} No other shape fits the region either.")
-    raise first
+            errors.append(e)
+    if len(errors) == 1:
+        raise errors[0]
+    # Each way's reason, as its advice can be to try one of the others
+    reasons = " ".join(
+        f"As a {method} {shape}: {error}"
+        for (method, shape), error in zip(choices, errors)
+    )
+    raise type(errors[0])(
+        f"The region fits none of the ways it could be made. {reasons}"
+    )

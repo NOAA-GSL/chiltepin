@@ -575,14 +575,30 @@ def test_method_choices_without_a_prompt_count_the_answer_as_asked():
         ("a LAM over Texas", {"create_region"}, set()),
         ("use create_region for a square", {"create_region"}, {"rectangle"}),
         ("a hex projection circle", {"project_hexes"}, {"circle"}),
-        # Names count only as whole words
+        # Names count only as whole words, alone or plural
         ("a mesh over Alabama", set(), set()),
         ("a mesh over Lamar County, or Roundup", set(), set()),
+        ("two LAMs as circles", {"create_region"}, {"circle"}),
+        ("a polygonal mesh of Japan", set(), {"polygon"}),
+        ("rectangles and ellipses", set(), {"rectangle", "ellipse"}),
     ],
 )
 def test_methods_and_shapes_named(text, methods, shapes):
     assert prompt.methods_named(text) == methods
     assert prompt.shapes_named(text) == shapes
+
+
+def test_words_of_places_name_no_method_or_shape():
+    text = "a circle mesh around Round Rock and Lam Dong"
+    places = ["Lam Dong", "Round Rock"]
+    assert prompt.shapes_named(text, places) == {"circle"}
+    assert prompt.shapes_named("a mesh around Round Rock", places) == set()
+    assert prompt.methods_named(text, places) == set()
+    assert prompt.methods_named(text) == {"create_region"}
+    # So the model's circle around Round Rock can fall back
+    answer = response(region_names=places, shape="circle")
+    choices = prompt.method_choices(answer, DOWNLOADABLE, "a mesh of Round Rock")
+    assert choices[0] == ("create_region", "circle") and len(choices) > 1
 
 
 # Building the request
@@ -653,9 +669,18 @@ def test_mesh_config_when_no_shape_fits(monkeypatch, region_tools):
 
     monkeypatch.setattr(_region_shapes, "regional_config", fit)
     with pytest.raises(_region_shapes.RegionTooLarge) as error:
-        prompt.mesh_config(response(), DOWNLOADABLE, "/data", 50, prompt="Texas")
-    # The first choice's reason, which is the one the prompt is about
-    assert str(error.value) == "No rectangle. No other shape fits the region either."
+        prompt.mesh_config(
+            response(shape="rectangle"),
+            DOWNLOADABLE,
+            "/data",
+            50,
+            prompt="a rectangle of Texas",
+        )
+    # Each way's reason
+    assert str(error.value) == (
+        "The region fits none of the ways it could be made. As a project_hexes "
+        "rectangle: No rectangle. As a create_region rectangle: No rectangle."
+    )
     # With only one choice, its reason alone
     answer = response(shape="circle")
     with pytest.raises(_region_shapes.RegionTooLarge) as error:
@@ -681,16 +706,35 @@ def test_mesh_config_falls_back_for_a_region_too_small(monkeypatch, region_tools
     assert config["regional"] == {"create_region": {"fitted": "circle"}}
     assert tried == ["rectangle", "polygon", "circle"]
 
-    # Too small as every shape, with the first shape's reason
+    # Too small as every shape, with each shape's reason
     def too_small(region, method, shape, resolution_km, buffer_km):
         raise _region_shapes.RegionTooSmall("Ask for smaller cells.")
 
     monkeypatch.setattr(_region_shapes, "regional_config", too_small)
     with pytest.raises(_region_shapes.RegionTooSmall) as error:
         prompt.mesh_config(response(), DOWNLOADABLE, "/data", 50, prompt="Texas")
-    assert str(error.value) == (
-        "Ask for smaller cells. No other shape fits the region either."
+    assert str(error.value).startswith(
+        "The region fits none of the ways it could be made. As a project_hexes "
+        "rectangle: Ask for smaller cells. As a create_region polygon: Ask"
     )
+
+
+def test_mesh_config_of_a_region_too_small_for_every_shape(monkeypatch):
+    # Real fits of a region about 30 km across, too small for 120 km cells
+    from shapely.geometry import box
+
+    from chiltepin.agents.mpas import _geo_lookup, _region_shapes
+
+    monkeypatch.setattr(
+        _geo_lookup, "lookup_region", lambda *a, **k: box(6, 49.5, 6.4, 49.8)
+    )
+    answer = response(resolution="120km", region_names=["Luxembourg"])
+    with pytest.raises(_region_shapes.RegionTooSmall) as error:
+        prompt.mesh_config(answer, DOWNLOADABLE, "/data", 0, prompt="Luxembourg")
+    message = str(error.value)
+    for method, shape in prompt.method_choices(answer, DOWNLOADABLE, "Luxembourg"):
+        assert f"As a {method} {shape}: " in message
+    assert message.count("Ask for smaller cells") == 5
 
 
 def test_mesh_config_of_a_region(region_tools):
