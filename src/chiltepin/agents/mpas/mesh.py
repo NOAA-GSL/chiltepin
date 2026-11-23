@@ -2523,7 +2523,7 @@ class _MeshBehavior:
         }
 
     async def _generate_mesh_from_prompt(
-        self, mesh_config: Dict[str, Any], mesh_data_dir: str
+        self, mesh_config: Dict[str, Any], mesh_data_dir: str, overwrite: bool
     ) -> Dict[str, Any]:
         """Make the mesh a validated request with a prompt describes.
 
@@ -2540,7 +2540,9 @@ class _MeshBehavior:
         for key in ("name", "init_ranks", "forecast_ranks", "plot"):
             if key in mesh_config:
                 made_config[key] = mesh_config[key]
-        result = await self.generate_mesh(dict(made_config), mesh_data_dir)
+        result = await self.generate_mesh(
+            dict(made_config), mesh_data_dir, overwrite=overwrite
+        )
         return {**result, "mesh_config": made_config}
 
     @agent_action
@@ -2548,6 +2550,7 @@ class _MeshBehavior:
         self,
         mesh_config: Dict[str, Any],
         mesh_data_dir: str,
+        overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Generate requested mesh.
 
@@ -2562,7 +2565,9 @@ class _MeshBehavior:
         ``<name>.mesh.json``. A request matching an existing mesh of its name,
         in resolution, region and the version of the tool that made it, reuses
         it: only the partitions it lacks, or that another Metis version made,
-        are made, and a plot is drawn if there is none.
+        are made, and a plot is drawn if there is none. With ``overwrite``, the
+        mesh is made again in a new directory, which replaces whatever has its
+        name only once it is complete.
 
         Parameters
         ----------
@@ -2598,6 +2603,10 @@ class _MeshBehavior:
             ``mesh_config_from_prompt()``.
         mesh_data_dir : str
             Directory where this request's mesh files are written
+        overwrite : bool, optional
+            Whether to make the mesh again and replace whatever has its name in
+            ``mesh_data_dir``, by default False. Until the new mesh is complete,
+            the old one stays, so a request that fails leaves it.
 
         Returns
         -------
@@ -2619,7 +2628,8 @@ class _MeshBehavior:
         ------
         FileExistsError
             If something of the mesh's name exists in ``mesh_data_dir`` that is
-            not a finished mesh made from a request like this one.
+            not a finished mesh made from a request like this one, without
+            ``overwrite``.
         ValueError
             If ``mesh_config`` is not a dict, or the name, resolution, a rank
             count or the ``regional`` block is invalid. A name must not be that
@@ -2634,8 +2644,12 @@ class _MeshBehavior:
             ``mesh_config_from_prompt()`` raises.
         """
         self._validate_mesh_config(mesh_config)
+        if not isinstance(overwrite, bool):
+            raise ValueError(f"overwrite must be True or False, got {overwrite!r}")
         if "prompt" in mesh_config:
-            return await self._generate_mesh_from_prompt(mesh_config, mesh_data_dir)
+            return await self._generate_mesh_from_prompt(
+                mesh_config, mesh_data_dir, overwrite
+            )
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
@@ -2652,19 +2666,24 @@ class _MeshBehavior:
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
         mesh_dir = request_mesh_data_dir / mesh_name
         identity = self._mesh_identity(mesh_config)
-        try:
-            mesh_dir.mkdir()
-        except FileExistsError:
-            result = await self._reuse_mesh(mesh_dir, mesh_name, identity, ranks)
-        else:
-            result = await self._make_mesh(
-                mesh_dir,
-                mesh_name,
-                mesh_config,
-                identity,
-                ranks,
-                request_mesh_data_dir,
+        if overwrite:
+            result = await self._replace_mesh(
+                mesh_dir, mesh_name, mesh_config, identity, ranks
             )
+        else:
+            try:
+                mesh_dir.mkdir()
+            except FileExistsError:
+                result = await self._reuse_mesh(mesh_dir, mesh_name, identity, ranks)
+            else:
+                result = await self._make_mesh(
+                    mesh_dir,
+                    mesh_name,
+                    mesh_config,
+                    identity,
+                    ranks,
+                    request_mesh_data_dir,
+                )
         if mesh_config.get("plot"):
             image = self._plot_path(Path(result["static"]))
             if result.get("reused") and image.is_file():
@@ -2737,6 +2756,71 @@ class _MeshBehavior:
             if not complete:
                 self._remove_mesh_dir(mesh_dir)
         return result
+
+    async def _replace_mesh(
+        self,
+        mesh_dir: Path,
+        mesh_name: str,
+        mesh_config: Dict[str, Any],
+        identity: Dict[str, Any],
+        ranks: List[int],
+    ) -> Dict[str, Any]:
+        """Make a request's mesh again, and put it in place of whatever has its name.
+
+        The mesh is made in a new directory beside ``mesh_dir``. Only once it is
+        complete is what has the name moved aside, the new mesh moved in, and
+        the old one removed, so a request that fails leaves the old one. The
+        files inside are named after the mesh, not its directory, so moving the
+        directory leaves them whole.
+        """
+        tag = uuid.uuid4().hex[:8]
+        build_dir = mesh_dir.with_name(f".{mesh_name}.new-{tag}")
+        build_dir.mkdir()
+        made = await self._make_mesh(
+            build_dir, mesh_name, mesh_config, identity, ranks, mesh_dir.parent
+        )
+        old = mesh_dir.with_name(f".{mesh_name}.old-{tag}")
+        replaced = mesh_dir.exists() or mesh_dir.is_symlink()
+        try:
+            if replaced:
+                mesh_dir.rename(old)
+            build_dir.rename(mesh_dir)
+        except OSError:
+            # Put back what had the name, so the request changes nothing
+            if replaced and (old.exists() or old.is_symlink()):
+                old.rename(mesh_dir)
+            self._remove_mesh_dir(build_dir)
+            raise
+        if replaced:
+            self._remove_replaced(old)
+
+        def moved(path: str) -> str:
+            return str(mesh_dir / Path(path).relative_to(build_dir))
+
+        result: Dict[str, Any] = {key: moved(made[key]) for key in ("static", "graph")}
+        if "partitions" in made:
+            result["partitions"] = {
+                rank: moved(path) for rank, path in made["partitions"].items()
+            }
+        return result
+
+    @staticmethod
+    def _remove_replaced(old: Path) -> None:
+        """Remove what a new mesh replaced: a directory, a file or a link.
+
+        Links are removed without following them, so shared downloaded mesh
+        files they point to are left alone. A failure is logged and never
+        raised, since the new mesh is already in place.
+        """
+        if old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old, ignore_errors=True)
+        else:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        if old.exists() or old.is_symlink():
+            logger.warning("Could not remove %s, which a new mesh replaced", old)
 
     async def _reuse_mesh(
         self,

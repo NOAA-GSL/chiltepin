@@ -3955,3 +3955,157 @@ async def test_reused_mesh_keeps_its_plot_or_draws_one(
     result = await behavior.generate_mesh({**config, "plot": True}, str(output))
     assert result["plot"] == str(image)
     draw.assert_awaited_once()
+
+
+# Overwriting meshes
+
+
+def hidden(output):
+    """Return the names of the temporary directories left in mesh_data_dir."""
+    return [path.name for path in output.iterdir() if path.name.startswith(".")]
+
+
+async def test_overwrite_replaces_a_different_mesh(cutting, behavior):
+    await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    result = await behavior.generate_mesh(
+        create_region_config("ellipse"), str(cutting.output), overwrite=True
+    )
+    mesh_dir = cutting.output / "cut"
+    assert result == {
+        "static": str(mesh_dir / "cut.static.nc"),
+        "graph": str(mesh_dir / "cut.graph.info"),
+    }
+    assert (
+        read_record(mesh_dir, "cut")["mesh"]["regional"]
+        == (create_region_config("ellipse")["regional"])
+    )
+    assert "Type: ellipse" in (mesh_dir / "region.pts").read_text()
+    assert hidden(cutting.output) == []
+    # The shared global mesh it was cut from stays
+    assert {path.name for path in cutting.output.iterdir()} == {
+        *mesh_files(),
+        "cut",
+    }
+
+
+async def test_overwrite_makes_even_a_matching_mesh_again(cutting, behavior):
+    await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    cutting.task.reset_mock()
+    result = await behavior.generate_mesh(
+        create_region_config(), str(cutting.output), overwrite=True
+    )
+    cutting.task.assert_called_once()
+    assert "reused" not in result
+
+
+async def test_overwrite_of_nothing_makes_the_mesh(cutting, behavior):
+    result = await behavior.generate_mesh(
+        create_region_config(), str(cutting.output), overwrite=True
+    )
+    assert Path(result["static"]).is_file()
+    assert hidden(cutting.output) == []
+
+
+@pytest.mark.parametrize("kind", ["unfinished", "file", "symlink"])
+async def test_overwrite_replaces_whatever_has_the_name(
+    tmp_path, mesh_download, behavior, kind
+):
+    output, _ = mesh_download
+    named = output / "forecast"
+    target = tmp_path / "external"
+    target.mkdir()
+    (target / "keep").write_text("keep")
+    if kind == "unfinished":
+        named.mkdir()
+        (named / "partial").write_text("partial")
+    elif kind == "file":
+        named.write_text("file")
+    else:
+        named.symlink_to(target)
+    config = {"resolution": "480km", "name": "forecast"}
+    result = await behavior.generate_mesh(config, str(output), overwrite=True)
+    assert named.is_dir() and not named.is_symlink()
+    assert Path(result["static"]).resolve() == output / "x1.2562.static.nc"
+    assert not (named / "partial").exists()
+    # A link is removed, not what it points to
+    assert (target / "keep").read_text() == "keep"
+    assert hidden(output) == []
+
+
+async def test_failed_overwrite_leaves_the_old_mesh(
+    monkeypatch, mesh_download, partitioning, behavior
+):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast", "init_ranks": 4}
+    await behavior.generate_mesh(config, str(output))
+    mesh_dir = output / "forecast"
+    before = {path.name: path.lstat() for path in mesh_dir.iterdir()}
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh(PARTITIONED, str(output), overwrite=True)
+    assert {path.name: path.lstat() for path in mesh_dir.iterdir()} == before
+    assert hidden(output) == []
+
+
+async def test_failed_move_puts_the_old_mesh_back(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast"}
+    await behavior.generate_mesh(config, str(output))
+    mesh_dir = output / "forecast"
+    before = {path.name for path in mesh_dir.iterdir()}
+    rename = Path.rename
+
+    def fail_moving_in(self, target):
+        if self.name.startswith(".forecast.new-"):
+            raise OSError("cannot move")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", fail_moving_in)
+    with pytest.raises(OSError, match="cannot move"):
+        await behavior.generate_mesh(config, str(output), overwrite=True)
+    assert {path.name for path in mesh_dir.iterdir()} == before
+    assert hidden(output) == []
+
+
+@pytest.mark.parametrize("kind", ["directory", "file"])
+async def test_replaced_mesh_that_cannot_be_removed_is_logged(
+    monkeypatch, mesh_download, behavior, kind
+):
+    output, _ = mesh_download
+    named = output / "forecast"
+    if kind == "directory":
+        named.mkdir()
+        monkeypatch.setattr(mesh_module.shutil, "rmtree", lambda *a, **k: None)
+    else:
+        named.write_text("file")
+        monkeypatch.setattr(Path, "unlink", Mock(side_effect=OSError("cannot remove")))
+    warning = Mock()
+    monkeypatch.setattr(mesh_module.logger, "warning", warning)
+    config = {"resolution": "480km", "name": "forecast"}
+    result = await behavior.generate_mesh(config, str(output), overwrite=True)
+    # The new mesh is in place, and what it replaced is left, and logged
+    assert Path(result["static"]).parent == named
+    warning.assert_called_once()
+    assert "which a new mesh replaced" in warning.call_args.args[0]
+
+
+async def test_overwrite_moves_the_partitions_with_the_mesh(
+    mesh_download, partitioning, behavior
+):
+    output, _ = mesh_download
+    result = await behavior.generate_mesh(PARTITIONED, str(output), overwrite=True)
+    graph = output / "forecast" / "forecast.graph.info"
+    assert result["partitions"] == {4: f"{graph}.part.4", 8: f"{graph}.part.8"}
+    assert all(Path(path).is_file() for path in result["partitions"].values())
+
+
+@pytest.mark.parametrize("overwrite", ["yes", 1, None])
+async def test_overwrite_must_be_a_boolean(mesh_download, behavior, overwrite):
+    output, download = mesh_download
+    with pytest.raises(ValueError, match="overwrite must be True or False"):
+        await behavior.generate_mesh(
+            {"name": "forecast"}, str(output), overwrite=overwrite
+        )
+    assert not (output / "forecast").exists()
