@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MPAS meshes with its tasks on a `service` resource, for downloads and prompts, and a
   `compute` resource, for builds
   - `generate_mesh` downloads a precomputed global mesh, at any of 16 resolutions from
-    480km to 3km, and names it as requested, without overwriting an existing mesh
+    480km to 3km, and names it as requested
+  - Reuses an existing mesh made from a matching request, as each finished mesh records,
+    making only the partitions and plot it lacks, and with `overwrite=True` makes it again
+    in place of whatever has its name, leaving the old mesh if the new one fails
   - Partitions the mesh graph for `init_ranks` and `forecast_ranks` with Metis
     (`install_metis`, `partition_mesh`)
   - Makes rectangular regional meshes at any resolution with MPAS-Tools' `project_hexes`,
