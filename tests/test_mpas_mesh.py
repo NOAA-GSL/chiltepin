@@ -4,6 +4,7 @@
 
 import asyncio
 import io
+import json
 import math
 import pickle
 import shlex
@@ -15,7 +16,7 @@ import urllib.request
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from urllib.error import URLError
 
 import pytest
@@ -321,8 +322,9 @@ async def test_generate_mesh_links(tmp_path, mesh_agent, config, resolution, nam
     }
     result = await mesh_agent.generate_mesh(config, str(output))
     assert result == expected
-    with pytest.raises(FileExistsError):
-        await mesh_agent.generate_mesh(config, str(output))
+    # The same request again reuses the mesh
+    again = await mesh_agent.generate_mesh(config, str(output))
+    assert again == {**expected, "reused": True}
     assert Path(result["static"]).is_symlink()
     assert Path(result["static"]).resolve() == Path(paths["static"])
     assert Path(result["graph"]).is_symlink()
@@ -2289,6 +2291,7 @@ async def test_failed_plot_does_not_fail_the_request(
     assert {path.name for path in (output / "g").iterdir()} == {
         "g.static.nc",
         "g.graph.info",
+        "g.mesh.json",
     }
 
 
@@ -2988,6 +2991,7 @@ async def test_generate_create_region_mesh(cutting, behavior, shape):
         "region.pts",
         "cut.static.nc",
         "cut.graph.info",
+        "cut.mesh.json",
     }
     # The global mesh it was cut from stays shared in mesh_data_dir
     cutting.download.assert_called_once()
@@ -3725,3 +3729,229 @@ async def test_ensure_tools_installed_for_regional_requests(
     assert metis_download.called == metis
     assert tools_download.called == mpas_tools
     assert limited_install.called == limited_area
+
+
+# Reusing meshes
+
+
+def read_record(mesh_dir, name):
+    return json.loads((mesh_dir / f"{name}.mesh.json").read_text())
+
+
+@pytest.fixture
+def partitioning(monkeypatch, behavior):
+    """Installed Metis and a fake partition task."""
+    mark_metis_installed(behavior)
+    task = fake_partition_task()
+    monkeypatch.setattr(behavior, "_partition_mesh", task)
+    return task
+
+
+async def test_finished_mesh_keeps_a_record_of_its_request(
+    mesh_download, partitioning, behavior
+):
+    output, _ = mesh_download
+    await behavior.generate_mesh(PARTITIONED, str(output))
+    version = behavior.metis_version
+    assert read_record(output / "forecast", "forecast") == {
+        "mesh": {"resolution": "480km", "regional": None},
+        "partitions": {"4": version, "8": version},
+    }
+
+
+async def test_same_request_reuses_the_mesh(mesh_download, partitioning, behavior):
+    output, download = mesh_download
+    made = await behavior.generate_mesh(PARTITIONED, str(output))
+    download.reset_mock()
+    partitioning.reset_mock()
+    again = await behavior.generate_mesh(PARTITIONED, str(output))
+    assert again == {**made, "reused": True}
+    download.assert_not_called()
+    partitioning.assert_not_called()
+
+
+async def test_reuse_makes_only_the_partitions_a_mesh_lacks(
+    mesh_download, partitioning, behavior
+):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast", "init_ranks": 4}
+    await behavior.generate_mesh(config, str(output))
+    partitioning.reset_mock()
+    result = await behavior.generate_mesh(PARTITIONED, str(output))
+    assert [call.args[1] for call in partitioning.call_args_list] == [8]
+    graph = output / "forecast" / "forecast.graph.info"
+    assert result["partitions"] == {4: f"{graph}.part.4", 8: f"{graph}.part.8"}
+    assert set(read_record(output / "forecast", "forecast")["partitions"]) == {
+        "4",
+        "8",
+    }
+
+
+async def test_reuse_remakes_partitions_of_another_metis_version_or_lost(
+    mesh_download, partitioning, behavior
+):
+    output, _ = mesh_download
+    await behavior.generate_mesh(PARTITIONED, str(output))
+    mesh_dir = output / "forecast"
+    record = read_record(mesh_dir, "forecast")
+    record["partitions"]["4"] = "5.1.0"
+    (mesh_dir / "forecast.mesh.json").write_text(json.dumps(record))
+    (mesh_dir / "forecast.graph.info.part.8").unlink()
+    partitioning.reset_mock()
+    await behavior.generate_mesh(PARTITIONED, str(output))
+    assert sorted(call.args[1] for call in partitioning.call_args_list) == [4, 8]
+    assert read_record(mesh_dir, "forecast")["partitions"] == {
+        "4": behavior.metis_version,
+        "8": behavior.metis_version,
+    }
+
+
+async def test_failed_partition_of_a_reused_mesh_leaves_it(
+    monkeypatch, mesh_download, partitioning, behavior
+):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast", "init_ranks": 4}
+    await behavior.generate_mesh(config, str(output))
+    mesh_dir = output / "forecast"
+    before = {path.name for path in mesh_dir.iterdir()}
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh(PARTITIONED, str(output))
+    assert {path.name for path in mesh_dir.iterdir()} == before
+    assert read_record(mesh_dir, "forecast")["partitions"] == {
+        "4": behavior.metis_version
+    }
+
+
+async def test_reuse_of_regional_meshes(regional, cutting, behavior):
+    hexes = await behavior.generate_mesh(regional_config(), str(cutting.output))
+    cut = await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    regional.hexes.reset_mock()
+    cutting.task.reset_mock()
+    again = await behavior.generate_mesh(regional_config(), str(cutting.output))
+    assert again == {**hexes, "reused": True}
+    again = await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    assert again == {**cut, "reused": True}
+    regional.hexes.assert_not_called()
+    cutting.task.assert_not_called()
+    # The tool's version is recorded with the mesh
+    assert read_record(cutting.output / "region", "region")["mesh"] == {
+        "resolution": "15km",
+        "regional": regional_config()["regional"],
+        "mpas_tools_version": behavior.mpas_tools_version,
+    }
+    assert (
+        read_record(cutting.output / "cut", "cut")["mesh"]["limited_area_version"]
+        == behavior.limited_area_version
+    )
+
+
+@pytest.mark.parametrize(
+    ("config", "difference"),
+    [
+        (create_region_config(), None),
+        ({**create_region_config(), "resolution": "120km"}, "it is 480km, not 120km"),
+        (
+            create_region_config("ellipse"),
+            "it is a create_region circle, not a create_region ellipse",
+        ),
+        (
+            create_region_config(radius_km=500),
+            "its region differs",
+        ),
+        ({"resolution": "480km", "name": "cut"}, "not a global mesh"),
+    ],
+)
+async def test_request_unlike_the_existing_mesh_is_refused(
+    cutting, behavior, config, difference
+):
+    await behavior.generate_mesh(create_region_config(), str(cutting.output))
+    before = {path.name for path in (cutting.output / "cut").iterdir()}
+    cutting.task.reset_mock()
+    if difference is None:
+        # The same request, as a check on the cases below
+        assert (await behavior.generate_mesh(config, str(cutting.output)))["reused"]
+        return
+    with pytest.raises(FileExistsError, match="made from a different request") as error:
+        await behavior.generate_mesh(config, str(cutting.output))
+    assert difference in str(error.value)
+    assert "overwrite=True" in str(error.value)
+    cutting.task.assert_not_called()
+    assert {path.name for path in (cutting.output / "cut").iterdir()} == before
+
+
+async def test_mesh_of_another_tool_version_is_refused(tmp_path, regional, behavior):
+    await behavior.generate_mesh(regional_config(), str(regional.output))
+    newer = _MeshBehavior(str(behavior.work_dir), mpas_tools_version="2.1.0")
+    with pytest.raises(FileExistsError, match="made with MPAS-Tools 2.0.0, not 2.1.0"):
+        await newer.generate_mesh(regional_config(), str(regional.output))
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda record: record.unlink(),
+        lambda record: record.write_text("not json"),
+        lambda record: record.write_text("[]"),
+        lambda record: record.write_text('{"mesh": {}, "partitions": {"x": "5"}}'),
+        lambda record: record.write_text('{"mesh": [], "partitions": {}}'),
+    ],
+)
+async def test_mesh_without_a_valid_record_is_not_finished(
+    mesh_download, behavior, damage
+):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast"}
+    await behavior.generate_mesh(config, str(output))
+    damage(output / "forecast" / "forecast.mesh.json")
+    with pytest.raises(FileExistsError, match="is not a finished mesh"):
+        await behavior.generate_mesh(config, str(output))
+
+
+async def test_link_to_a_finished_mesh_is_not_reused(tmp_path, mesh_download, behavior):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast"}
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for name, content in mesh_files().items():
+        (elsewhere / name).write_bytes(content)
+    await behavior.generate_mesh(config, str(elsewhere))
+    (output / "forecast").symlink_to(elsewhere / "forecast")
+    with pytest.raises(FileExistsError, match="is not a finished mesh"):
+        await behavior.generate_mesh(config, str(output))
+
+
+async def test_mesh_missing_its_files_is_refused(mesh_download, behavior):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast"}
+    await behavior.generate_mesh(config, str(output))
+    # The shared global mesh the link points to is gone
+    (output / "x1.2562.graph.info").unlink()
+    with pytest.raises(FileExistsError, match="is missing forecast.graph.info"):
+        await behavior.generate_mesh(config, str(output))
+
+
+async def test_reused_mesh_keeps_its_plot_or_draws_one(
+    monkeypatch, mesh_download, behavior
+):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast"}
+    image = output / "forecast" / "forecast.png"
+
+    async def plot(static):
+        image.write_bytes(b"png")
+        return str(image), None
+
+    draw = AsyncMock(side_effect=plot)
+    monkeypatch.setattr(behavior, "_plot", draw)
+    await behavior.generate_mesh(config, str(output))
+    # Without an image, one is drawn
+    result = await behavior.generate_mesh({**config, "plot": True}, str(output))
+    assert result["plot"] == str(image)
+    draw.assert_awaited_once()
+    # With one, it is kept
+    result = await behavior.generate_mesh({**config, "plot": True}, str(output))
+    assert result["plot"] == str(image)
+    draw.assert_awaited_once()
