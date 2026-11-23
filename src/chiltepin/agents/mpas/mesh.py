@@ -277,6 +277,16 @@ class _MeshBehavior:
                 mesh_dir,
             )
 
+    @staticmethod
+    def _orientation(block: Dict[str, Any]) -> float:
+        """Return an ellipse block's orientation within one turn, by default 0.
+
+        A tiny negative angle gives exactly 360.0 from %, which is the same
+        direction as 0.
+        """
+        orientation = block.get("orientation_degrees", 0) % 360
+        return 0.0 if orientation >= 360 else orientation
+
     def _mesh_identity(self, mesh_config: Dict[str, Any]) -> Dict[str, Any]:
         """Return what makes a validated request's mesh: what an existing one must match.
 
@@ -296,8 +306,7 @@ class _MeshBehavior:
         if regional is not None and "ellipse" in regional.get("create_region", {}):
             block = regional["create_region"]["ellipse"]
             # As the points file writes it
-            orientation = block.get("orientation_degrees", 0) % 360
-            block["orientation_degrees"] = 0.0 if orientation >= 360 else orientation
+            block["orientation_degrees"] = self._orientation(block)
         identity: Dict[str, Any] = {
             "resolution": mesh_config.get("resolution", "120km"),
             "regional": regional,
@@ -332,8 +341,12 @@ class _MeshBehavior:
         }
         path = cls._mesh_record_path(mesh_dir, mesh_name)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}")
-        temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-        temporary.replace(path)
+        try:
+            temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+            temporary.replace(path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
 
     @classmethod
     def _read_mesh_record(cls, mesh_dir: Path, mesh_name: str) -> Optional[Dict]:
@@ -353,7 +366,7 @@ class _MeshBehavior:
             or not isinstance(record.get("mesh"), dict)
             or not isinstance(record.get("partitions"), dict)
             or not all(
-                re.fullmatch(r"[0-9]+", rank) and isinstance(version, str)
+                re.fullmatch(r"[0-9]{1,9}", rank) and isinstance(version, str)
                 for rank, version in record["partitions"].items()
             )
         ):
@@ -391,7 +404,13 @@ class _MeshBehavior:
 
             old, new = numbers(made), numbers(requested)
             keys = sorted(key for key in {*old, *new} if old.get(key) != new.get(key))
-            differences.append(f"its region differs in {', '.join(keys)}")
+            # Keys set to null in one and left out of the other differ only in
+            # how they are written
+            differences.append(
+                f"its region differs in {', '.join(keys)}"
+                if keys
+                else "its region differs"
+            )
         tools = (
             ("mpas_tools_version", "MPAS-Tools"),
             ("limited_area_version", "MPAS-Limited-Area"),
@@ -898,11 +917,8 @@ class _MeshBehavior:
         r = cls._real
         ((shape, block),) = config.items()
         lines = ["Name: region"]
-        # Any angle is written within one turn. A tiny negative angle gives
-        # exactly 360.0 from %, which is the same direction as 0.
-        orientation = block.get("orientation_degrees", 0) % 360
-        if orientation >= 360:
-            orientation = 0.0
+        # Any angle is written within one turn
+        orientation = cls._orientation(block)
         if shape == "circle":
             lines += [
                 "Type: circle",

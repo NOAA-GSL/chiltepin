@@ -362,12 +362,13 @@ Actions
 
    If a request that makes a mesh fails, its mesh subdirectory and everything
    in it are removed so the name can be used again. A reused mesh stays as it
-   was, except that a partition that fails is made again by the next request. Global mesh files already downloaded to
-   ``mesh_data_dir`` are kept for reuse. If cleanup itself fails, for example
-   because the request was interrupted while a partition was still running, the
-   agent logs a warning naming the leftover directory, which must be removed
-   before the name can be used again. An invalid ``mesh_config`` raises
-   ``ValueError`` before anything is checked, created or downloaded.
+   was, except that a partition that fails is made again by the next request.
+   Global mesh files already downloaded to ``mesh_data_dir`` are kept for
+   reuse. If cleanup itself fails, for example because the request was
+   interrupted while a partition was still running, the agent logs a warning
+   naming the leftover directory, which must be removed before the name can be
+   used again. An invalid ``mesh_config`` raises ``ValueError`` before anything
+   is checked, created or downloaded.
 
 ``mesh_config_from_prompt(prompt, model, buffer_km=50.0, reasoning_effort=None)``
    Returns the mesh request a prompt describes, in the form ``generate_mesh``

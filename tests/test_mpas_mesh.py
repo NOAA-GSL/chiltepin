@@ -3940,6 +3940,39 @@ def test_requests_made_alike_match(behavior, made, requested):
     assert behavior._mesh_identity(made) == behavior._mesh_identity(requested)
 
 
+def test_identity_leaves_the_request_as_it_was(behavior):
+    config = create_region_config("ellipse", orientation_degrees=...)
+    before = json.loads(json.dumps(config))
+    behavior._mesh_identity(config)
+    behavior._mesh_identity(regional_config())
+    assert config == before
+
+
+def test_region_differing_only_in_how_it_is_written(behavior):
+    made = behavior._mesh_identity(regional_config())
+    requested = json.loads(json.dumps(made))
+    requested["regional"]["project_hexes"]["note"] = None
+    assert behavior._mesh_differences(made, requested) == ["its region differs"]
+
+
+def test_failed_record_write_leaves_no_temporary_file(monkeypatch, tmp_path, behavior):
+    mesh_dir = tmp_path / "m"
+    mesh_dir.mkdir()
+    monkeypatch.setattr(Path, "replace", Mock(side_effect=OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        behavior._write_mesh_record(mesh_dir, "m", {"resolution": "480km"}, {})
+    assert list(mesh_dir.iterdir()) == []
+
+
+async def test_ellipse_without_an_orientation_is_reused(cutting, behavior):
+    made = create_region_config("ellipse", orientation_degrees=...)
+    await behavior.generate_mesh(made, str(cutting.output))
+    cutting.task.reset_mock()
+    again = create_region_config("ellipse", orientation_degrees=360)
+    assert (await behavior.generate_mesh(again, str(cutting.output)))["reused"]
+    cutting.task.assert_not_called()
+
+
 def test_requests_made_differently_do_not_match(behavior):
     # A full turn of grid_rotate is run, so the mesh is not made as without one
     made = behavior._mesh_identity(regional_config())
@@ -3965,6 +3998,9 @@ async def test_mesh_of_another_tool_version_is_refused(tmp_path, regional, behav
         lambda record: record.write_text('{"mesh": {}, "partitions": {"x": "5"}}'),
         lambda record: record.write_text('{"mesh": [], "partitions": {}}'),
         lambda record: record.write_text('{"mesh": {}, "partitions": {"²": "5"}}'),
+        lambda record: record.write_text(
+            '{"mesh": {}, "partitions": {"' + "9" * 5000 + '": "5"}}'
+        ),
         # Records no request writes
         lambda record: record.write_text(
             '{"mesh": {"resolution": "480km", "regional": {}}, "partitions": {}}'
