@@ -2459,7 +2459,9 @@ def test_program_scripts_run_in_the_mesh_directory_without_expansion(
             f'{{ pwd; for a in "$@"; do printf "%s\\n" "$a"; done; }} '
             f">> {shlex.quote(str(record))}\n"
         )
-    inputs = [str(mesh_dir / "in.nc"), str(mesh_dir / "out.nc")]
+    # Names in the mesh directory, as the agent gives them, since grid_rotate
+    # keeps only 100 characters of a path. It runs there, as pwd shows.
+    inputs = ["mpas_hex_mesh.nc", "rotated_mesh.nc"]
     scripts = [
         _MeshBehavior._run_project_hexes.func(behavior, str(mesh_dir)),
         _MeshBehavior._run_grid_rotate.func(behavior, str(mesh_dir), *inputs),
@@ -3813,6 +3815,30 @@ async def test_reuse_remakes_partitions_of_another_metis_version_or_lost(
     }
 
 
+async def test_failed_partition_of_a_reused_mesh_is_made_again(
+    monkeypatch, mesh_download, partitioning, behavior
+):
+    # Both partitions are from another Metis version, and one is remade before
+    # the other fails, so the record vouches for neither
+    output, _ = mesh_download
+    await behavior.generate_mesh(PARTITIONED, str(output))
+    mesh_dir = output / "forecast"
+    record = read_record(mesh_dir, "forecast")
+    record["partitions"] = {"4": "5.1.0", "8": "5.1.0"}
+    (mesh_dir / "forecast.mesh.json").write_text(json.dumps(record))
+    monkeypatch.setattr(
+        behavior, "_partition_mesh", fake_partition_task(fail_ranks={8})
+    )
+    with pytest.raises(RuntimeError, match="partition failed for 8 ranks"):
+        await behavior.generate_mesh(PARTITIONED, str(output))
+    assert read_record(mesh_dir, "forecast")["partitions"] == {}
+    # The next request makes both
+    again = fake_partition_task()
+    monkeypatch.setattr(behavior, "_partition_mesh", again)
+    await behavior.generate_mesh(PARTITIONED, str(output))
+    assert sorted(call.args[1] for call in again.call_args_list) == [4, 8]
+
+
 async def test_failed_partition_of_a_reused_mesh_leaves_it(
     monkeypatch, mesh_download, partitioning, behavior
 ):
@@ -3843,10 +3869,11 @@ async def test_reuse_of_regional_meshes(regional, cutting, behavior):
     assert again == {**cut, "reused": True}
     regional.hexes.assert_not_called()
     cutting.task.assert_not_called()
-    # The tool's version is recorded with the mesh
+    # The tool's version is recorded with the mesh, and the region with its
+    # defaults
     assert read_record(cutting.output / "region", "region")["mesh"] == {
         "resolution": "15km",
-        "regional": regional_config()["regional"],
+        "regional": regional_config(rotation_degrees=0.0)["regional"],
         "mpas_tools_version": behavior.mpas_tools_version,
     }
     assert (
@@ -3866,7 +3893,7 @@ async def test_reuse_of_regional_meshes(regional, cutting, behavior):
         ),
         (
             create_region_config(radius_km=500),
-            "its region differs",
+            "its region differs in radius_km",
         ),
         ({"resolution": "480km", "name": "cut"}, "not a global mesh"),
     ],
@@ -3889,6 +3916,39 @@ async def test_request_unlike_the_existing_mesh_is_refused(
     assert {path.name for path in (cutting.output / "cut").iterdir()} == before
 
 
+@pytest.mark.parametrize(
+    ("made", "requested"),
+    [
+        # A default left out, or given
+        (regional_config(), regional_config(rotation_degrees=0)),
+        (
+            create_region_config("ellipse", orientation_degrees=...),
+            create_region_config("ellipse", orientation_degrees=0),
+        ),
+        # The same direction within one turn
+        (
+            create_region_config("ellipse", orientation_degrees=30),
+            create_region_config("ellipse", orientation_degrees=390),
+        ),
+        (
+            create_region_config("ellipse", orientation_degrees=0),
+            create_region_config("ellipse", orientation_degrees=-1e-20),
+        ),
+    ],
+)
+def test_requests_made_alike_match(behavior, made, requested):
+    assert behavior._mesh_identity(made) == behavior._mesh_identity(requested)
+
+
+def test_requests_made_differently_do_not_match(behavior):
+    # A full turn of grid_rotate is run, so the mesh is not made as without one
+    made = behavior._mesh_identity(regional_config())
+    requested = behavior._mesh_identity(regional_config(rotation_degrees=360))
+    assert behavior._mesh_differences(made, requested) == [
+        "its region differs in rotation_degrees"
+    ]
+
+
 async def test_mesh_of_another_tool_version_is_refused(tmp_path, regional, behavior):
     await behavior.generate_mesh(regional_config(), str(regional.output))
     newer = _MeshBehavior(str(behavior.work_dir), mpas_tools_version="2.1.0")
@@ -3904,6 +3964,14 @@ async def test_mesh_of_another_tool_version_is_refused(tmp_path, regional, behav
         lambda record: record.write_text("[]"),
         lambda record: record.write_text('{"mesh": {}, "partitions": {"x": "5"}}'),
         lambda record: record.write_text('{"mesh": [], "partitions": {}}'),
+        lambda record: record.write_text('{"mesh": {}, "partitions": {"²": "5"}}'),
+        # Records no request writes
+        lambda record: record.write_text(
+            '{"mesh": {"resolution": "480km", "regional": {}}, "partitions": {}}'
+        ),
+        lambda record: record.write_text(
+            '{"mesh": {"resolution": "480km", "regional": "cut"}, "partitions": {}}'
+        ),
     ],
 )
 async def test_mesh_without_a_valid_record_is_not_finished(
@@ -4074,6 +4142,43 @@ async def test_failed_move_puts_the_old_mesh_back(monkeypatch, mesh_download, be
         await behavior.generate_mesh(config, str(output), overwrite=True)
     assert {path.name for path in mesh_dir.iterdir()} == before
     assert hidden(output) == []
+
+
+async def test_failed_move_aside_changes_nothing(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast"}
+    await behavior.generate_mesh(config, str(output))
+    mesh_dir = output / "forecast"
+    before = {path.name for path in mesh_dir.iterdir()}
+    monkeypatch.setattr(Path, "rename", Mock(side_effect=OSError("cannot move")))
+    with pytest.raises(OSError, match="cannot move"):
+        await behavior.generate_mesh(config, str(output), overwrite=True)
+    assert {path.name for path in mesh_dir.iterdir()} == before
+    assert hidden(output) == []
+
+
+async def test_failed_move_back_keeps_the_error(monkeypatch, mesh_download, behavior):
+    output, _ = mesh_download
+    config = {"resolution": "480km", "name": "forecast"}
+    await behavior.generate_mesh(config, str(output))
+    rename = Path.rename
+
+    def fail_after_moving_aside(self, target):
+        if ".forecast.old-" in self.name or self.name.startswith(".forecast.new-"):
+            raise OSError(f"cannot move {self.name}")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", fail_after_moving_aside)
+    warning = Mock()
+    monkeypatch.setattr(mesh_module.logger, "warning", warning)
+    with pytest.raises(OSError, match="cannot move .forecast.new-"):
+        await behavior.generate_mesh(config, str(output), overwrite=True)
+    # The old mesh is where the warning says, and the new one is removed
+    warning.assert_called_once()
+    assert "Could not move" in warning.call_args.args[0]
+    old = warning.call_args.args[1]
+    assert (old / "forecast.mesh.json").is_file()
+    assert [name for name in hidden(output) if ".new-" in name] == []
 
 
 @pytest.mark.parametrize("kind", ["directory", "file"])

@@ -350,10 +350,19 @@ Actions
    new ``.<name>.new-<id>`` directory beside the old one. Only once it is
    complete is whatever has the name moved aside, the new mesh moved in, and
    the old one removed, so a request that fails leaves the old mesh as it was.
-   A link of the name is removed, not what it points to.
+   A link of the name is removed, not what it points to. An agent that is
+   killed while it overwrites can leave a ``.<name>.new-<id>`` directory, or a
+   ``.<name>.old-<id>`` one holding the old mesh, which nothing removes.
 
-   If a request fails, its mesh subdirectory and everything in it are removed
-   so the name can be used again. Global mesh files already downloaded to
+   Optional numbers count as their defaults, so a request without
+   ``rotation_degrees`` or ``orientation_degrees`` matches one with 0, and an
+   ellipse's orientation counts within one turn. Other numbers must be equal:
+   a longitude of -105 does not match 255, and a rotation of 360 does not
+   match 0, since ``grid_rotate`` runs for it.
+
+   If a request that makes a mesh fails, its mesh subdirectory and everything
+   in it are removed so the name can be used again. A reused mesh stays as it
+   was, except that a partition that fails is made again by the next request. Global mesh files already downloaded to
    ``mesh_data_dir`` are kept for reuse. If cleanup itself fails, for example
    because the request was interrupted while a partition was still running, the
    agent logs a warning naming the leftover directory, which must be removed

@@ -282,14 +282,25 @@ class _MeshBehavior:
 
         That is the resolution, the ``regional`` block, and the version of the
         tool that makes a regional mesh. Rank counts and ``plot`` are not part
-        of it, since they add to a mesh without changing it.
+        of it, since they add to a mesh without changing it. Optional numbers
+        are filled in with their defaults, and an ellipse's orientation is
+        written within one turn, as the mesh is made with them, so a request
+        that leaves one out matches one that gives it.
         """
         regional = mesh_config.get("regional")
+        # As it is read back, so the comparison does not depend on, for
+        # example, tuples given for lists
+        regional = json.loads(json.dumps(regional))
+        if regional is not None and "project_hexes" in regional:
+            regional["project_hexes"].setdefault("rotation_degrees", 0.0)
+        if regional is not None and "ellipse" in regional.get("create_region", {}):
+            block = regional["create_region"]["ellipse"]
+            # As the points file writes it
+            orientation = block.get("orientation_degrees", 0) % 360
+            block["orientation_degrees"] = 0.0 if orientation >= 360 else orientation
         identity: Dict[str, Any] = {
             "resolution": mesh_config.get("resolution", "120km"),
-            # As it is read back, so the comparison does not depend on, for
-            # example, tuples given for lists
-            "regional": json.loads(json.dumps(regional)),
+            "regional": regional,
         }
         if regional is not None and "project_hexes" in regional:
             identity["mpas_tools_version"] = self.mpas_tools_version
@@ -342,7 +353,7 @@ class _MeshBehavior:
             or not isinstance(record.get("mesh"), dict)
             or not isinstance(record.get("partitions"), dict)
             or not all(
-                rank.isdigit() and isinstance(version, str)
+                re.fullmatch(r"[0-9]+", rank) and isinstance(version, str)
                 for rank, version in record["partitions"].items()
             )
         ):
@@ -371,7 +382,16 @@ class _MeshBehavior:
         if kind(made) != kind(requested):
             differences.append(f"it is {kind(made)}, not {kind(requested)}")
         elif made.get("regional") != requested["regional"]:
-            differences.append("its region differs")
+
+            def numbers(identity):
+                ((method, block),) = identity["regional"].items()
+                if method == "create_region":
+                    ((_, block),) = block.items()
+                return block
+
+            old, new = numbers(made), numbers(requested)
+            keys = sorted(key for key in {*old, *new} if old.get(key) != new.get(key))
+            differences.append(f"its region differs in {', '.join(keys)}")
         tools = (
             ("mpas_tools_version", "MPAS-Tools"),
             ("limited_area_version", "MPAS-Limited-Area"),
@@ -2795,7 +2815,12 @@ class _MeshBehavior:
         except OSError:
             # Put back what had the name, so the request changes nothing
             if replaced and (old.exists() or old.is_symlink()):
-                old.rename(mesh_dir)
+                try:
+                    old.rename(mesh_dir)
+                except OSError:
+                    logger.warning(
+                        "Could not move %s back to %s, which it replaced", old, mesh_dir
+                    )
             self._remove_mesh_dir(build_dir)
             raise
         if replaced:
@@ -2838,8 +2863,10 @@ class _MeshBehavior:
     ) -> Dict[str, Any]:
         """Return an existing mesh a request matches, with the partitions it asks for.
 
-        Partitions it lacks, or that an earlier Metis version made, are made.
-        A partition that fails leaves the mesh as it was.
+        Partitions it lacks, or that another Metis version made, are made. They
+        leave the record before any is made, so if one fails, the record names
+        only partitions that are as it says, and the next request makes the
+        others.
 
         Raises
         ------
@@ -2849,12 +2876,17 @@ class _MeshBehavior:
         """
         record = self._read_mesh_record(mesh_dir, mesh_name)
         replace = "Use another name, or pass overwrite=True to replace it."
+        unfinished = FileExistsError(
+            f"{mesh_dir} exists but is not a finished mesh: it is incomplete, "
+            f"or another request is making it. {replace}"
+        )
         if record is None:
-            raise FileExistsError(
-                f"{mesh_dir} exists but is not a finished mesh: it is incomplete, "
-                f"or another request is making it. {replace}"
-            )
-        differences = self._mesh_differences(record["mesh"], identity)
+            raise unfinished
+        try:
+            differences = self._mesh_differences(record["mesh"], identity)
+        except (AttributeError, TypeError, ValueError):
+            # A record no request writes, so not a finished mesh's
+            raise unfinished from None
         if differences:
             raise FileExistsError(
                 f"Mesh {mesh_name!r} in {mesh_dir.parent} was made from a different "
@@ -2880,9 +2912,11 @@ class _MeshBehavior:
                 or not Path(f"{graph}.part.{rank}").is_file()
             ]
             if needed:
+                kept = {rank: v for rank, v in made.items() if rank not in needed}
+                self._write_mesh_record(mesh_dir, mesh_name, record["mesh"], kept)
                 await self.partition_mesh(str(graph), needed)
-                made.update({rank: self.metis_version for rank in needed})
-                self._write_mesh_record(mesh_dir, mesh_name, record["mesh"], made)
+                kept.update({rank: self.metis_version for rank in needed})
+                self._write_mesh_record(mesh_dir, mesh_name, record["mesh"], kept)
             result["partitions"] = {rank: f"{graph}.part.{rank}" for rank in ranks}
         result["reused"] = True
         return result
