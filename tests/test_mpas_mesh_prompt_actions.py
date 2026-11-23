@@ -486,10 +486,12 @@ def fake_full_generate(monkeypatch, behavior):
     generate_mesh = behavior.generate_mesh
     made = Mock(return_value=done_future({"static": "/m/texas.static.nc"}))
 
-    async def generate(mesh_config, mesh_data_dir):
+    async def generate(mesh_config, mesh_data_dir, overwrite=False):
         if "prompt" in mesh_config:
-            return await generate_mesh(mesh_config, mesh_data_dir)
-        return await asyncio.wrap_future(made(mesh_config, mesh_data_dir))
+            return await generate_mesh(mesh_config, mesh_data_dir, overwrite)
+        return await asyncio.wrap_future(
+            made(mesh_config, mesh_data_dir, overwrite=overwrite)
+        )
 
     monkeypatch.setattr(behavior, "generate_mesh", generate)
     return made
@@ -524,8 +526,18 @@ async def test_generate_mesh_from_a_prompt(monkeypatch, behavior, options, chang
     # What generate_mesh returns, with the request the prompt became, which
     # makes the same mesh without the prompt
     assert result == {"static": "/m/texas.static.nc", "mesh_config": expected}
-    made.assert_called_once_with(expected, "/meshes")
+    made.assert_called_once_with(expected, "/meshes", overwrite=False)
     task.assert_called_once_with("Texas", MODEL, 60.0, "low", executor=["service"])
+
+
+async def test_generate_mesh_from_a_prompt_overwrites(monkeypatch, behavior):
+    # overwrite is for the request the prompt became
+    mark_prompting_installed(behavior)
+    fake_read_prompt(monkeypatch, behavior)
+    made = fake_full_generate(monkeypatch, behavior)
+    request = {"prompt": "Texas", "model": MODEL}
+    await behavior.generate_mesh(request, "/meshes", overwrite=True)
+    made.assert_called_once_with(CONFIG, "/meshes", overwrite=True)
 
 
 async def test_generate_mesh_from_a_prompt_by_default(monkeypatch, behavior):

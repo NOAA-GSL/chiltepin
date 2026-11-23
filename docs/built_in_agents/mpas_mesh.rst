@@ -168,7 +168,7 @@ Actions
    * ``resolution``: The horizontal resolution of the global mesh to download
    * ``mesh_data_dir``: Where the agent will write the mesh files
 
-``generate_mesh(mesh_config, mesh_data_dir)``
+``generate_mesh(mesh_config, mesh_data_dir, overwrite=False)``
    Generates the requested mesh in a subdirectory of ``mesh_data_dir`` named
    after the mesh. Returns ``"static"`` and ``"graph"`` paths to the mesh files,
    named ``<name>.static.nc`` and ``<name>.graph.info``. For a global mesh these
@@ -333,16 +333,42 @@ Actions
    is missing also needs both ``service`` and ``compute``, and checks for them
    when it runs.
 
-   A mesh with the ``mesh_config``'s name must not already exist in the specified
-   ``mesh_data_dir``. An existing mesh raises ``FileExistsError`` without
-   overwriting it. Choose a new name for another mesh. If a request fails, its
-   mesh subdirectory and everything in it are removed so the name can be used
-   again. Global mesh files already downloaded to
-   ``mesh_data_dir`` are kept for reuse. If cleanup itself fails, for example
-   because the request was interrupted while a partition was still running, the
-   agent logs a warning naming the leftover directory, which must be removed
-   before the name can be used again. An invalid ``mesh_config`` raises
-   ``ValueError`` before anything is checked, created or downloaded.
+   A finished mesh keeps a record of the request that made it,
+   ``<name>.mesh.json`` in its subdirectory, written last. A request for a
+   name that exists in ``mesh_data_dir`` reuses that mesh if it matches: the
+   same ``resolution`` and ``regional`` block, and for a regional mesh the
+   same ``mpas_tools_version`` or ``limited_area_version`` that made it. The
+   rank counts and ``plot`` do not count. Partitions the mesh lacks, or that
+   another ``metis_version`` made, are made, a plot is drawn if the mesh has
+   none, and the result also has ``"reused": True``. A request that does not
+   match raises ``FileExistsError`` saying how it differs, and so does a
+   directory or file of the name without a record, such as a mesh another
+   request is still making, without changing it. Only a real directory is
+   reused, not a link to one.
+
+   With ``overwrite=True``, the mesh is made again, even if it matches, in a
+   new ``.<name>.new-<id>`` directory beside the old one. Only once it is
+   complete is whatever has the name moved aside, the new mesh moved in, and
+   the old one removed, so a request that fails leaves the old mesh as it was.
+   A link of the name is removed, not what it points to. An agent that is
+   killed while it overwrites can leave a ``.<name>.new-<id>`` directory, or a
+   ``.<name>.old-<id>`` one holding the old mesh, which nothing removes.
+
+   Optional numbers count as their defaults, so a request without
+   ``rotation_degrees`` or ``orientation_degrees`` matches one with 0, and an
+   ellipse's orientation counts within one turn. Other numbers must be equal:
+   a longitude of -105 does not match 255, and a rotation of 360 does not
+   match 0, since ``grid_rotate`` runs for it.
+
+   If a request that makes a mesh fails, its mesh subdirectory and everything
+   in it are removed so the name can be used again. A reused mesh stays as it
+   was, except that a partition that fails is made again by the next request.
+   Global mesh files already downloaded to ``mesh_data_dir`` are kept for
+   reuse. If cleanup itself fails, for example because the request was
+   interrupted while a partition was still running, the agent logs a warning
+   naming the leftover directory, which must be removed before the name can be
+   used again. An invalid ``mesh_config`` raises ``ValueError`` before anything
+   is checked, created or downloaded.
 
 ``mesh_config_from_prompt(prompt, model, buffer_km=50.0, reasoning_effort=None)``
    Returns the mesh request a prompt describes, in the form ``generate_mesh``
@@ -552,6 +578,11 @@ is what ``generate_mesh`` returns for the request the prompt became, with that
 request as ``"mesh_config"``, which makes the same mesh again without the
 prompt. ``mesh_config_from_prompt`` only reads a prompt, and returns that
 request without making the mesh.
+
+An existing mesh is reused, or with ``overwrite`` replaced, as for the request
+the prompt became. The model reads the prompt again each time, so if it reads
+it a little differently, such as a circle a few kilometers larger, the request
+no longer matches the mesh it made before, and raises ``FileExistsError``.
 
 A prompt is read with an LLM on the ``service`` resource:
 

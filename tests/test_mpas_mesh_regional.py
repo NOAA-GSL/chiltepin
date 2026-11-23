@@ -149,13 +149,30 @@ async def test_real_regional_mesh(mesh_test_directory, launch_mesh_agent):
         assert assert_valid_mesh(again, mesh_data_dir, "again") == cell_count(
             plain["graph"]
         )
+        # The same request reuses its mesh, without running project_hexes
+        reused = await agent.generate_mesh(regional("plain"), mesh_data_dir)
+        assert reused == {**plain, "reused": True}
+        # Another request of a name in use is refused, and with overwrite made
+        # again in place of the old mesh
+        changed = {**regional("rotated", rotation_degrees=45), "forecast_ranks": 4}
+        with pytest.raises(FileExistsError, match="its region differs"):
+            await agent.generate_mesh(changed, mesh_data_dir)
+        replaced = await agent.generate_mesh(changed, mesh_data_dir, overwrite=True)
+        assert assert_valid_mesh(replaced, mesh_data_dir, "rotated", {4}) == cells
+        assert Path(replaced["static"]).read_bytes() != rotated_mesh
+        assert not [
+            path.name
+            for path in Path(mesh_data_dir).iterdir()
+            if path.name.startswith(".")
+        ]
     after = [program.stat().st_mtime_ns for program in programs]
     after.append(download_log.stat().st_mtime_ns)
     assert after == installed
 
-    # Every run wrote its own logs: six runs of project_hexes, including the
-    # one that failed and the two that asked at the same time, and one rotation
+    # Every run wrote its own logs: seven runs of project_hexes, including the
+    # one that failed, the two that asked at the same time and the one that
+    # replaced a mesh, and two rotations
     logs = work / "logs"
-    assert len(list(logs.glob("project_hexes.*.stderr"))) == 6
-    assert len(list(logs.glob("grid_rotate.*.stderr"))) == 1
+    assert len(list(logs.glob("project_hexes.*.stderr"))) == 7
+    assert len(list(logs.glob("grid_rotate.*.stderr"))) == 2
     assert (logs / "mpas_tools_build.stdout").is_file()

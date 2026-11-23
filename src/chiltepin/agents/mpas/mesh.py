@@ -3,6 +3,7 @@
 """Generate MPAS meshes."""
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -64,6 +65,9 @@ _RESOLUTION_KM_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?km")
 # as ".graph.info.part.<ranks>", and a file name can be at most 255 bytes long.
 _MAX_MESH_NAME_BYTES = 200
 
+# Suffix of the record a finished mesh keeps of the request that made it,
+# written last, so a mesh without one is not finished
+_MESH_RECORD_SUFFIX = ".mesh.json"
 # Keys a mesh request may contain
 _MESH_CONFIG_KEYS = frozenset(
     {"resolution", "name", "init_ranks", "forecast_ranks", "regional", "plot"}
@@ -272,6 +276,151 @@ class _MeshBehavior:
                 "Could not remove %s; remove it before requesting this mesh again",
                 mesh_dir,
             )
+
+    @staticmethod
+    def _orientation(block: Dict[str, Any]) -> float:
+        """Return an ellipse block's orientation within one turn, by default 0.
+
+        A tiny negative angle gives exactly 360.0 from %, which is the same
+        direction as 0.
+        """
+        orientation = block.get("orientation_degrees", 0) % 360
+        return 0.0 if orientation >= 360 else orientation
+
+    def _mesh_identity(self, mesh_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return what makes a validated request's mesh: what an existing one must match.
+
+        That is the resolution, the ``regional`` block, and the version of the
+        tool that makes a regional mesh. Rank counts and ``plot`` are not part
+        of it, since they add to a mesh without changing it. Optional numbers
+        are filled in with their defaults, and an ellipse's orientation is
+        written within one turn, as the mesh is made with them, so a request
+        that leaves one out matches one that gives it.
+        """
+        regional = mesh_config.get("regional")
+        # As it is read back, so the comparison does not depend on, for
+        # example, tuples given for lists
+        regional = json.loads(json.dumps(regional))
+        if regional is not None and "project_hexes" in regional:
+            regional["project_hexes"].setdefault("rotation_degrees", 0.0)
+        if regional is not None and "ellipse" in regional.get("create_region", {}):
+            block = regional["create_region"]["ellipse"]
+            # As the points file writes it
+            block["orientation_degrees"] = self._orientation(block)
+        identity: Dict[str, Any] = {
+            "resolution": mesh_config.get("resolution", "120km"),
+            "regional": regional,
+        }
+        if regional is not None and "project_hexes" in regional:
+            identity["mpas_tools_version"] = self.mpas_tools_version
+        if regional is not None and "create_region" in regional:
+            identity["limited_area_version"] = self.limited_area_version
+        return identity
+
+    @staticmethod
+    def _mesh_record_path(mesh_dir: Path, mesh_name: str) -> Path:
+        """Return the path of a mesh's record, ``<name>.mesh.json``."""
+        return mesh_dir / f"{mesh_name}{_MESH_RECORD_SUFFIX}"
+
+    @classmethod
+    def _write_mesh_record(
+        cls,
+        mesh_dir: Path,
+        mesh_name: str,
+        identity: Dict[str, Any],
+        partitions: Dict[int, str],
+    ) -> None:
+        """Write a mesh's record, with the Metis version of each partition.
+
+        It is written to a temporary file and renamed, so a record is never
+        partly written.
+        """
+        record = {
+            "mesh": identity,
+            "partitions": {str(rank): version for rank, version in partitions.items()},
+        }
+        path = cls._mesh_record_path(mesh_dir, mesh_name)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}")
+        try:
+            temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+            temporary.replace(path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
+    @classmethod
+    def _read_mesh_record(cls, mesh_dir: Path, mesh_name: str) -> Optional[Dict]:
+        """Return a finished mesh's record, or None if it has no valid one.
+
+        Only a real directory counts, not a link to one, so a request can never
+        take a directory elsewhere for its mesh.
+        """
+        if mesh_dir.is_symlink() or not mesh_dir.is_dir():
+            return None
+        try:
+            record = json.loads(cls._mesh_record_path(mesh_dir, mesh_name).read_text())
+        except (OSError, ValueError):
+            return None
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("mesh"), dict)
+            or not isinstance(record.get("partitions"), dict)
+            or not all(
+                re.fullmatch(r"[0-9]{1,9}", rank) and isinstance(version, str)
+                for rank, version in record["partitions"].items()
+            )
+        ):
+            return None
+        return record
+
+    @staticmethod
+    def _mesh_differences(made: Dict[str, Any], requested: Dict[str, Any]) -> List[str]:
+        """Return how a recorded mesh differs from a requested one, in words."""
+
+        def kind(identity):
+            regional = identity.get("regional")
+            if regional is None:
+                return "a global mesh"
+            ((method, block),) = regional.items()
+            if method == "create_region":
+                ((shape, _),) = block.items()
+                return f"a create_region {shape}"
+            return "a project_hexes mesh"
+
+        differences = []
+        if made.get("resolution") != requested["resolution"]:
+            differences.append(
+                f"it is {made.get('resolution')}, not {requested['resolution']}"
+            )
+        if kind(made) != kind(requested):
+            differences.append(f"it is {kind(made)}, not {kind(requested)}")
+        elif made.get("regional") != requested["regional"]:
+
+            def numbers(identity):
+                ((method, block),) = identity["regional"].items()
+                if method == "create_region":
+                    ((_, block),) = block.items()
+                return block
+
+            old, new = numbers(made), numbers(requested)
+            keys = sorted(key for key in {*old, *new} if old.get(key) != new.get(key))
+            # Keys set to null in one and left out of the other differ only in
+            # how they are written
+            differences.append(
+                f"its region differs in {', '.join(keys)}"
+                if keys
+                else "its region differs"
+            )
+        tools = (
+            ("mpas_tools_version", "MPAS-Tools"),
+            ("limited_area_version", "MPAS-Limited-Area"),
+        )
+        for key, tool in tools:
+            if key in requested and made.get(key) != requested[key]:
+                differences.append(
+                    f"it was made with {tool} {made.get(key)}, not {requested[key]}"
+                )
+        return differences
 
     def _validate_mesh_config(self, mesh_config: Dict[str, Any]) -> None:
         """Check a mesh request configuration, as passed to ``generate_mesh()``.
@@ -768,11 +917,8 @@ class _MeshBehavior:
         r = cls._real
         ((shape, block),) = config.items()
         lines = ["Name: region"]
-        # Any angle is written within one turn. A tiny negative angle gives
-        # exactly 360.0 from %, which is the same direction as 0.
-        orientation = block.get("orientation_degrees", 0) % 360
-        if orientation >= 360:
-            orientation = 0.0
+        # Any angle is written within one turn
+        orientation = cls._orientation(block)
         if shape == "circle":
             lines += [
                 "Type: circle",
@@ -1402,7 +1548,12 @@ class _MeshBehavior:
 
     @bash_task
     def _run_grid_rotate(self, mesh_dir: str, input_file: str, output_file: str) -> str:
-        """Run grid_rotate in a mesh directory holding ``namelist.input``."""
+        """Run grid_rotate in a mesh directory holding ``namelist.input``.
+
+        The files are named relative to ``mesh_dir``. grid_rotate keeps only the
+        first 100 characters of each path, as of MPAS-Tools 2.0.0, so a full
+        path could be cut short.
+        """
         import textwrap
 
         return textwrap.dedent(
@@ -2272,8 +2423,10 @@ class _MeshBehavior:
                 "grid_rotate",
                 call_id,
                 str(mesh_dir),
-                str(mesh_file),
-                str(rotated_file),
+                # Names in the directory it runs in, since grid_rotate keeps
+                # only the first 100 characters of each path
+                mesh_file.name,
+                rotated_file.name,
             )
             self._require_output(rotated_file, "grid_rotate", call_id)
             mesh_file.unlink(missing_ok=True)
@@ -2413,7 +2566,7 @@ class _MeshBehavior:
         }
 
     async def _generate_mesh_from_prompt(
-        self, mesh_config: Dict[str, Any], mesh_data_dir: str
+        self, mesh_config: Dict[str, Any], mesh_data_dir: str, overwrite: bool
     ) -> Dict[str, Any]:
         """Make the mesh a validated request with a prompt describes.
 
@@ -2430,7 +2583,9 @@ class _MeshBehavior:
         for key in ("name", "init_ranks", "forecast_ranks", "plot"):
             if key in mesh_config:
                 made_config[key] = mesh_config[key]
-        result = await self.generate_mesh(dict(made_config), mesh_data_dir)
+        result = await self.generate_mesh(
+            dict(made_config), mesh_data_dir, overwrite=overwrite
+        )
         return {**result, "mesh_config": made_config}
 
     @agent_action
@@ -2438,6 +2593,7 @@ class _MeshBehavior:
         self,
         mesh_config: Dict[str, Any],
         mesh_data_dir: str,
+        overwrite: bool = False,
     ) -> Dict[str, Any]:
         """Generate requested mesh.
 
@@ -2447,6 +2603,14 @@ class _MeshBehavior:
         regional mesh, are installed first if they are not already installed.
         A requested plot is drawn last, once the mesh and its partitions are
         complete.
+
+        A finished mesh keeps a record of the request that made it,
+        ``<name>.mesh.json``. A request matching an existing mesh of its name,
+        in resolution, region and the version of the tool that made it, reuses
+        it: only the partitions it lacks, or that another Metis version made,
+        are made, and a plot is drawn if there is none. With ``overwrite``, the
+        mesh is made again in a new directory, which replaces whatever has its
+        name only once it is complete.
 
         Parameters
         ----------
@@ -2482,6 +2646,10 @@ class _MeshBehavior:
             ``mesh_config_from_prompt()``.
         mesh_data_dir : str
             Directory where this request's mesh files are written
+        overwrite : bool, optional
+            Whether to make the mesh again and replace whatever has its name in
+            ``mesh_data_dir``, by default False. Until the new mesh is complete,
+            the old one stays, so a request that fails leaves it.
 
         Returns
         -------
@@ -2497,11 +2665,14 @@ class _MeshBehavior:
               fail the request.
             - mesh_config: for a request with a prompt, the request it was
               made into, which makes the same mesh again without the prompt
+            - reused: True, present only if the mesh existed and was reused
 
         Raises
         ------
         FileExistsError
-            If the named mesh directory already exists.
+            If something of the mesh's name exists in ``mesh_data_dir`` that is
+            not a finished mesh made from a request like this one, without
+            ``overwrite``.
         ValueError
             If ``mesh_config`` is not a dict, or the name, resolution, a rank
             count or the ``regional`` block is invalid. A name must not be that
@@ -2516,14 +2687,16 @@ class _MeshBehavior:
             ``mesh_config_from_prompt()`` raises.
         """
         self._validate_mesh_config(mesh_config)
+        if not isinstance(overwrite, bool):
+            raise ValueError(f"overwrite must be True or False, got {overwrite!r}")
         if "prompt" in mesh_config:
-            return await self._generate_mesh_from_prompt(mesh_config, mesh_data_dir)
+            return await self._generate_mesh_from_prompt(
+                mesh_config, mesh_data_dir, overwrite
+            )
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
-
-        result: Dict[str, Any] = {}
 
         # Check resources before creating anything, so a request that cannot
         # finish downloads nothing and leaves nothing behind. Installing a tool
@@ -2535,16 +2708,66 @@ class _MeshBehavior:
         self._require_resources("This mesh request", *needed)
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
         mesh_dir = request_mesh_data_dir / mesh_name
-        mesh_dir.mkdir()
+        identity = self._mesh_identity(mesh_config)
+        if overwrite:
+            result = await self._replace_mesh(
+                mesh_dir, mesh_name, mesh_config, identity, ranks
+            )
+        else:
+            try:
+                mesh_dir.mkdir()
+            except FileExistsError:
+                result = await self._reuse_mesh(mesh_dir, mesh_name, identity, ranks)
+            else:
+                result = await self._make_mesh(
+                    mesh_dir,
+                    mesh_name,
+                    mesh_config,
+                    identity,
+                    ranks,
+                    request_mesh_data_dir,
+                )
+        if mesh_config.get("plot"):
+            image = self._plot_path(Path(result["static"]))
+            if result.get("reused") and image.is_file():
+                result["plot"] = str(image)
+            else:
+                # The mesh is complete, so a plot that fails only reports why
+                try:
+                    plot, warning = await self._plot(result["static"])
+                except Exception as e:
+                    result["plot_error"] = str(e)
+                else:
+                    result["plot"] = plot
+                    if warning is not None:
+                        result["plot_error"] = warning
+        return result
+
+    async def _make_mesh(
+        self,
+        mesh_dir: Path,
+        mesh_name: str,
+        mesh_config: Dict[str, Any],
+        identity: Dict[str, Any],
+        ranks: List[int],
+        mesh_data_dir: Path,
+    ) -> Dict[str, Any]:
+        """Make a validated request's mesh and partitions in a new directory.
+
+        The record is written last, once everything else is complete. If
+        anything fails, the directory is removed, so the name can be used
+        again.
+        """
+        regional = mesh_config.get("regional")
+        resolution = mesh_config.get("resolution", "120km")
+        result: Dict[str, Any] = {}
         complete = False
         try:
             # Install tools before downloading so a failure wastes no download
             await self._install_tools(mesh_config, plotting=False)
             if regional is None:
                 # Global mesh, downloaded precomputed from UCAR
-                paths = await self.download_global_mesh(
-                    resolution, str(request_mesh_data_dir)
-                )
+                paths = await self.download_global_mesh(resolution, str(mesh_data_dir))
                 for key, suffix in (("static", "static.nc"), ("graph", "graph.info")):
                     link = mesh_dir / f"{mesh_name}.{suffix}"
                     link.symlink_to(Path(paths[key]).resolve())
@@ -2560,26 +2783,158 @@ class _MeshBehavior:
                     mesh_name,
                     resolution,
                     regional["create_region"],
-                    request_mesh_data_dir,
+                    mesh_data_dir,
                 )
             if ranks:
                 result["partitions"] = await self.partition_mesh(result["graph"], ranks)
+            self._write_mesh_record(
+                mesh_dir,
+                mesh_name,
+                identity,
+                {rank: self.metis_version for rank in ranks},
+            )
             complete = True
         finally:
             # Remove the failed mesh completely so the name can be used again
             if not complete:
                 self._remove_mesh_dir(mesh_dir)
+        return result
 
-        if mesh_config.get("plot"):
-            # The mesh is complete, so a plot that fails only reports why
+    async def _replace_mesh(
+        self,
+        mesh_dir: Path,
+        mesh_name: str,
+        mesh_config: Dict[str, Any],
+        identity: Dict[str, Any],
+        ranks: List[int],
+    ) -> Dict[str, Any]:
+        """Make a request's mesh again, and put it in place of whatever has its name.
+
+        The mesh is made in a new directory beside ``mesh_dir``. Only once it is
+        complete is what has the name moved aside, the new mesh moved in, and
+        the old one removed, so a request that fails leaves the old one. The
+        files inside are named after the mesh, not its directory, so moving the
+        directory leaves them whole.
+        """
+        tag = uuid.uuid4().hex[:8]
+        build_dir = mesh_dir.with_name(f".{mesh_name}.new-{tag}")
+        build_dir.mkdir()
+        made = await self._make_mesh(
+            build_dir, mesh_name, mesh_config, identity, ranks, mesh_dir.parent
+        )
+        old = mesh_dir.with_name(f".{mesh_name}.old-{tag}")
+        replaced = mesh_dir.exists() or mesh_dir.is_symlink()
+        try:
+            if replaced:
+                mesh_dir.rename(old)
+            build_dir.rename(mesh_dir)
+        except OSError:
+            # Put back what had the name, so the request changes nothing
+            if replaced and (old.exists() or old.is_symlink()):
+                try:
+                    old.rename(mesh_dir)
+                except OSError:
+                    logger.warning(
+                        "Could not move %s back to %s, which it replaced", old, mesh_dir
+                    )
+            self._remove_mesh_dir(build_dir)
+            raise
+        if replaced:
+            self._remove_replaced(old)
+
+        def moved(path: str) -> str:
+            return str(mesh_dir / Path(path).relative_to(build_dir))
+
+        result: Dict[str, Any] = {key: moved(made[key]) for key in ("static", "graph")}
+        if "partitions" in made:
+            result["partitions"] = {
+                rank: moved(path) for rank, path in made["partitions"].items()
+            }
+        return result
+
+    @staticmethod
+    def _remove_replaced(old: Path) -> None:
+        """Remove what a new mesh replaced: a directory, a file or a link.
+
+        Links are removed without following them, so shared downloaded mesh
+        files they point to are left alone. A failure is logged and never
+        raised, since the new mesh is already in place.
+        """
+        if old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old, ignore_errors=True)
+        else:
             try:
-                plot, warning = await self._plot(result["static"])
-            except Exception as e:
-                result["plot_error"] = str(e)
-            else:
-                result["plot"] = plot
-                if warning is not None:
-                    result["plot_error"] = warning
+                old.unlink()
+            except OSError:
+                pass
+        if old.exists() or old.is_symlink():
+            logger.warning("Could not remove %s, which a new mesh replaced", old)
+
+    async def _reuse_mesh(
+        self,
+        mesh_dir: Path,
+        mesh_name: str,
+        identity: Dict[str, Any],
+        ranks: List[int],
+    ) -> Dict[str, Any]:
+        """Return an existing mesh a request matches, with the partitions it asks for.
+
+        Partitions it lacks, or that another Metis version made, are made. They
+        leave the record before any is made, so if one fails, the record names
+        only partitions that are as it says, and the next request makes the
+        others.
+
+        Raises
+        ------
+        FileExistsError
+            If the name is not a finished mesh, or one made from a different
+            request.
+        """
+        record = self._read_mesh_record(mesh_dir, mesh_name)
+        replace = "Use another name, or pass overwrite=True to replace it."
+        unfinished = FileExistsError(
+            f"{mesh_dir} exists but is not a finished mesh: it is incomplete, "
+            f"or another request is making it. {replace}"
+        )
+        if record is None:
+            raise unfinished
+        try:
+            differences = self._mesh_differences(record["mesh"], identity)
+        except (AttributeError, TypeError, ValueError):
+            # A record no request writes, so not a finished mesh's
+            raise unfinished from None
+        if differences:
+            raise FileExistsError(
+                f"Mesh {mesh_name!r} in {mesh_dir.parent} was made from a different "
+                f"request: {'; '.join(differences)}. {replace}"
+            )
+        static = mesh_dir / f"{mesh_name}.static.nc"
+        graph = mesh_dir / f"{mesh_name}.graph.info"
+        missing = [path.name for path in (static, graph) if not path.is_file()]
+        if missing:
+            raise FileExistsError(
+                f"Mesh {mesh_name!r} in {mesh_dir.parent} is missing "
+                f"{', '.join(missing)}. {replace}"
+            )
+        result: Dict[str, Any] = {"static": str(static), "graph": str(graph)}
+        if ranks:
+            made = {
+                int(rank): version for rank, version in record["partitions"].items()
+            }
+            needed = [
+                rank
+                for rank in ranks
+                if made.get(rank) != self.metis_version
+                or not Path(f"{graph}.part.{rank}").is_file()
+            ]
+            if needed:
+                kept = {rank: v for rank, v in made.items() if rank not in needed}
+                self._write_mesh_record(mesh_dir, mesh_name, record["mesh"], kept)
+                await self.partition_mesh(str(graph), needed)
+                kept.update({rank: self.metis_version for rank in needed})
+                self._write_mesh_record(mesh_dir, mesh_name, record["mesh"], kept)
+            result["partitions"] = {rank: f"{graph}.part.{rank}" for rank in ranks}
+        result["reused"] = True
         return result
 
 
