@@ -88,11 +88,13 @@ def assert_valid_mesh(result, mesh_data_dir, name, shape, partitions=()):
         parts = [int(value) for value in Path(path).read_text().split()]
         assert len(parts) == cells
         assert set(parts) == set(range(rank))
-    # The points file stays, and the link to the parent mesh does not
+    # The points file and the record stay, and the link to the parent mesh does
+    # not
     names = {path.name for path in mesh_dir.iterdir()}
     assert names == {
         f"{name}.static.nc",
         f"{name}.graph.info",
+        f"{name}.mesh.json",
         "region.pts",
     } | {Path(path).name for path in result.get("partitions", {}).values()}
 
