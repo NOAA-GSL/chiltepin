@@ -2491,8 +2491,13 @@ def fake_program_tasks(behavior, monkeypatch, fail=None):
     def grid_rotate(mesh_dir, input_file, output_file, **kwargs):
         if "grid_rotate" in fail:
             return done_future(error=fail["grid_rotate"])
-        assert (Path(mesh_dir) / "namelist.input").is_file()
-        Path(output_file).write_text("rotated " + Path(input_file).read_text())
+        directory = Path(mesh_dir)
+        assert (directory / "namelist.input").is_file()
+        # It runs in the mesh directory, and keeps only 100 characters of a path
+        assert len(input_file) <= 100 and len(output_file) <= 100
+        (directory / output_file).write_text(
+            "rotated " + (directory / input_file).read_text()
+        )
         return done_future()
 
     hexes, rotate = Mock(side_effect=project_hexes), Mock(side_effect=grid_rotate)
@@ -2553,10 +2558,12 @@ async def test_project_hexes_mesh_with_rotation(monkeypatch, behavior, mesh_dir)
         "region.graph.info",
     }
     rotate.assert_called_once()
+    # The files are named in the directory it runs in, since grid_rotate keeps
+    # only 100 characters of a path
     assert rotate.call_args.args == (
         str(mesh_dir),
-        str(mesh_dir / "mpas_hex_mesh.nc"),
-        str(mesh_dir / "rotated_mesh.nc"),
+        "mpas_hex_mesh.nc",
+        "rotated_mesh.nc",
     )
     assert rotate.call_args.kwargs["executor"] == ["compute"]
 

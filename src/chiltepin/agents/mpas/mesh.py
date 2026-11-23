@@ -1512,7 +1512,12 @@ class _MeshBehavior:
 
     @bash_task
     def _run_grid_rotate(self, mesh_dir: str, input_file: str, output_file: str) -> str:
-        """Run grid_rotate in a mesh directory holding ``namelist.input``."""
+        """Run grid_rotate in a mesh directory holding ``namelist.input``.
+
+        The files are named relative to ``mesh_dir``. grid_rotate keeps only the
+        first 100 characters of each path, as of MPAS-Tools 2.0.0, so a full
+        path could be cut short.
+        """
         import textwrap
 
         return textwrap.dedent(
@@ -2382,8 +2387,10 @@ class _MeshBehavior:
                 "grid_rotate",
                 call_id,
                 str(mesh_dir),
-                str(mesh_file),
-                str(rotated_file),
+                # Names in the directory it runs in, since grid_rotate keeps
+                # only the first 100 characters of each path
+                mesh_file.name,
+                rotated_file.name,
             )
             self._require_output(rotated_file, "grid_rotate", call_id)
             mesh_file.unlink(missing_ok=True)
