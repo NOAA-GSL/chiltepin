@@ -79,7 +79,11 @@ GRADIENT_WARN = 0.05
 # hexagon has 0.577. The band is reported, and values outside the limits warn.
 REGULARITY_BAND = (0.4, 0.8)
 REGULARITY_LIMITS = (0.1, 2.0)
-# A cell with a missing neighbor is on a regional mesh's edge
+# Most cells per rank, over the mean, that a partition may have before a warning.
+# Metis with its default tolerance keeps to 1.03 on large meshes, and reached 1.04
+# with 19 cells per rank.
+PARTITION_IMBALANCE_WARN = 1.10
+# A regional mesh's boundary layers, from the edge in
 BOUNDARY_LAYERS = 7
 # Fraction of the requested finest spacing the mesh's own may differ by
 REQUESTED_TOLERANCE = 0.01
@@ -223,7 +227,7 @@ def check_mesh(path: str, resolution_km: Optional[float] = None) -> Dict[str, An
             )
         dataset.set_auto_mask(False)
         report = _Report()
-        _check(dataset, report, resolution_km)
+        _check(dataset, report, resolution_km, mesh)
     errors, warnings = report.errors, report.warnings
     counts = f"{len(errors)} error(s) and {len(warnings)} warning(s)"
     return {
@@ -235,7 +239,9 @@ def check_mesh(path: str, resolution_km: Optional[float] = None) -> Dict[str, An
     }
 
 
-def _check(dataset: Any, report: _Report, resolution_km: Optional[float]) -> None:
+def _check(
+    dataset: Any, report: _Report, resolution_km: Optional[float], mesh: Path
+) -> None:
     """Run every check, which stop short of the geometry if indices are invalid."""
     import numpy as np
 
@@ -305,6 +311,7 @@ def _check(dataset: Any, report: _Report, resolution_km: Optional[float]) -> Non
     _areas(dataset, report, kind, radius, n_cells, on_vertex)
     _sizes(dataset, report, to_km, on_edge, interior, resolution_km)
     _boundary_layers(dataset, report, kind, on_cell, used)
+    _partitions(mesh, report, n_cells, on_edge, interior)
 
 
 def _indices_valid(
@@ -637,6 +644,68 @@ def _boundary_layers(dataset, report, kind, on_cell, used) -> None:
         report.warnings.append(
             f"{stranded} boundary-layer cell(s) do not touch the layer inside them"
         )
+
+
+def _partitions(
+    mesh: Path, report: _Report, n_cells: int, on_edge: Any, interior: Any
+) -> None:
+    """Check the Metis partitions next to a mesh: ``<name>.graph.info.part.<ranks>``."""
+    import numpy as np
+
+    stem = mesh.name.removesuffix(".nc").removesuffix(".static")
+    prefix = f"{stem}.graph.info.part."
+    files = {}
+    for path in mesh.parent.iterdir():
+        count = path.name.removeprefix(prefix)
+        if path.name.startswith(prefix) and count.isdigit() and int(count) > 1:
+            files[int(count)] = path
+    if not files:
+        return
+    partitions = {}
+    for count in sorted(files):
+        name = files[count].name
+        try:
+            ranks = np.array(files[count].read_text().split(), dtype=np.int64)
+        except ValueError:
+            report.errors.append(f"{name} does not hold rank numbers")
+            continue
+        if ranks.size != n_cells:
+            report.errors.append(f"{name} has {ranks.size} entries for {n_cells} cells")
+            continue
+        if ranks.min() < 0 or ranks.max() >= count:
+            report.errors.append(f"{name} has rank numbers outside 0 to {count - 1}")
+            continue
+        cells = np.bincount(ranks, minlength=count)
+        first = ranks[on_edge[interior, 0] - 1]
+        second = ranks[on_edge[interior, 1] - 1]
+        cut = first != second
+        # Each pair of ranks that share an edge, once, and so each rank's neighbors
+        pairs = np.unique(
+            np.minimum(first, second)[cut] * count + np.maximum(first, second)[cut]
+        )
+        neighbors = np.bincount(
+            np.concatenate([pairs // count, pairs % count]), minlength=count
+        )
+        imbalance = float(cells.max() / cells.mean())
+        partitions[str(count)] = {
+            "cells_per_rank": _stats(cells),
+            "imbalance": imbalance,
+            "empty_ranks": int((cells == 0).sum()),
+            "edge_cut": int(cut.sum()),
+            "edge_cut_fraction": float(cut.mean()),
+            "neighbor_ranks": _stats(neighbors),
+        }
+        if int((cells == 0).sum()):
+            report.warnings.append(
+                f"{name}: {int((cells == 0).sum())} of {count} ranks have no cells"
+            )
+        if imbalance > PARTITION_IMBALANCE_WARN:
+            report.warnings.append(
+                f"{name}: the busiest rank has {imbalance:.3g} times the mean number "
+                f"of cells, above {PARTITION_IMBALANCE_WARN:g}"
+            )
+    if partitions:
+        report.measurements["partitions"] = partitions
 
 
 def format_lines(report: Dict[str, Any]) -> Sequence[str]:

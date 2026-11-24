@@ -468,6 +468,9 @@ Actions
      than 0.1%.
    * For a global mesh, cell shapes that cannot close a sphere. Euler's formula
      requires the sum over cells of ``6 - sides`` to be exactly 12.
+   * A partition file next to the mesh that does not fit it: one with a different
+     number of entries than the mesh has cells, rank numbers outside 0 to
+     ``ranks - 1``, or something other than rank numbers.
 
    Warnings name red flags about quality. They do not say a mesh is unusable, and
    the user decides whether a mesh suits:
@@ -484,6 +487,9 @@ Actions
    * For a regional mesh with boundary layers, a layer from 1 to 7 with no cells,
      or cells that do not touch the layer inside them.
    * Areas and Voronoi tilts above a tenth of their error limits.
+   * A partition with ranks that have no cells, or whose busiest rank has more
+     than 1.1 times the mean number of cells. Metis keeps within 1.04 on the
+     meshes tried.
 
    Meshes with refinement regions made with JIGSAW always have non-hexagons in
    their transition zones, which cannot be removed. Expect pentagons paired with
@@ -496,7 +502,11 @@ Actions
    km, percentiles and a histogram of the cell spacing, the ratio of Voronoi edge
    to cell-center distance, the nominal size gradient with its 99th percentile and
    the fraction of edges above 0.03, and the boundary layer counts of a regional
-   mesh. Only the first ``nEdgesOnCell`` neighbors of each cell are read, since
+   mesh. For each Metis partition next to the mesh, ``<name>.graph.info.part.<ranks>``
+   as ``partition_mesh`` writes it, there are the cells per rank, the busiest rank
+   over the mean, the ranks with no cells, the number of edges between ranks and
+   their fraction of all edges, and the number of neighbor ranks of each rank.
+   Only the first ``nEdgesOnCell`` neighbors of each cell are read, since
    some tools write other values after them.
 
    ``FileNotFoundError`` is raised for a mesh file that does not exist, and

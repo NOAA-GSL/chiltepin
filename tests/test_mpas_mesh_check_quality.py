@@ -22,6 +22,8 @@ GLOBAL = {"resolution": "480km", "name": "globe"}
 HEXES = {
     "resolution": "50km",
     "name": "hexes",
+    "init_ranks": 4,
+    "forecast_ranks": 6,
     "regional": {
         "project_hexes": {
             "center_lat": 40.0,
@@ -67,7 +69,16 @@ async def test_real_quality_checks(mesh_test_directory, launch_mesh_agent):
             assert report["passed"], report
             assert report["measurements"]["kind"] == "regional"
             assert report["measurements"]["expectation"] == "variable"
+        # Metis's partitions are measured, and have no cell-count imbalance to speak of
+        report = await agent.check_mesh_quality(hexes["static"])
+        partitions = report["measurements"]["partitions"]
+        assert list(partitions) == ["4", "6"] and report["warnings"] == []
+        assert all(1.0 <= p["imbalance"] < 1.05 for p in partitions.values())
+        assert all(
+            p["empty_ranks"] == 0 and p["edge_cut"] > 0 for p in partitions.values()
+        )
         # create_region meshes have their seven boundary layers
+        report = await agent.check_mesh_quality(cut["static"])
         layers = report["measurements"]["boundary_layers"]
         assert all(layers[str(layer)] > 0 for layer in range(1, 8))
         # A file that is not a mesh is refused, and one that does not exist

@@ -678,3 +678,87 @@ def test_bin_edges():
     # A bad width falls back to the range
     assert len(quality.bin_edges(sizes, width=float("nan"))) <= 4
     assert len(quality.bin_edges(sizes, width=-1.0)) <= 4
+
+
+def write_partition(path, ranks):
+    path.write_text("".join(f"{rank}\n" for rank in ranks))
+    return path
+
+
+def sliced_ranks(arrays, count):
+    """Return ranks that cut the cells into ``count`` slices along x."""
+    order = np.argsort(arrays["points"][:, 0], kind="stable")
+    ranks = np.empty(len(order), dtype=int)
+    ranks[order] = np.arange(len(order)) * count // len(order)
+    return ranks
+
+
+def test_partitions_are_measured(mesh, arrays):
+    for count in (4, 6):
+        write_partition(
+            mesh.with_name(f"mesh.graph.info.part.{count}"), sliced_ranks(arrays, count)
+        )
+    report = quality.check_mesh(str(mesh))
+    assert report["passed"] and report["warnings"] == []
+    partitions = report["measurements"]["partitions"]
+    assert list(partitions) == ["4", "6"]
+    four = partitions["4"]
+    ranks = sliced_ranks(arrays, 4)
+    pairs = arrays["cells_on_edge"] - 1
+    assert four["edge_cut"] == int((ranks[pairs[:, 0]] != ranks[pairs[:, 1]]).sum())
+    assert four["edge_cut_fraction"] == pytest.approx(four["edge_cut"] / len(pairs))
+    assert four["cells_per_rank"] == {"min": 40.0, "mean": 40.5, "max": 41.0}
+    assert four["imbalance"] == pytest.approx(41 / 40.5)
+    assert four["empty_ranks"] == 0
+    # Slices along an axis touch the next and the one after it at most
+    assert 1.0 <= four["neighbor_ranks"]["min"] <= four["neighbor_ranks"]["max"] <= 3.0
+
+
+def test_partitions_of_a_static_file_are_found_by_its_name(tmp_path, arrays):
+    path = write_mesh(tmp_path / "g.static.nc", arrays)
+    write_partition(tmp_path / "g.graph.info.part.3", sliced_ranks(arrays, 3))
+    write_partition(tmp_path / "other.graph.info.part.3", [0, 1, 2])
+    report = quality.check_mesh(str(path))
+    assert list(report["measurements"]["partitions"]) == ["3"]
+
+
+def test_files_that_are_not_partitions_are_ignored(mesh, arrays):
+    for name in ("part.", "part.abc", "part.1", "part.0"):
+        write_partition(mesh.with_name(f"mesh.graph.info.{name}"), [0] * 162)
+    mesh.with_name("mesh.graph.info").write_text("162 0\n")
+    assert "partitions" not in quality.check_mesh(str(mesh))["measurements"]
+
+
+def test_an_unbalanced_partition_warns(mesh):
+    ranks = np.arange(162) % 4
+    ranks[:100] = 0
+    write_partition(mesh.with_name("mesh.graph.info.part.4"), ranks)
+    report = quality.check_mesh(str(mesh))
+    assert report["passed"]
+    assert "the busiest rank has 2.86 times the mean number of cells" in messages(
+        report, "warnings"
+    )
+
+
+def test_ranks_without_cells_warn(mesh):
+    write_partition(mesh.with_name("mesh.graph.info.part.200"), np.arange(162))
+    report = quality.check_mesh(str(mesh))
+    assert "38 of 200 ranks have no cells" in messages(report, "warnings")
+    assert report["measurements"]["partitions"]["200"]["empty_ranks"] == 38
+
+
+@pytest.mark.parametrize(
+    "ranks, message",
+    [
+        ([0, 1] * 10, "has 20 entries for 162 cells"),
+        ([0, 1, 4] * 54, "has rank numbers outside 0 to 3"),
+        ([-1, 0, 1] * 54, "has rank numbers outside 0 to 3"),
+        (["a"] * 162, "does not hold rank numbers"),
+    ],
+)
+def test_partitions_that_do_not_fit_the_mesh_are_errors(mesh, ranks, message):
+    write_partition(mesh.with_name("mesh.graph.info.part.4"), ranks)
+    report = quality.check_mesh(str(mesh))
+    assert not report["passed"]
+    assert f"mesh.graph.info.part.4 {message}" in messages(report, "errors")
+    assert "partitions" not in report["measurements"]
