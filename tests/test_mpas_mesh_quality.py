@@ -369,8 +369,9 @@ def test_stranded_boundary_cell_warns(tmp_path, regional_arrays):
     stranded[np.flatnonzero(layers == 0)[0]] = 3  # inside, with no layer 2 next to it
     path = write_mesh(tmp_path / "a.nc", region, mask=stranded)
     report = quality.check_mesh(str(path))
-    assert "1 boundary-layer cell(s) do not touch the layer inside" in messages(
-        report, "warnings"
+    assert (
+        "1 boundary-layer cell(s) do not touch the next layer toward the edge"
+        in messages(report, "warnings")
     )
 
 
@@ -846,22 +847,80 @@ def test_tilt_limits_rise_with_the_noise_of_the_coordinates():
     assert quality.tilt_limits(1e-2) == pytest.approx((0.2, 2.0))
 
 
-def test_single_precision_is_judged_by_its_noise(tmp_path, arrays):
-    """Cells a ten-thousandth as far apart have a hundred times the noise to tilt by."""
-    small = dict(arrays, dc=arrays["dc"] * 1e-4, dv=arrays["dv"] * 1e-4)
-    path = write_mesh(tmp_path / "fine.nc", small, radius=6371229.0, dtype="f4")
+def test_single_precision_is_judged_by_its_noise(mesh, monkeypatch):
+    """Cells close together relative to the rounding have much of their tilt as noise."""
 
     def move(ds):
-        ds.variables["xCell"][3] = ds.variables["xCell"][3] + 0.004 * 6371229.0
+        ds.variables["xCell"][3] = ds.variables["xCell"][3] + 0.03
 
-    report = quality.check_mesh(str(change(path, move)))
-    measurements = report["measurements"]
-    assert measurements["voronoi_tilt"] > quality.TILT_ERROR
-    assert measurements["coordinate_noise"] > 1e-3
+    change(mesh, move)
+    exact = quality.check_mesh(str(mesh))
+    assert not exact["passed"]
+    assert exact["measurements"]["coordinate_noise"] < 1e-12
+    # With a rounding unit of 1e-2, the same tilt is within the noise
+    monkeypatch.setattr(quality, "_epsilon", lambda dtype: 1e-2)
+    rough = quality.check_mesh(str(mesh))
+    measurements = rough["measurements"]
+    assert measurements["voronoi_tilt"] == exact["measurements"]["voronoi_tilt"]
+    assert measurements["coordinate_noise"] > 0.01
     assert measurements["voronoi_tilt_limits"] == dict(
         zip(("warn", "error"), quality.tilt_limits(measurements["coordinate_noise"]))
     )
-    assert report["passed"] and "tilt" not in messages(report, "warnings")
+    assert rough["passed"] and "tilt" not in messages(rough, "warnings")
+
+
+def test_the_rounding_unit_is_that_of_the_coordinates(tmp_path, arrays):
+    single = write_mesh(tmp_path / "single.nc", arrays, radius=6371229.0, dtype="f4")
+    double = write_mesh(tmp_path / "double.nc", arrays)
+    assert quality._epsilon(np.dtype("f4")) == pytest.approx(1.19e-7, rel=1e-2)
+    noise = quality.check_mesh(str(single))["measurements"]["coordinate_noise"]
+    assert noise == pytest.approx(
+        quality._epsilon(np.dtype("f4")) / arrays["dc"].min(), rel=0.1
+    )
+    assert quality.check_mesh(str(double))["measurements"]["coordinate_noise"] < 1e-14
+
+
+def test_a_corrupted_length_does_not_loosen_the_tilt_limits(mesh):
+    """The noise comes from the coordinates, not from dcEdge, which no check ties to them."""
+
+    def move(ds):
+        ds.variables["xCell"][3] = ds.variables["xCell"][3] + 0.03
+        ds.variables["dcEdge"][:] = ds.variables["dcEdge"][:] * 1e-9
+
+    report = quality.check_mesh(str(change(mesh, move)))
+    assert not report["passed"]
+    assert report["measurements"]["coordinate_noise"] < 1e-12
+
+
+def test_the_obtuse_test_allows_for_the_noise_too(mesh, arrays, monkeypatch):
+    """A vertex a hundredth outside its triangle is obtuse, unless that is noise."""
+    a, b, c = (arrays["points"][arrays["cells_on_vertex"][0, k] - 1] for k in range(3))
+    normal = np.cross(b, c) / np.linalg.norm(np.cross(b, c))
+    orientation = np.sign(a @ np.cross(b, c))
+    vertex = arrays["vertices"][0]
+    moved = vertex - (vertex @ normal) * normal - 0.01 * orientation * normal
+    moved /= np.linalg.norm(moved)
+
+    def edit(ds):
+        for axis, value in zip("xyz", moved):
+            ds.variables[f"{axis}Vertex"][0] = value
+
+    change(mesh, edit)
+    assert quality.check_mesh(str(mesh))["measurements"]["obtuse_triangles"] >= 1
+    monkeypatch.setattr(quality, "_epsilon", lambda dtype: 1e-2)
+    assert quality.check_mesh(str(mesh))["measurements"]["obtuse_triangles"] == 0
+
+
+def test_cells_with_the_same_center_are_an_error(mesh):
+    def merge(ds):
+        first, second = ds.variables["cellsOnEdge"][0, :] - 1
+        for axis in "xyz":
+            var = ds.variables[f"{axis}Cell"]
+            var[second] = var[first]
+
+    report = quality.check_mesh(str(change(mesh, merge)))
+    assert not report["passed"]
+    assert "1 edge(s) join two cells with the same center" in messages(report, "errors")
 
 
 def test_a_partition_that_cannot_be_read_is_an_error(mesh):
@@ -876,6 +935,13 @@ def test_partitions_are_read_in_blocks(mesh, arrays, monkeypatch):
     whole = quality.check_mesh(str(mesh))
     monkeypatch.setattr(quality, "BLOCK", 5)
     assert quality.check_mesh(str(mesh)) == whole
+    # Blank lines and a trailing newline are not entries
+    padded = mesh.with_name("mesh.graph.info.part.3")
+    write_partition(padded, sliced_ranks(arrays, 3))
+    padded.write_text(padded.read_text() + "\n  \n")
+    padded_report = quality.check_mesh(str(mesh))
+    assert "3" in padded_report["measurements"]["partitions"]
+    assert "part.3" not in messages(padded_report, "errors")
     # An empty partition file has no entries
     mesh.with_name("mesh.graph.info.part.6").write_text("")
     assert "mesh.graph.info.part.6 has 0 entries for 162 cells" in messages(

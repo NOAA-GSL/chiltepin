@@ -352,11 +352,6 @@ def _check(
         )
         / radius
     )
-    # Rounding the coordinates moves things by about the precision over the
-    # shortest distance between cells, on the unit sphere
-    shortest = float(_read(dataset, "dcEdge")[interior].min()) / radius
-    noise = float(np.finfo(dataset.variables["xCell"].dtype).eps) / shortest
-    report.measurements["coordinate_noise"] = noise
     _voronoi(
         report,
         cell_xyz,
@@ -365,7 +360,7 @@ def _check(
         vertices_on_edge,
         on_vertex,
         interior,
-        noise,
+        _epsilon(dataset.variables["xCell"].dtype),
     )
     del cell_xyz, vertex_xyz
     _areas(dataset, report, kind, radius, n_cells, on_vertex)
@@ -520,6 +515,13 @@ def _cell_shapes(report, kind, sides, on_cell, used, density) -> None:
         )
 
 
+def _epsilon(dtype: Any) -> float:
+    """Return the rounding unit of a floating-point type."""
+    import numpy as np
+
+    return float(np.finfo(dtype).eps)
+
+
 def tilt_limits(noise: float) -> Tuple[float, float]:
     """Return the Voronoi tilts where a warning and an error start, for the noise."""
     return (
@@ -529,13 +531,28 @@ def tilt_limits(noise: float) -> Tuple[float, float]:
 
 
 def _voronoi(
-    report, cell_xyz, vertex_xyz, on_edge, vertices_on_edge, on_vertex, interior, noise
+    report,
+    cell_xyz,
+    vertex_xyz,
+    on_edge,
+    vertices_on_edge,
+    on_vertex,
+    interior,
+    epsilon,
 ) -> None:
-    """Check that edges bisect their cell centers, and that vertices are inside triangles."""
+    """Check that edges bisect their cell centers, and that vertices are inside triangles.
+
+    ``epsilon`` is the rounding unit of the coordinates. It moves a point by about
+    that much, which tilts a Voronoi edge's plane by about ``epsilon`` over the
+    shortest distance between cell centers, so that sets how much tilt is noise.
+    The distance comes from the coordinates the tilt is measured on.
+    """
     import numpy as np
 
     tilt = 0.0
     degenerate = 0
+    coincident = 0
+    shortest = math.inf
     for block in _blocks(interior.size):
         edges = interior[block]
         a = cell_xyz[on_edge[edges, 0] - 1]
@@ -544,11 +561,18 @@ def _voronoi(
         w = vertex_xyz[vertices_on_edge[edges, 1] - 1]
         normal = _normalized(np.cross(u, w))
         direction = _normalized(b - a)
+        distance = np.linalg.norm(b - a, axis=1)
+        coincident += int((distance <= 0.0).sum())
+        shortest = min(
+            shortest, float(distance.min(initial=math.inf, where=distance > 0.0))
+        )
         degenerate += int((np.linalg.norm(np.cross(u, w), axis=1) <= 0.0).sum())
         tilt = max(
             tilt, float(np.linalg.norm(np.cross(normal, direction), axis=1).max())
         )
+    noise = epsilon / shortest
     warn, error = tilt_limits(noise)
+    report.measurements["coordinate_noise"] = noise
     report.measurements["voronoi_tilt"] = tilt
     report.measurements["voronoi_tilt_limits"] = {"warn": warn, "error": error}
     report.level(
@@ -557,6 +581,10 @@ def _voronoi(
         error,
         "The tilt of Voronoi edges from the bisector of their cell centers",
     )
+    if coincident:
+        report.errors.append(
+            f"{coincident} edge(s) join two cells with the same center"
+        )
     if degenerate:
         report.warnings.append(f"{degenerate} Voronoi edge(s) have zero length")
     full = np.flatnonzero((on_vertex > 0).all(axis=1))
@@ -730,7 +758,8 @@ def _boundary_layers(dataset, report, kind, on_cell, used) -> None:
         stranded += int((~touching).sum())
     if stranded:
         report.warnings.append(
-            f"{stranded} boundary-layer cell(s) do not touch the layer inside them"
+            f"{stranded} boundary-layer cell(s) do not touch the next layer toward "
+            "the edge of the mesh"
         )
 
 
@@ -746,7 +775,8 @@ def _read_ranks(path: Path) -> Any:
             lines = list(islice(handle, BLOCK))
             if not lines:
                 break
-            blocks.append(np.array(lines, dtype=np.int64))
+            # Joined and split, so blank lines and trailing white space do not count
+            blocks.append(np.array("".join(lines).split(), dtype=np.int64))
     return np.concatenate(blocks) if blocks else np.zeros(0, dtype=np.int64)
 
 
