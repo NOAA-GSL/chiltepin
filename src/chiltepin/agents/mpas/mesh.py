@@ -21,6 +21,7 @@ from parsl.errors import NoDataFlowKernelError
 
 from chiltepin.agents import agent_action, chiltepin_agent
 from chiltepin.agents.mpas._geo_lookup import BOUNDARY_LAYERS
+from chiltepin.agents.mpas._mesh_quality import format_lines
 from chiltepin.agents.mpas._plot_mesh import (
     EXIT_MISSING_MAP,
     EXIT_VIEW_OF_REGIONAL_MESH,
@@ -1693,6 +1694,32 @@ class _MeshBehavior:
         except Exception as e:
             raise RuntimeError(redact(f"{type(e).__name__}: {e}")) from None
 
+    @python_task
+    def _check_quality(
+        self, mesh_path: str, resolution_km: Optional[float]
+    ) -> Dict[str, Any]:
+        """Check a mesh file, and return its report as ``{"report": ...}``.
+
+        Runs on ``compute``, whose Python has the ``chiltepin[mpas]`` extra. A
+        mesh that cannot be checked comes back as ``{"error": ..., "invalid":
+        bool}``, since the exception types do not all survive the executor.
+        ``invalid`` is True if the file is not an MPAS mesh.
+        """
+        from chiltepin.agents.mpas._mesh_quality import check_mesh
+
+        try:
+            return {"report": check_mesh(mesh_path, resolution_km)}
+        except ImportError as e:
+            return {
+                "error": (
+                    f"{e}. Install chiltepin[mpas] in the environment of the "
+                    "compute resource"
+                ),
+                "invalid": False,
+            }
+        except ValueError as e:
+            return {"error": str(e), "invalid": True}
+
     # -------------------------------------------------------------------------
     # Public agent actions — Metis
     # -------------------------------------------------------------------------
@@ -2104,6 +2131,96 @@ class _MeshBehavior:
         """
         path, _ = await self._plot(mesh_path, title, zoom, center_lat, center_lon)
         return path
+
+    @staticmethod
+    def _quality_path(mesh: Path) -> Path:
+        """Return the report path of a mesh: ``<name>.quality.json`` next to it.
+
+        The name is made as ``_plot_path`` makes the image's.
+        """
+        name = mesh.name.removesuffix(".nc").removesuffix(".static")
+        return mesh.with_name(f"{name}.quality.json")
+
+    @agent_action
+    async def check_mesh_quality(
+        self, mesh_path: str, resolution_km: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Check a mesh's integrity and quality, and return a report.
+
+        Errors name a broken mesh: connectivity that contradicts itself, Voronoi
+        edges that do not bisect their cell centers, areas that do not add up,
+        or, for a global mesh, cell shapes that cannot close a sphere. Warnings
+        name red flags about quality, such as many non-hexagons, a very
+        distorted cell, or a steep change of cell size. A quasi-uniform global
+        mesh is expected to have exactly 12 pentagons and no other
+        non-hexagon. Any other mesh is expected to have more, and meshes with
+        refinement regions made with JIGSAW always have non-hexagons in their
+        transition zones, so a warning is for the user to weigh, and the mesh
+        may still suit.
+
+        The report is also written next to the mesh as ``<name>.quality.json``,
+        replacing an earlier one. A mesh with errors does not raise. The check
+        runs on the ``compute`` resource.
+
+        Parameters
+        ----------
+        mesh_path : str
+            Path to the mesh's static or grid file. A relative path or one
+            starting with ``~`` is made absolute on the agent.
+        resolution_km : float, optional
+            The finest cell spacing that was asked for. A warning is raised if
+            the mesh's nominal finest spacing differs from it by more than 1%.
+
+        Returns
+        -------
+        dict
+            ``passed`` (True if there are no errors), ``summary``, ``errors``
+            and ``warnings`` (lists of messages), ``measurements`` (numbers such
+            as the cell shape counts, spacing percentiles, the Voronoi tilt and
+            the size gradient), and ``report_file``, the path of the JSON file.
+            If that file cannot be written, ``report_file`` is None.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, or the file is not an MPAS mesh.
+        FileNotFoundError
+            If the mesh file does not exist.
+        RuntimeError
+            If the ``compute`` resource is not defined, or the check fails. The
+            message says if the Python of ``compute`` lacks the ``mpas`` extra.
+        """
+        if not isinstance(mesh_path, str) or not mesh_path:
+            raise ValueError("mesh_path must be a non-empty string")
+        if resolution_km is not None:
+            resolution_km = self._positive(resolution_km, "resolution_km")
+        mesh = Path(os.path.abspath(os.path.expanduser(mesh_path)))
+        if not mesh.is_file():
+            raise FileNotFoundError(f"No mesh file at {mesh}")
+        self._require_resources("Checking mesh quality", "compute")
+        future = self._check_quality(str(mesh), resolution_km, executor=["compute"])
+        try:
+            result = await asyncio.wrap_future(future)
+        except Exception as e:
+            raise RuntimeError(f"Checking the mesh failed: {e}") from None
+        if "error" in result:
+            error = ValueError if result["invalid"] else RuntimeError
+            raise error(f"Cannot check {mesh}: {result['error']}")
+        report = result["report"]
+        output = self._quality_path(mesh)
+        partial = output.with_name(f".{output.stem}.{uuid.uuid4().hex[:8]}.json")
+        report["report_file"] = str(output)
+        try:
+            partial.write_text(json.dumps(report, indent=2) + "\n")
+            partial.replace(output)
+        except OSError as e:
+            report["report_file"] = None
+            logger.warning("Could not write the quality report of %s: %s", mesh, e)
+        finally:
+            partial.unlink(missing_ok=True)
+        for line in format_lines(report):
+            logger.info("%s: %s", mesh, line)
+        return report
 
     # -------------------------------------------------------------------------
     # Public agent actions — Tools
