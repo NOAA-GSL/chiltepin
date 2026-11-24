@@ -23,7 +23,7 @@ imported where the checks run, which is on the ``compute`` resource.
 
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # MPAS's value for the radius of the Earth, in km, which a mesh's lengths are
 # scaled to whatever sphere radius the file uses
@@ -54,6 +54,30 @@ REQUIRED_VARIABLES = (
     "zVertex",
 )
 
+# Variables that must hold finite numbers, and those that must be positive
+FINITE_VARIABLES = (
+    "xCell",
+    "yCell",
+    "zCell",
+    "xVertex",
+    "yVertex",
+    "zVertex",
+    "dcEdge",
+    "dvEdge",
+    "areaCell",
+    "areaTriangle",
+    "kiteAreasOnVertex",
+    "meshDensity",
+    "nominalMinDc",
+)
+POSITIVE_VARIABLES = (
+    "dcEdge",
+    "areaCell",
+    "areaTriangle",
+    "meshDensity",
+    "nominalMinDc",
+)
+
 # A global mesh whose density varies by less than this is quasi-uniform
 UNIFORM_DENSITY_SPREAD = 1.0e-6
 # Pentagons a closed mesh of pentagons and hexagons has, by Euler's formula
@@ -62,8 +86,12 @@ GLOBAL_PENTAGONS = 12
 NON_HEXAGON_WARN_PERCENT = 10.0
 
 # Where the Voronoi edge's plane tilts from the bisector plane of its two cell
-# centers (the sine of the angle). Real meshes reach 1.1e-4 in single precision.
+# centers (the sine of the angle). Real meshes reach 1.1e-4 in single precision at
+# 60 km and 1.3e-4 at 15 km. Rounding the coordinates moves a plane by about the
+# precision over the shortest cell distance, which grows as cells shrink, so the
+# limits rise with that noise, to 20 and 200 times it, if it is above these.
 TILT_WARN, TILT_ERROR = 1.0e-3, 1.0e-2
+NOISE_WARN_FACTOR, NOISE_ERROR_FACTOR = 20.0, 200.0
 # Relative error of a vertex's kites against its triangle's area. Real meshes
 # reach 1.8e-7.
 KITE_TRIANGLE_WARN, KITE_TRIANGLE_ERROR = 1.0e-5, 1.0e-3
@@ -90,10 +118,16 @@ REQUESTED_TOLERANCE = 0.01
 # Vertex tolerance of the Delaunay test: the sine of an angle, so a vertex this
 # far outside its triangle is still inside
 OUTSIDE_TOLERANCE = 1.0e-6
+# ... or this many times the coordinate noise, if that is more
+OUTSIDE_NOISE_FACTOR = 5.0
 
 PERCENTILES = (1, 5, 25, 50, 75, 95, 99)
 # Most bins of the cell size histogram
 MAX_BINS = 200
+
+
+class InvalidMesh(ValueError):
+    """The file is not an MPAS mesh that can be checked."""
 
 
 def nice_bin_width(width: float) -> float:
@@ -207,8 +241,9 @@ def check_mesh(path: str, resolution_km: Optional[float] = None) -> Dict[str, An
     ------
     FileNotFoundError
         If there is no file at ``path``.
-    ValueError
+    InvalidMesh
         If the file is not a netCDF file, or lacks variables of an MPAS mesh.
+        It is a ``ValueError``.
     """
     from netCDF4 import Dataset
 
@@ -218,11 +253,11 @@ def check_mesh(path: str, resolution_km: Optional[float] = None) -> Dict[str, An
     try:
         dataset = Dataset(str(mesh))
     except OSError as e:
-        raise ValueError(f"{mesh} is not a netCDF file: {e}") from e
+        raise InvalidMesh(f"{mesh} is not a netCDF file: {e}") from e
     with dataset:
         missing = [v for v in REQUIRED_VARIABLES if v not in dataset.variables]
         if missing:
-            raise ValueError(
+            raise InvalidMesh(
                 f"{mesh} is not an MPAS mesh, it lacks: {', '.join(missing)}"
             )
         dataset.set_auto_mask(False)
@@ -245,16 +280,26 @@ def _check(
     """Run every check, which stop short of the geometry if indices are invalid."""
     import numpy as np
 
-    radius = float(getattr(dataset, "sphere_radius", 1.0))
+    radius = getattr(dataset, "sphere_radius", None)
+    if radius is None:
+        radius = 1.0
+        report.warnings.append(
+            "The file has no sphere_radius attribute, so lengths and areas are "
+            "taken to be on a sphere of radius 1"
+        )
+    radius = float(radius)
+    if not radius > 0.0 or not math.isfinite(radius):
+        report.errors.append(f"sphere_radius is {radius}, and must be positive")
+        return
     to_km = EARTH_RADIUS_KM / radius
     n_cells = dataset.dimensions["nCells"].size
     n_vertices = dataset.dimensions["nVertices"].size
     n_edges = dataset.dimensions["nEdges"].size
-    sides = _read(dataset, "nEdgesOnCell").astype(np.int64)
-    on_cell = _read(dataset, "cellsOnCell").astype(np.int64)
-    on_edge = _read(dataset, "cellsOnEdge").astype(np.int64)
-    vertices_on_edge = _read(dataset, "verticesOnEdge").astype(np.int64)
-    on_vertex = _read(dataset, "cellsOnVertex").astype(np.int64)
+    sides = _read(dataset, "nEdgesOnCell")
+    on_cell = _read(dataset, "cellsOnCell")
+    on_edge = _read(dataset, "cellsOnEdge")
+    vertices_on_edge = _read(dataset, "verticesOnEdge")
+    on_vertex = _read(dataset, "cellsOnVertex")
     interior = np.flatnonzero((on_edge > 0).all(axis=1))
     kind = "global" if interior.size == n_edges else "regional"
     report.measurements.update(
@@ -285,6 +330,8 @@ def _check(
     if interior.size == 0:
         report.errors.append("The mesh has no edge between two cells")
         return
+    if not _values_valid(dataset, report):
+        return
     _connectivity(report, on_cell, used, on_edge, on_vertex, interior)
     _cell_shapes(report, kind, sides, on_cell, used, _read(dataset, "meshDensity"))
     cell_xyz = (
@@ -305,13 +352,47 @@ def _check(
         )
         / radius
     )
+    # Rounding the coordinates moves things by about the precision over the
+    # shortest distance between cells, on the unit sphere
+    shortest = float(_read(dataset, "dcEdge")[interior].min()) / radius
+    noise = float(np.finfo(dataset.variables["xCell"].dtype).eps) / shortest
+    report.measurements["coordinate_noise"] = noise
     _voronoi(
-        report, cell_xyz, vertex_xyz, on_edge, vertices_on_edge, on_vertex, interior
+        report,
+        cell_xyz,
+        vertex_xyz,
+        on_edge,
+        vertices_on_edge,
+        on_vertex,
+        interior,
+        noise,
     )
+    del cell_xyz, vertex_xyz
     _areas(dataset, report, kind, radius, n_cells, on_vertex)
     _sizes(dataset, report, to_km, on_edge, interior, resolution_km)
     _boundary_layers(dataset, report, kind, on_cell, used)
     _partitions(mesh, report, n_cells, on_edge, interior)
+
+
+def _values_valid(dataset: Any, report: _Report) -> bool:
+    """Record values that are not finite numbers, or not positive where they must be."""
+    import numpy as np
+
+    valid = True
+    for name in FINITE_VARIABLES:
+        values = _read(dataset, name)
+        bad = int((~np.isfinite(values)).sum())
+        if bad:
+            valid = False
+            report.errors.append(
+                f"{name} has {bad} value(s) that are not finite numbers"
+            )
+        elif name in POSITIVE_VARIABLES and int((values <= 0).sum()):
+            valid = False
+            report.errors.append(
+                f"{name} has {int((values <= 0).sum())} value(s) that are not positive"
+            )
+    return valid
 
 
 def _indices_valid(
@@ -390,13 +471,11 @@ def _cell_shapes(report, kind, sides, on_cell, used, density) -> None:
     non_hex = int((sides != 6).sum())
     pentagons = int((sides == 5).sum())
     larger = sides >= 7
-    touching = 0
+    touches = np.zeros(n_cells, dtype=bool)
     for slot in range(on_cell.shape[1]):
         neighbor = on_cell[:, slot]
         known = used[:, slot] & (neighbor > 0)
-        touching += int(
-            ((sides == 5) & known & larger[np.where(known, neighbor - 1, 0)]).sum()
-        )
+        touches |= (sides == 5) & known & larger[np.where(known, neighbor - 1, 0)]
     density_spread = float(density.max() / density.min() - 1.0)
     uniform = kind == "global" and density_spread <= UNIFORM_DENSITY_SPREAD
     report.measurements.update(
@@ -410,7 +489,7 @@ def _cell_shapes(report, kind, sides, on_cell, used, density) -> None:
             "defects": {
                 "pentagons": pentagons,
                 "heptagons_or_larger": int(larger.sum()),
-                "pentagons_touching_larger": touching,
+                "pentagons_touching_larger": int(touches.sum()),
             },
             "expectation": "quasi_uniform" if uniform else "variable",
         }
@@ -441,8 +520,16 @@ def _cell_shapes(report, kind, sides, on_cell, used, density) -> None:
         )
 
 
+def tilt_limits(noise: float) -> Tuple[float, float]:
+    """Return the Voronoi tilts where a warning and an error start, for the noise."""
+    return (
+        max(TILT_WARN, NOISE_WARN_FACTOR * noise),
+        max(TILT_ERROR, NOISE_ERROR_FACTOR * noise),
+    )
+
+
 def _voronoi(
-    report, cell_xyz, vertex_xyz, on_edge, vertices_on_edge, on_vertex, interior
+    report, cell_xyz, vertex_xyz, on_edge, vertices_on_edge, on_vertex, interior, noise
 ) -> None:
     """Check that edges bisect their cell centers, and that vertices are inside triangles."""
     import numpy as np
@@ -461,16 +548,19 @@ def _voronoi(
         tilt = max(
             tilt, float(np.linalg.norm(np.cross(normal, direction), axis=1).max())
         )
+    warn, error = tilt_limits(noise)
     report.measurements["voronoi_tilt"] = tilt
+    report.measurements["voronoi_tilt_limits"] = {"warn": warn, "error": error}
     report.level(
         tilt,
-        TILT_WARN,
-        TILT_ERROR,
+        warn,
+        error,
         "The tilt of Voronoi edges from the bisector of their cell centers",
     )
     if degenerate:
         report.warnings.append(f"{degenerate} Voronoi edge(s) have zero length")
     full = np.flatnonzero((on_vertex > 0).all(axis=1))
+    outside = max(OUTSIDE_TOLERANCE, OUTSIDE_NOISE_FACTOR * noise)
     obtuse = 0
     for block in _blocks(full.size):
         rows = full[block]
@@ -484,9 +574,7 @@ def _voronoi(
                 for p, q in ((b, c), (c, a), (a, b))
             ]
         )
-        obtuse += int(
-            ((inside * orientation[:, None]).min(axis=1) < -OUTSIDE_TOLERANCE).sum()
-        )
+        obtuse += int(((inside * orientation[:, None]).min(axis=1) < -outside).sum())
     report.measurements["obtuse_triangles"] = obtuse
     if obtuse:
         report.warnings.append(
@@ -646,6 +734,22 @@ def _boundary_layers(dataset, report, kind, on_cell, used) -> None:
         )
 
 
+def _read_ranks(path: Path) -> Any:
+    """Return the rank numbers in a partition file, one per line, read in blocks."""
+    from itertools import islice
+
+    import numpy as np
+
+    blocks = []
+    with open(path) as handle:
+        while True:
+            lines = list(islice(handle, BLOCK))
+            if not lines:
+                break
+            blocks.append(np.array(lines, dtype=np.int64))
+    return np.concatenate(blocks) if blocks else np.zeros(0, dtype=np.int64)
+
+
 def _partitions(
     mesh: Path, report: _Report, n_cells: int, on_edge: Any, interior: Any
 ) -> None:
@@ -665,7 +769,10 @@ def _partitions(
     for count in sorted(files):
         name = files[count].name
         try:
-            ranks = np.array(files[count].read_text().split(), dtype=np.int64)
+            ranks = _read_ranks(files[count])
+        except OSError as e:
+            report.errors.append(f"{name} cannot be read: {e}")
+            continue
         except ValueError:
             report.errors.append(f"{name} does not hold rank numbers")
             continue

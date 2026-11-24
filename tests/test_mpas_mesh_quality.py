@@ -395,13 +395,14 @@ def test_missing_file_and_bad_files(tmp_path, mesh):
         quality.check_mesh(str(tmp_path / "none.nc"))
     text = tmp_path / "text.nc"
     text.write_text("not netCDF")
-    with pytest.raises(ValueError, match="is not a netCDF file"):
+    with pytest.raises(quality.InvalidMesh, match="is not a netCDF file"):
         quality.check_mesh(str(text))
     bare = tmp_path / "bare.nc"
     with Dataset(str(bare), "w") as ds:
         ds.createDimension("n", 1)
     with pytest.raises(ValueError, match="not an MPAS mesh, it lacks: nEdgesOnCell"):
         quality.check_mesh(str(bare))
+    assert issubclass(quality.InvalidMesh, ValueError)
 
 
 @pytest.mark.parametrize(
@@ -475,7 +476,7 @@ def test_a_cell_listed_twice_at_a_vertex(mesh):
 
 
 def test_cell_shapes_that_cannot_close_a_sphere(mesh):
-    # Every neighbor slot is kept, so only the side count changes
+    # The side count no longer matches the neighbors either, which is also reported
     report = quality.check_mesh(str(put(mesh, "nEdgesOnCell", 20, 5)))
     assert "The sum of (6 - sides) over cells is 13" in messages(report, "errors")
     assert report["measurements"]["euler_sum"] == 13
@@ -508,15 +509,17 @@ def test_non_hexagons_in_a_quasi_uniform_mesh_warn(tmp_path):
 
 def test_extra_pentagons_in_a_quasi_uniform_mesh_warn():
     report = quality._Report()
-    sides = np.array([5] * 13 + [6] * 400 + [7])
+    sides = np.array([5] * 14 + [6] * 400 + [7, 7])
     on_cell = np.zeros((sides.size, 10), int)
-    on_cell[12, 0] = sides.size  # a pentagon next to the heptagon
+    # A pentagon next to both heptagons counts once, as a pentagon
+    on_cell[13, :2] = [sides.size - 1, sides.size]
     used = np.arange(10)[None, :] < sides[:, None]
     quality._cell_shapes(report, "global", sides, on_cell, used, np.ones(sides.size))
-    assert "has 13 pentagons and 1 other non-hexagons, where the minimum is 12" in (
+    assert "has 14 pentagons and 2 other non-hexagons, where the minimum is 12" in (
         messages({"w": report.warnings}, "w")
     )
     assert report.measurements["defects"]["pentagons_touching_larger"] == 1
+    assert report.measurements["defects"]["heptagons_or_larger"] == 2
     assert report.measurements["expectation"] == "quasi_uniform"
     assert report.errors == []
 
@@ -762,3 +765,119 @@ def test_partitions_that_do_not_fit_the_mesh_are_errors(mesh, ranks, message):
     assert not report["passed"]
     assert f"mesh.graph.info.part.4 {message}" in messages(report, "errors")
     assert "partitions" not in report["measurements"]
+
+
+def test_values_that_are_not_finite_are_errors(mesh):
+    report = quality.check_mesh(str(put(mesh, "xCell", 3, float("nan"))))
+    assert report["errors"] == ["xCell has 1 value(s) that are not finite numbers"]
+    report = quality.check_mesh(str(put(mesh, "areaTriangle", 0, float("inf"))))
+    assert "areaTriangle has 1 value(s) that are not finite numbers" in messages(
+        report, "errors"
+    )
+    # The report is plain JSON, with no NaN to write
+    assert json.loads(json.dumps(report, allow_nan=False)) == report
+
+
+@pytest.mark.parametrize(
+    "name, index",
+    [
+        ("dcEdge", 0),
+        ("areaCell", 0),
+        ("areaTriangle", 1),
+        ("meshDensity", 2),
+        ("nominalMinDc", 0),
+    ],
+)
+def test_values_that_must_be_positive(mesh, name, index):
+    report = quality.check_mesh(str(put(mesh, name, index, 0.0)))
+    assert report["errors"] == [f"{name} has 1 value(s) that are not positive"]
+    assert not report["passed"]
+
+
+def test_no_sphere_radius_is_assumed_to_be_one(mesh):
+    change(mesh, lambda ds: ds.delncattr("sphere_radius"))
+    report = quality.check_mesh(str(mesh))
+    assert report["passed"]
+    assert report["warnings"] == [
+        "The file has no sphere_radius attribute, so lengths and areas are "
+        "taken to be on a sphere of radius 1"
+    ]
+    assert report["measurements"]["sphere_radius"] == 1.0
+
+
+@pytest.mark.parametrize("radius", [0.0, -1.0, float("nan")])
+def test_sphere_radius_must_be_positive(mesh, radius):
+    change(mesh, lambda ds: setattr(ds, "sphere_radius", radius))
+    report = quality.check_mesh(str(mesh))
+    assert report["errors"] == [f"sphere_radius is {radius}, and must be positive"]
+    assert "voronoi_tilt" not in report["measurements"]
+
+
+def clockwise(arrays):
+    """Return the arrays with each vertex's cells listed clockwise."""
+    order = [0, 2, 1]
+    return dict(
+        arrays,
+        cells_on_vertex=arrays["cells_on_vertex"][:, order],
+        kites=arrays["kites"][:, order],
+    )
+
+
+def test_the_orientation_of_triangles_does_not_matter(tmp_path, arrays):
+    path = write_mesh(tmp_path / "cw.nc", clockwise(arrays))
+    report = quality.check_mesh(str(path))
+    assert report["passed"] and report["warnings"] == []
+    assert report["measurements"]["obtuse_triangles"] == 0
+
+    def outside(ds):
+        for axis in "xyz":
+            var = ds.variables[f"{axis}Vertex"]
+            var[0] = -var[0]
+
+    # A vertex outside its triangle is found whichever way the triangle is listed
+    for orient, name in ((clockwise(arrays), "cw2.nc"), (arrays, "ccw.nc")):
+        path = change(write_mesh(tmp_path / name, orient), outside)
+        assert quality.check_mesh(str(path))["measurements"]["obtuse_triangles"] >= 1
+
+
+def test_tilt_limits_rise_with_the_noise_of_the_coordinates():
+    assert quality.tilt_limits(0.0) == (quality.TILT_WARN, quality.TILT_ERROR)
+    assert quality.tilt_limits(1e-5) == (quality.TILT_WARN, quality.TILT_ERROR)
+    assert quality.tilt_limits(1e-2) == pytest.approx((0.2, 2.0))
+
+
+def test_single_precision_is_judged_by_its_noise(tmp_path, arrays):
+    """Cells a ten-thousandth as far apart have a hundred times the noise to tilt by."""
+    small = dict(arrays, dc=arrays["dc"] * 1e-4, dv=arrays["dv"] * 1e-4)
+    path = write_mesh(tmp_path / "fine.nc", small, radius=6371229.0, dtype="f4")
+
+    def move(ds):
+        ds.variables["xCell"][3] = ds.variables["xCell"][3] + 0.004 * 6371229.0
+
+    report = quality.check_mesh(str(change(path, move)))
+    measurements = report["measurements"]
+    assert measurements["voronoi_tilt"] > quality.TILT_ERROR
+    assert measurements["coordinate_noise"] > 1e-3
+    assert measurements["voronoi_tilt_limits"] == dict(
+        zip(("warn", "error"), quality.tilt_limits(measurements["coordinate_noise"]))
+    )
+    assert report["passed"] and "tilt" not in messages(report, "warnings")
+
+
+def test_a_partition_that_cannot_be_read_is_an_error(mesh):
+    mesh.with_name("mesh.graph.info.part.4").mkdir()
+    report = quality.check_mesh(str(mesh))
+    assert not report["passed"]
+    assert "mesh.graph.info.part.4 cannot be read:" in messages(report, "errors")
+
+
+def test_partitions_are_read_in_blocks(mesh, arrays, monkeypatch):
+    write_partition(mesh.with_name("mesh.graph.info.part.4"), sliced_ranks(arrays, 4))
+    whole = quality.check_mesh(str(mesh))
+    monkeypatch.setattr(quality, "BLOCK", 5)
+    assert quality.check_mesh(str(mesh)) == whole
+    # An empty partition file has no entries
+    mesh.with_name("mesh.graph.info.part.6").write_text("")
+    assert "mesh.graph.info.part.6 has 0 entries for 162 cells" in messages(
+        quality.check_mesh(str(mesh)), "errors"
+    )

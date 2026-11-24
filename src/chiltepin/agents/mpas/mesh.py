@@ -1705,7 +1705,7 @@ class _MeshBehavior:
         bool}``, since the exception types do not all survive the executor.
         ``invalid`` is True if the file is not an MPAS mesh.
         """
-        from chiltepin.agents.mpas._mesh_quality import check_mesh
+        from chiltepin.agents.mpas._mesh_quality import InvalidMesh, check_mesh
 
         try:
             return {"report": check_mesh(mesh_path, resolution_km)}
@@ -1717,7 +1717,7 @@ class _MeshBehavior:
                 ),
                 "invalid": False,
             }
-        except ValueError as e:
+        except InvalidMesh as e:
             return {"error": str(e), "invalid": True}
 
     # -------------------------------------------------------------------------

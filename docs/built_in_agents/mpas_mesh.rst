@@ -458,11 +458,18 @@ Actions
    * A connectivity index out of range, an edge with the same cell on both sides,
      a vertex that lists a cell twice, or ``cellsOnCell`` that disagrees with
      ``cellsOnEdge``.
+   * Coordinates, lengths, areas or densities that are not finite numbers, or
+     lengths, areas, densities and the nominal spacing that are not positive, or a
+     ``sphere_radius`` that is not positive. A file without ``sphere_radius`` is
+     warned about and taken to be on a sphere of radius 1.
    * Voronoi edges that do not bisect the line between their cell centers. The
      measure is the sine of the angle between the plane of each Voronoi edge and
      the bisector plane of its two cell centers, and above 0.01 is an error.
      ``mkgrid`` meshes reach 1e-12, and the single-precision files of other tools
-     about 1e-4.
+     about 1e-4. Single precision rounds coordinates by about 6e-8 of the sphere's
+     radius, which tilts short edges more, so the limits rise to 200 times that
+     rounding over the shortest cell distance when that is above them. The finest
+     meshes in single precision are judged more leniently.
    * Cell, triangle and kite areas that disagree by more than 1% or 0.1%, or a
      global mesh's cell areas that differ from the area of the sphere by more
      than 0.1%.
@@ -485,8 +492,10 @@ Actions
    * Voronoi edges of zero length, or a ratio of Voronoi edge to cell-center
      distance outside 0.1 to 2, where a regular hexagon has 0.577.
    * For a regional mesh with boundary layers, a layer from 1 to 7 with no cells,
-     or cells that do not touch the layer inside them.
-   * Areas and Voronoi tilts above a tenth of their error limits.
+     or a cell in a layer from 2 to 7 that does not touch the next layer toward the
+     edge of the mesh.
+   * A Voronoi tilt above 0.001, or an area difference above a hundredth of its
+     error limit.
    * A partition with ranks that have no cells, or whose busiest rank has more
      than 1.1 times the mean number of cells. Metis keeps within 1.04 on the
      meshes tried.
@@ -498,7 +507,7 @@ Actions
    The ``measurements`` hold the numbers behind the checks: ``kind`` (``global``
    or ``regional``), the cell, edge and vertex counts, the cell shape counts, the
    percent of non-hexagons and their count per 1000 cells, the pentagons that
-   touch a heptagon or larger cell, the minimum, mean and maximum edge lengths in
+   touch a heptagon or larger cell, each counted once, the minimum, mean and maximum edge lengths in
    km, percentiles and a histogram of the cell spacing, the ratio of Voronoi edge
    to cell-center distance, the nominal size gradient with its 99th percentile and
    the fraction of edges above 0.03, and the boundary layer counts of a regional
@@ -508,6 +517,11 @@ Actions
    their fraction of all edges, and the number of neighbor ranks of each rank.
    Only the first ``nEdgesOnCell`` neighbors of each cell are read, since
    some tools write other values after them.
+
+   The check holds the mesh's connectivity and coordinates in memory, about 0.5 KB
+   per cell on the ``compute`` resource. The 15km UCAR mesh, with 2.6 million cells,
+   took 1.4 GB and 10 seconds, so a mesh of 65 million cells, such as a global 3km
+   mesh, needs about 35 GB.
 
    ``FileNotFoundError`` is raised for a mesh file that does not exist, and
    ``ValueError`` for an invalid argument or a file that is not an MPAS mesh.

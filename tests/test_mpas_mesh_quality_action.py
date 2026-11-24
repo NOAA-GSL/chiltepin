@@ -225,3 +225,13 @@ def test_the_task_returns_why_a_file_cannot_be_checked(monkeypatch, behavior, tm
     result = _MeshBehavior._check_quality.func(behavior, "/m.nc", None)
     assert result["invalid"] is False
     assert "No module named 'numpy'. Install chiltepin[mpas]" in result["error"]
+
+
+def test_other_failures_of_the_task_are_not_called_invalid_meshes(
+    monkeypatch, behavior
+):
+    monkeypatch.setattr(
+        _mesh_quality, "check_mesh", Mock(side_effect=ValueError("math domain error"))
+    )
+    with pytest.raises(ValueError, match="math domain error"):
+        _MeshBehavior._check_quality.func(behavior, "/m.nc", None)
