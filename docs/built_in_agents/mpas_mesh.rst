@@ -5,8 +5,8 @@ MPAS Mesh Agent
 workflows. It downloads precomputed global MPAS meshes from UCAR, generates
 regional meshes with the MPAS-Tools ``project_hexes`` program or cuts them from
 a global mesh with the MPAS-Limited-Area ``create_region`` program, can
-partition mesh graphs for MPI with Metis, and can draw images of meshes. It
-can also make a mesh from a prompt such as "a 15 km mesh over Texas", read by
+partition mesh graphs for MPI with Metis, can draw images of meshes, and can
+check a mesh's integrity and quality. It can also make a mesh from a prompt such as "a 15 km mesh over Texas", read by
 an LLM, as described in `Meshes from Prompts`_.
 
 For the API reference, see :doc:`../api/agents/mpas_mesh`.
@@ -15,9 +15,9 @@ Requirements
 ------------
 
 * Chiltepin installed in the agent and task execution environments.
-  ``create_region`` regional meshes and plotting also need the ``mpas`` extra
-  where the agent's tasks run on the ``compute`` resource, which installs
-  numpy, netCDF4, matplotlib, cartopy, shapely and pyshp:
+  ``create_region`` regional meshes, plotting and quality checks also need the
+  ``mpas`` extra where the agent's tasks run on the ``compute`` resource, which
+  installs numpy, netCDF4, matplotlib, cartopy, shapely and pyshp:
 
   .. code-block:: console
 
@@ -432,6 +432,77 @@ Actions
    naming the log is logged. Each plot writes its own logs, ``plot_mesh.<id>.*``
    in ``work_dir/logs``, and a failure raises ``RuntimeError`` naming both.
    ``FileNotFoundError`` is raised for a mesh file that does not exist.
+
+``check_mesh_quality(mesh_path, resolution_km=None)``
+   Checks a mesh file's integrity and quality on the ``compute`` resource, and
+   returns a report. It needs the ``mpas`` extra there, for numpy and netCDF4.
+   The report is also written next to the mesh as ``<name>.quality.json``, named
+   as the image of ``plot_mesh`` is, and replaces an earlier one. It works on
+   any MPAS mesh file: downloaded, ``project_hexes``, ``create_region`` or made
+   by JIGSAW, global or regional, in single or double precision, on a sphere of
+   any radius.
+
+   * ``mesh_path``: Path to a mesh's static or grid file. A relative path or one
+     starting with ``~`` is made absolute on the agent.
+   * ``resolution_km``: The finest cell spacing that was asked for. A warning is
+     raised if the mesh's nominal finest spacing differs from it by more than 1%.
+
+   The result is a dictionary with ``passed`` (True if there are no errors),
+   ``summary``, ``errors`` and ``warnings`` (lists of messages), ``measurements``,
+   and ``report_file``, the path of the JSON file, which is None if it cannot be
+   written. A mesh with errors or warnings does not raise. The summary, errors and
+   warnings are logged.
+
+   Errors name a broken mesh:
+
+   * A connectivity index out of range, an edge with the same cell on both sides,
+     a vertex that lists a cell twice, or ``cellsOnCell`` that disagrees with
+     ``cellsOnEdge``.
+   * Voronoi edges that do not bisect the line between their cell centers. The
+     measure is the sine of the angle between the plane of each Voronoi edge and
+     the bisector plane of its two cell centers, and above 0.01 is an error.
+     ``mkgrid`` meshes reach 1e-12, and the single-precision files of other tools
+     about 1e-4.
+   * Cell, triangle and kite areas that disagree by more than 1% or 0.1%, or a
+     global mesh's cell areas that differ from the area of the sphere by more
+     than 0.1%.
+   * For a global mesh, cell shapes that cannot close a sphere. Euler's formula
+     requires the sum over cells of ``6 - sides`` to be exactly 12.
+
+   Warnings name red flags about quality. They do not say a mesh is unusable, and
+   the user decides whether a mesh suits:
+
+   * A quasi-uniform global mesh, whose density is constant, that does not have
+     exactly 12 pentagons and no other non-hexagon.
+   * More than 10% of cells that are not hexagons, or cells with fewer than 5
+     sides.
+   * Obtuse Delaunay triangles, which put a Voronoi vertex outside its triangle.
+   * The nominal cell size changing by more than 0.05 per unit of distance. The
+     advice is a few percent, and 0.03 is the usual design limit.
+   * Voronoi edges of zero length, or a ratio of Voronoi edge to cell-center
+     distance outside 0.1 to 2, where a regular hexagon has 0.577.
+   * For a regional mesh with boundary layers, a layer from 1 to 7 with no cells,
+     or cells that do not touch the layer inside them.
+   * Areas and Voronoi tilts above a tenth of their error limits.
+
+   Meshes with refinement regions made with JIGSAW always have non-hexagons in
+   their transition zones, which cannot be removed. Expect pentagons paired with
+   heptagons there, and weigh the measurements instead of expecting none.
+
+   The ``measurements`` hold the numbers behind the checks: ``kind`` (``global``
+   or ``regional``), the cell, edge and vertex counts, the cell shape counts, the
+   percent of non-hexagons and their count per 1000 cells, the pentagons that
+   touch a heptagon or larger cell, the minimum, mean and maximum edge lengths in
+   km, percentiles and a histogram of the cell spacing, the ratio of Voronoi edge
+   to cell-center distance, the nominal size gradient with its 99th percentile and
+   the fraction of edges above 0.03, and the boundary layer counts of a regional
+   mesh. Only the first ``nEdgesOnCell`` neighbors of each cell are read, since
+   some tools write other values after them.
+
+   ``FileNotFoundError`` is raised for a mesh file that does not exist, and
+   ``ValueError`` for an invalid argument or a file that is not an MPAS mesh.
+   ``RuntimeError`` is raised if the ``compute`` resource is not defined or the
+   check fails, and says if the Python of ``compute`` lacks the ``mpas`` extra.
 
 ``ensure_tools_installed(mesh_config)``
    Installs the tools that a ``generate_mesh`` request with this configuration
