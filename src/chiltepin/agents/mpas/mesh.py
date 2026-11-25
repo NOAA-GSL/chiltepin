@@ -1477,6 +1477,7 @@ class _MeshBehavior:
             # Fail clearly, before an existing install is touched
             # CXX may be a wrapper and a compiler, such as "ccache g++"
             read -r -a cxx <<< "${{CXX:-c++}}"
+            [ "${{#cxx[@]}}" -gt 0 ] || cxx=(c++)
             for tool in cmake "${{cxx[0]}}"; do
                 if ! command -v "$tool" > /dev/null; then
                     echo "$tool not found. Load CMake and a C++ compiler in the environment of the compute resource." >&2
@@ -1582,6 +1583,7 @@ class _MeshBehavior:
             prefix={self._q(self._sphtri_subdiv_prefix)}
             # CXX may be a wrapper and a compiler, such as "ccache g++"
             read -r -a cxx <<< "${{CXX:-c++}}"
+            [ "${{#cxx[@]}}" -gt 0 ] || cxx=(c++)
             # Fail clearly, before an existing install is touched
             if ! command -v "${{cxx[0]}}" > /dev/null; then
                 echo "${{cxx[0]}} not found. Load a C++ compiler in the environment of the compute resource." >&2

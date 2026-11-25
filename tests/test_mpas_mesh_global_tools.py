@@ -169,8 +169,8 @@ def test_a_ref_must_fit_a_directory_name(tmp_path, tool):
     long_ref = "a" * 200
     behavior = _MeshBehavior(str(tmp_path / "work"), **{tool.version: long_ref})
     assert getattr(behavior, tool.version) == long_ref
-    # The second is 67 * 4 characters once its slashes are written as %2F
-    for ref in ("a" * 201, "a/" * 67):
+    # The second is 133 characters, and 265 once its slashes are written as %2F
+    for ref in ("a" * 201, "a/" * 66 + "a"):
         with pytest.raises(ValueError, match=f"Invalid {tool.version}"):
             _MeshBehavior(str(tmp_path / "work"), **{tool.version: ref})
 
@@ -769,3 +769,17 @@ def test_a_failed_cmake_build_leaves_no_marker_and_keeps_the_sources(scratch, fa
     assert not behavior._mkgrid_usable()
     # Kept to debug
     assert (build / "src").is_dir() and (build / "commit").is_file()
+
+
+@pytest.mark.parametrize("name", ["jigsaw", "sphtri_subdiv"])
+def test_a_compiler_setting_of_only_spaces_is_the_default(scratch, name):
+    tool = TOOLS[name]
+    behavior = _MeshBehavior(str(scratch / "work"))
+    prefix = mark_installed(behavior, tool)
+    tools = fake_tools(scratch, cmake="exit 0")
+    script = getattr(_MeshBehavior, f"_build_{tool.task}").func(behavior)
+    done = run_script(script, tools, CXX="   ")
+    # c++ is not available here, and is the one named, not an unset variable
+    assert done.returncode == 1
+    assert "c++ not found" in done.stderr and "unbound" not in done.stderr
+    assert (prefix / ".installed").is_file()
