@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 # A version such as "5.2.1". The download script adds the "v" that names the tag.
 _VERSION_RE = re.compile(r"[0-9][0-9a-zA-Z._-]*")
 
+# A branch, tag or full commit of a Git repository. It is passed to git fetch, so
+# it must not be able to look like an option, a range or a path out of its directory.
+_REF_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._/-]*")
+# What the tools that make global meshes are installed from, unless the agent is
+# given others. JIGSAW and sphtri_subdiv have no release to name, so they are the
+# commits that were tested. mkgrid is from the branch of the fork that has the
+# fixes it needs, until that is tagged.
+_JIGSAW_COMMIT = "3777fe7f00815295a94065cdcaca27bcb3c2106e"
+_MKGRID_REF = "feature/nesting"
+_MESH_TOOLS_COMMIT = "4967f0fbb278584c11b3057c3eb4396d199f030b"
 # Names of the downloaded global mesh files, which a mesh name must not reuse
 _SHARED_MESH_FILE_RE = re.compile(r"x1\.[0-9]+\.(static\.nc|graph\.info)")
 
@@ -136,6 +146,9 @@ class _MeshBehavior:
         mpas_tools_version: str = "2.0.0",
         limited_area_version: str = "2.2",
         nominatim_contact: Optional[str] = None,
+        jigsaw_version: str = _JIGSAW_COMMIT,
+        mkgrid_version: str = _MKGRID_REF,
+        mesh_tools_version: str = _MESH_TOOLS_COMMIT,
     ):
         """Initialize the mesh behavior.
 
@@ -154,13 +167,27 @@ class _MeshBehavior:
             Email address of whoever runs the agent, sent to OpenStreetMap's
             Nominatim service when a prompt names a place Natural Earth lacks,
             such as a city. Without it, such places are not looked up.
+        jigsaw_version : str, optional
+            Branch, tag or full commit of JIGSAW (``dengwirda/jigsaw``) to install,
+            by default the commit tested, ``3777fe7f00815295a94065cdcaca27bcb3c2106e``.
+        mkgrid_version : str, optional
+            Branch, tag or full commit of the ``mpas_jigsaw`` fork
+            (``christopherwharrop-noaa/mpas_jigsaw``) that ``mkgrid`` is built
+            from, by default the branch ``feature/nesting``. The commit a branch
+            resolves to is recorded when it is installed.
+        mesh_tools_version : str, optional
+            Branch, tag or full commit of ``mgduda/mesh_tools``, which
+            ``sphtri_subdiv`` is built from, by default the commit tested,
+            ``4967f0fbb278584c11b3057c3eb4396d199f030b``.
 
         Raises
         ------
         ValueError
             If ``metis_version``, ``mpas_tools_version`` or
-            ``limited_area_version`` is not a plain version string, or
-            ``nominatim_contact`` is not an email address.
+            ``limited_area_version`` is not a plain version string,
+            ``jigsaw_version``, ``mkgrid_version`` or ``mesh_tools_version`` is not
+            a branch, tag or commit name, or ``nominatim_contact`` is not an
+            email address.
         """
         for name, version in (
             ("metis_version", metis_version),
@@ -169,6 +196,13 @@ class _MeshBehavior:
         ):
             if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
                 raise ValueError(f"Invalid {name}: {version!r}")
+        for name, ref in (
+            ("jigsaw_version", jigsaw_version),
+            ("mkgrid_version", mkgrid_version),
+            ("mesh_tools_version", mesh_tools_version),
+        ):
+            if not self._valid_ref(ref):
+                raise ValueError(f"Invalid {name}: {ref!r}")
         if nominatim_contact is not None and (
             not isinstance(nominatim_contact, str)
             or len(nominatim_contact) > 254
@@ -193,6 +227,17 @@ class _MeshBehavior:
         self.limited_area_version = limited_area_version
         self.limited_area_built = False
 
+        # State of the tools that make global meshes. Each is built from a clone of
+        # the repository, which tests may point elsewhere.
+        self.jigsaw_version = jigsaw_version
+        self.jigsaw_built = False
+        self.jigsaw_url = "https://github.com/dengwirda/jigsaw.git"
+        self.mkgrid_version = mkgrid_version
+        self.mkgrid_built = False
+        self.mkgrid_url = "https://github.com/christopherwharrop-noaa/mpas_jigsaw.git"
+        self.mesh_tools_version = mesh_tools_version
+        self.sphtri_subdiv_built = False
+        self.mesh_tools_url = "https://github.com/mgduda/mesh_tools.git"
         # Plotting state (the map layers plots use)
         self.plotting_built = False
 
@@ -250,6 +295,30 @@ class _MeshBehavior:
     # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
+    @staticmethod
+    def _valid_ref(ref: Any) -> bool:
+        """Whether ``ref`` is a plain branch, tag or commit name."""
+        return (
+            isinstance(ref, str)
+            and _REF_RE.fullmatch(ref) is not None
+            and ".." not in ref
+            and "//" not in ref
+            and not ref.endswith(("/", ".", ".lock"))
+        )
+
+    @staticmethod
+    def _ref_dir(ref: str) -> str:
+        """Name a ref as one directory: ``feature/nesting`` is ``feature%2Fnesting``."""
+        return ref.replace("/", "%2F")
+
+    @staticmethod
+    def _installed_commit(prefix: Path) -> Optional[str]:
+        """Return the commit an install was built from, which its marker holds."""
+        try:
+            return (prefix / ".installed").read_text().strip() or None
+        except OSError:
+            return None
+
     @staticmethod
     def _q(value: Any) -> str:
         """Shell-quote a value for safe interpolation into bash scripts."""
@@ -1161,6 +1230,67 @@ class _MeshBehavior:
         """Whether the map layers are installed and plotting was checked."""
         return (self._plot_prefix / ".installed").is_file()
 
+    @property
+    def _jigsaw_prefix(self) -> Path:
+        """Directory JIGSAW is installed into."""
+        return self.work_dir / "jigsaw" / self._ref_dir(self.jigsaw_version)
+
+    @property
+    def _jigsaw(self) -> Path:
+        """Path of the jigsaw executable."""
+        return self._jigsaw_prefix / "bin" / "jigsaw"
+
+    @property
+    def _mkgrid_prefix(self) -> Path:
+        """Directory mkgrid is installed into, with the files of its repository."""
+        return self.work_dir / "mkgrid" / self._ref_dir(self.mkgrid_version)
+
+    @property
+    def _mkgrid(self) -> Path:
+        """Path of the mkgrid executable."""
+        return self._mkgrid_prefix / "bin" / "mkgrid"
+
+    @property
+    def _icosahedron_file(self) -> Path:
+        """Path of ICOS.msh, the icosahedron that global meshes are made from."""
+        return self._mkgrid_prefix / "share" / "ICOS.msh"
+
+    @property
+    def _geometry_file(self) -> Path:
+        """Path of GEOM.msh, the sphere JIGSAW meshes."""
+        return self._mkgrid_prefix / "share" / "GEOM.msh"
+
+    @property
+    def _sphtri_subdiv_prefix(self) -> Path:
+        """Directory sphtri_subdiv is installed into."""
+        return self.work_dir / "mesh-tools" / self._ref_dir(self.mesh_tools_version)
+
+    @property
+    def _sphtri_subdiv(self) -> Path:
+        """Path of the sphtri_subdiv executable."""
+        return self._sphtri_subdiv_prefix / "bin" / "sphtri_subdiv"
+
+    def _jigsaw_usable(self) -> bool:
+        """Whether a finished JIGSAW install with a runnable jigsaw exists."""
+        return self._installed_commit(self._jigsaw_prefix) is not None and (
+            self._is_executable(self._jigsaw)
+        )
+
+    def _mkgrid_usable(self) -> bool:
+        """Whether a finished mkgrid install, with the files it comes with, exists."""
+        return (
+            self._installed_commit(self._mkgrid_prefix) is not None
+            and self._is_executable(self._mkgrid)
+            and self._icosahedron_file.is_file()
+            and self._geometry_file.is_file()
+        )
+
+    def _sphtri_subdiv_usable(self) -> bool:
+        """Whether a finished sphtri_subdiv install with a runnable program exists."""
+        return self._installed_commit(self._sphtri_subdiv_prefix) is not None and (
+            self._is_executable(self._sphtri_subdiv)
+        )
+
     def _mpas_tools_usable(self) -> bool:
         """Whether a finished MPAS-Tools install with runnable programs exists."""
         return (self._mpas_tools_prefix / ".installed").is_file() and all(
@@ -1286,6 +1416,181 @@ class _MeshBehavior:
             rm -rf "$build" || true
             # Mark the install complete. The agent only uses a marked install.
             touch "$prefix/.installed"
+            echo "Completed build at $(date)"
+            """
+        )
+
+    # -------------------------------------------------------------------------
+    # Private bash tasks — tools that make global meshes
+    # -------------------------------------------------------------------------
+    def _fetch_ref(self, url: str, ref: str, build: str) -> str:
+        """Return a script that fetches one branch, tag or commit of a repository.
+
+        The sources are in ``<build>/src``, and the commit that was fetched is in
+        ``<build>/commit``. Only that revision is transferred, and the transfer
+        is abandoned if it stalls. A commit must be given in full.
+        """
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started download at $(date)"
+            echo "Executing on $(hostname)"
+            build={self._q(build)}
+            rm -rf "$build"
+            mkdir -p "$build/src"
+            cd "$build/src"
+            git init -q
+            git remote add origin {self._q(url)}
+            git -c advice.detachedHead=false -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 fetch -q --depth 1 origin {self._q(ref)}
+            git -c advice.detachedHead=false checkout -q FETCH_HEAD
+            git rev-parse HEAD > "$build/commit"
+            echo "Fetched commit $(cat "$build/commit")"
+            echo "Completed download at $(date)"
+            """
+        )
+
+    @bash_task
+    def _download_jigsaw(self) -> str:
+        """Download the requested revision of JIGSAW from GitHub."""
+        build = f"{self.work_dir}/jigsaw/build/{self._ref_dir(self.jigsaw_version)}"
+        return self._fetch_ref(self.jigsaw_url, self.jigsaw_version, build)
+
+    @bash_task
+    def _build_jigsaw(self) -> str:
+        """Build JIGSAW, and install it to the prefix."""
+        import textwrap
+
+        build = f"{self.work_dir}/jigsaw/build/{self._ref_dir(self.jigsaw_version)}"
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started build at $(date)"
+            echo "Executing on $(hostname)"
+            build={self._q(build)}
+            prefix={self._q(self._jigsaw_prefix)}
+            # Fail clearly, before an existing install is touched
+            for tool in cmake "${{CXX:-c++}}"; do
+                if ! command -v "$tool" > /dev/null; then
+                    echo "$tool not found. Load CMake and a C++ compiler in the environment of the compute resource." >&2
+                    exit 1
+                fi
+            done
+            commit="$(cat "$build/commit")"
+            # Start from an empty prefix so a failed earlier install leaves nothing
+            rm -rf "$prefix"
+            mkdir -p "$build/src/build"
+            cd "$build/src/build"
+            cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix"
+            cmake --build . --target install -- -j4
+            # The sources are no longer needed. A failed build keeps them to debug.
+            cd /
+            # Failing to remove the sources must not fail a finished build
+            rm -rf "$build" || true
+            # Mark the install complete with the commit it was built from. The
+            # agent only uses a marked install.
+            echo "$commit" > "$prefix/.installed"
+            echo "Completed build at $(date)"
+            """
+        )
+
+    @bash_task
+    def _download_mkgrid(self) -> str:
+        """Download the requested revision of the mpas_jigsaw fork from GitHub."""
+        build = f"{self.work_dir}/mkgrid/build/{self._ref_dir(self.mkgrid_version)}"
+        return self._fetch_ref(self.mkgrid_url, self.mkgrid_version, build)
+
+    @bash_task
+    def _build_mkgrid(self) -> str:
+        """Build mkgrid with MPI and PnetCDF, and install it with ICOS.msh and GEOM.msh."""
+        import textwrap
+
+        build = f"{self.work_dir}/mkgrid/build/{self._ref_dir(self.mkgrid_version)}"
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started build at $(date)"
+            echo "Executing on $(hostname)"
+            build={self._q(build)}
+            prefix={self._q(self._mkgrid_prefix)}
+            # Fail clearly, before an existing install is touched
+            for tool in cmake mpicc; do
+                if ! command -v "$tool" > /dev/null; then
+                    echo "$tool not found. Load CMake and MPI in the environment of the compute resource." >&2
+                    exit 1
+                fi
+            done
+            # The build finds PnetCDF through this
+            if [ -z "${{PNETCDF:-}}" ]; then
+                if ! command -v pnetcdf-config > /dev/null; then
+                    echo "PnetCDF not found. Load PnetCDF in the environment of the compute resource, or set PNETCDF to its prefix." >&2
+                    exit 1
+                fi
+                export PNETCDF="$(pnetcdf-config --prefix)"
+            fi
+            commit="$(cat "$build/commit")"
+            # Start from an empty prefix so a failed earlier install leaves nothing
+            rm -rf "$prefix"
+            mkdir -p "$build/src/build"
+            cd "$build/src/build"
+            cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix"
+            cmake --build . --target install -- -j4
+            # The files mkgrid's pipeline starts from
+            mkdir -p "$prefix/share"
+            cp "$build/src/ICOS.msh" "$build/src/GEOM.msh" "$prefix/share/"
+            # The sources are no longer needed. A failed build keeps them to debug.
+            cd /
+            # Failing to remove the sources must not fail a finished build
+            rm -rf "$build" || true
+            # Mark the install complete with the commit it was built from. The
+            # agent only uses a marked install.
+            echo "$commit" > "$prefix/.installed"
+            echo "Completed build at $(date)"
+            """
+        )
+
+    @bash_task
+    def _download_sphtri_subdiv(self) -> str:
+        """Download the requested revision of mesh_tools from GitHub."""
+        build = (
+            f"{self.work_dir}/mesh-tools/build/{self._ref_dir(self.mesh_tools_version)}"
+        )
+        return self._fetch_ref(self.mesh_tools_url, self.mesh_tools_version, build)
+
+    @bash_task
+    def _build_sphtri_subdiv(self) -> str:
+        """Compile sphtri_subdiv, which is one source file, into the prefix."""
+        import textwrap
+
+        build = (
+            f"{self.work_dir}/mesh-tools/build/{self._ref_dir(self.mesh_tools_version)}"
+        )
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started build at $(date)"
+            echo "Executing on $(hostname)"
+            build={self._q(build)}
+            prefix={self._q(self._sphtri_subdiv_prefix)}
+            cxx="${{CXX:-c++}}"
+            # Fail clearly, before an existing install is touched
+            if ! command -v "$cxx" > /dev/null; then
+                echo "$cxx not found. Load a C++ compiler in the environment of the compute resource." >&2
+                exit 1
+            fi
+            commit="$(cat "$build/commit")"
+            # Start from an empty prefix so a failed earlier install leaves nothing
+            rm -rf "$prefix"
+            mkdir -p "$prefix/bin"
+            "$cxx" -O2 -std=c++11 -o "$prefix/bin/sphtri_subdiv" "$build/src/sphtri_subdiv/sphtri_subdiv.cpp"
+            # The sources are no longer needed. A failed build keeps them to debug.
+            cd /
+            # Failing to remove the sources must not fail a finished build
+            rm -rf "$build" || true
+            # Mark the install complete with the commit it was built from. The
+            # agent only uses a marked install.
+            echo "$commit" > "$prefix/.installed"
             echo "Completed build at $(date)"
             """
         )
@@ -1891,6 +2196,133 @@ class _MeshBehavior:
                         f"/bin, see {self.log_dir}/mpas_tools_build.stderr"
                     )
             self.mpas_tools_built = True
+
+    # -------------------------------------------------------------------------
+    # Public agent actions — tools that make global meshes
+    # -------------------------------------------------------------------------
+    @agent_action
+    async def install_jigsaw(self) -> None:
+        """Download and build JIGSAW, unless it is already installed.
+
+        JIGSAW counts as installed once a build has finished in ``work_dir``, so
+        a restarted agent reuses it. The install records the commit it was built
+        from. Requests that need JIGSAW while it is being installed wait for that
+        install. If it fails, each waiting request tries again in turn.
+
+        Building needs CMake and a C++ compiler in the environment of the
+        ``compute`` resource.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` or ``compute`` resource is not defined, or the
+            download or build fails. The message names the log file.
+        """
+        async with self._install_lock:
+            # Check the install on disk each time, so a removed or damaged
+            # install is rebuilt instead of failing every later request
+            if not self._jigsaw_usable():
+                self.jigsaw_built = False
+                self._require_resources("Installing JIGSAW", "service", "compute")
+                await self._run_install(
+                    "JIGSAW", "jigsaw", self._download_jigsaw, self._build_jigsaw
+                )
+                if not self._jigsaw_usable():
+                    raise RuntimeError(
+                        f"JIGSAW build finished but {self._jigsaw} is not usable, "
+                        f"see {self.log_dir}/jigsaw_build.stderr"
+                    )
+            self.jigsaw_built = True
+
+    @agent_action
+    async def install_mkgrid(self) -> None:
+        """Download and build mkgrid, unless it is already installed.
+
+        ``mkgrid`` makes an MPAS mesh from the points and triangles JIGSAW
+        makes. It comes from the ``mpas_jigsaw`` fork, whose fixes the original
+        lacks, and is installed with that repository's ``ICOS.msh`` and
+        ``GEOM.msh``. It counts as installed once a build has finished in
+        ``work_dir``, and the install records the commit it was built from, which
+        a branch name may have moved on from.
+
+        Building needs CMake, an MPI C compiler and the PnetCDF library in the
+        environment of the ``compute`` resource, which finds PnetCDF through
+        ``PNETCDF``, or ``pnetcdf-config`` if that is not set. The program runs
+        on the ``mpi`` resource, which must load the same MPI and PnetCDF.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` or ``compute`` resource is not defined, or the
+            download or build fails. The message names the log file.
+        """
+        async with self._install_lock:
+            if not self._mkgrid_usable():
+                self.mkgrid_built = False
+                self._require_resources("Installing mkgrid", "service", "compute")
+                await self._run_install(
+                    "mkgrid", "mkgrid", self._download_mkgrid, self._build_mkgrid
+                )
+                if not self._mkgrid_usable():
+                    raise RuntimeError(
+                        f"mkgrid build finished but {self._mkgrid} and the "
+                        f"files in {self._mkgrid_prefix}/share are not usable, "
+                        f"see {self.log_dir}/mkgrid_build.stderr"
+                    )
+            self.mkgrid_built = True
+
+    @agent_action
+    async def install_sphtri_subdiv(self) -> None:
+        """Download and build sphtri_subdiv, unless it is already installed.
+
+        ``sphtri_subdiv`` divides the triangles of a mesh, such as the
+        icosahedron, into smaller ones, which gives JIGSAW the starting points
+        of a quasi-uniform mesh. It is one source file of ``mgduda/mesh_tools``,
+        compiled with a C++ compiler in the environment of the ``compute``
+        resource. It counts as installed once a build has finished in
+        ``work_dir``, and the install records the commit it was built from.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``service`` or ``compute`` resource is not defined, or the
+            download or build fails. The message names the log file.
+        """
+        async with self._install_lock:
+            if not self._sphtri_subdiv_usable():
+                self.sphtri_subdiv_built = False
+                self._require_resources(
+                    "Installing sphtri_subdiv", "service", "compute"
+                )
+                await self._run_install(
+                    "sphtri_subdiv",
+                    "sphtri_subdiv",
+                    self._download_sphtri_subdiv,
+                    self._build_sphtri_subdiv,
+                )
+                if not self._sphtri_subdiv_usable():
+                    raise RuntimeError(
+                        "sphtri_subdiv build finished but "
+                        f"{self._sphtri_subdiv} is not usable, "
+                        f"see {self.log_dir}/sphtri_subdiv_build.stderr"
+                    )
+            self.sphtri_subdiv_built = True
+
+    @agent_action
+    async def install_global_mesh_tools(self) -> None:
+        """Install JIGSAW, mkgrid and sphtri_subdiv, which global meshes need.
+
+        Each is installed as its own action installs it, one after another, and
+        any that is already installed is left alone.
+
+        Raises
+        ------
+        RuntimeError
+            As the three installs raise it.
+        """
+        await self.install_jigsaw()
+        await self.install_mkgrid()
+        await self.install_sphtri_subdiv()
 
     # -------------------------------------------------------------------------
     # Public agent actions — MPAS-Limited-Area
@@ -3078,4 +3510,13 @@ class MeshAgent(_MeshBehavior):
         Email address sent to OpenStreetMap's Nominatim service when a prompt
         names a place Natural Earth lacks, such as a city. Without it, such
         places are not looked up.
+    jigsaw_version : str, optional
+        Branch, tag or full commit of JIGSAW to install, by default the commit
+        tested
+    mkgrid_version : str, optional
+        Branch, tag or full commit of the ``mpas_jigsaw`` fork that ``mkgrid``
+        is built from, by default the branch ``feature/nesting``
+    mesh_tools_version : str, optional
+        Branch, tag or full commit of ``mgduda/mesh_tools``, which
+        ``sphtri_subdiv`` is built from, by default the commit tested
     """
