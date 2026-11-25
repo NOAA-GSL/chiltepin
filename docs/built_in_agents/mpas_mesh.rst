@@ -108,7 +108,8 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
    which ``sphtri_subdiv`` is built from, as a branch, tag or commit given in
    full. The repository has no tags, so this defaults to the commit that was
    tested. Anything but a plain branch, tag or commit name raises
-   ``ValueError``.
+   ``ValueError``. A name of any of these three is limited to 200 characters, with
+   each ``/`` counting as three.
 ``kwargs={"nominatim_contact": "you@example.org"}``
    Optional agent argument. The email address of whoever runs the agent, sent
    to OpenStreetMap's Nominatim service with each request when a prompt names
@@ -621,7 +622,10 @@ Actions
    an install counts only if the marker and its programs and files exist, which
    is checked on every call, so a damaged install is rebuilt. The marker holds
    the commit the install was built from, which differs from the version if that
-   is a branch or tag. A build starts from an empty install directory, and its
+   is a branch or tag. A branch is fetched once: an install of a branch is not
+   compared with the repository again, so to build a newer commit of it, name
+   the commit, or remove the install directory. The sources are fetched in
+   ``.build`` next to the install directories, and a failed build keeps them. A build starts from an empty install directory, and its
    sources are removed after a successful build. Requests that need a tool while
    it is being installed wait for that install. If CMake, a compiler, ``mpicc``
    or PnetCDF is missing on the ``compute`` resource, the build stops with a

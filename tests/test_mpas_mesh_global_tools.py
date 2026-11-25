@@ -144,13 +144,35 @@ def test_a_branch_tag_or_commit_is_accepted(tmp_path, tool, ref):
 @pytest.mark.parametrize(
     "ref",
     [
-        "", "../x", "a..b", "a//b", "-x", "--upload-pack=x", "x/", "x.", "x.lock",
+        "", "../x", "a..b", "a//b", "-x", "--upload-pack=x", ".build", "x/", "x.", "x.lock",
         "a b", "x;rm -rf /", "$(id)", "a\n", "a@{1}", "a:b", "/abs", None, 5,
     ],
 )  # fmt: skip
 def test_an_invalid_ref_is_refused(tmp_path, tool, ref):
     with pytest.raises(ValueError, match=f"Invalid {tool.version}"):
         _MeshBehavior(str(tmp_path / "work"), **{tool.version: ref})
+
+
+@EACH_TOOL
+def test_a_ref_named_build_does_not_collide_with_the_sources(tmp_path, tool):
+    """The sources are fetched under .build, which no ref can be named."""
+    behavior = _MeshBehavior(str(tmp_path / "work"), **{tool.version: "build"})
+    prefix = getattr(behavior, tool.prefix)
+    assert prefix.name == "build"
+    script = getattr(_MeshBehavior, f"_download_{tool.task}").func(behavior)
+    assert f"{prefix.parent}/.build/build" in script
+    assert f"{prefix}" != f"{prefix.parent}/.build/build"
+
+
+@EACH_TOOL
+def test_a_ref_must_fit_a_directory_name(tmp_path, tool):
+    long_ref = "a" * 200
+    behavior = _MeshBehavior(str(tmp_path / "work"), **{tool.version: long_ref})
+    assert getattr(behavior, tool.version) == long_ref
+    # The second is 67 * 4 characters once its slashes are written as %2F
+    for ref in ("a" * 201, "a/" * 67):
+        with pytest.raises(ValueError, match=f"Invalid {tool.version}"):
+            _MeshBehavior(str(tmp_path / "work"), **{tool.version: ref})
 
 
 def test_the_directory_of_a_ref_holds_no_separator(tmp_path):
@@ -443,7 +465,7 @@ def test_the_download_fetches_the_requested_revision(scratch, repository, tool, 
     assert done.returncode == 0, done.stderr
     build = next(
         (behavior.work_dir / tool.task.replace("sphtri_subdiv", "mesh-tools")).glob(
-            "build/*"
+            ".build/*"
         )
     )
     assert (build / "commit").read_text().strip() == expected
@@ -465,6 +487,20 @@ def test_the_download_starts_from_empty_sources(scratch, repository, tool):
         assert done.returncode == 0, done.stderr
 
 
+def test_only_the_requested_revision_is_fetched(scratch, repository):
+    path, first, second = repository
+    behavior = _MeshBehavior(str(scratch / "work"), jigsaw_version="main")
+    # A file URL, since git ignores --depth for a path on the same filesystem
+    behavior.jigsaw_url = path.as_uri()
+    script = _MeshBehavior._download_jigsaw.func(behavior)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    src = next((behavior.work_dir / "jigsaw").glob(".build/*")) / "src"
+    assert git(src, "rev-parse", "--is-shallow-repository") == "true"
+    assert git(src, "rev-list", "--count", "HEAD") == "1"
+    assert git(src, "rev-parse", "HEAD") == second
+
+
 def test_the_download_of_a_missing_ref_fails(scratch, repository):
     path, _, _ = repository
     behavior = _MeshBehavior(str(scratch / "work"), jigsaw_version="nothing")
@@ -479,12 +515,12 @@ def test_the_download_scripts_name_the_repositories(scratch):
     behavior = _MeshBehavior(str(scratch / "work dir"))
     jigsaw = _MeshBehavior._download_jigsaw.func(behavior)
     assert (
-        f"build='{behavior.work_dir}/jigsaw/build/{behavior.jigsaw_version}'" in jigsaw
+        f"build='{behavior.work_dir}/jigsaw/.build/{behavior.jigsaw_version}'" in jigsaw
     )
     assert "remote add origin https://github.com/dengwirda/jigsaw.git" in jigsaw
     assert f"fetch -q --depth 1 origin {behavior.jigsaw_version}" in jigsaw
     mkgrid = _MeshBehavior._download_mkgrid.func(behavior)
-    assert f"{behavior.work_dir}/mkgrid/build/feature%2Fnesting" in mkgrid
+    assert f"{behavior.work_dir}/mkgrid/.build/feature%2Fnesting" in mkgrid
     assert "origin feature/nesting" in mkgrid
     tools = _MeshBehavior._download_sphtri_subdiv.func(behavior)
     assert "remote add origin https://github.com/mgduda/mesh_tools.git" in tools
@@ -540,7 +576,7 @@ def sources(behavior, tool_dir, files):
     build = (
         behavior.work_dir
         / tool_dir
-        / "build"
+        / ".build"
         / behavior._ref_dir(
             {
                 "jigsaw": behavior.jigsaw_version,
@@ -549,6 +585,7 @@ def sources(behavior, tool_dir, files):
             }[tool_dir]
         )
     )
+    (build / "src").mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
         (build / "src" / name).parent.mkdir(parents=True, exist_ok=True)
         (build / "src" / name).write_text(text)
@@ -598,7 +635,8 @@ def test_a_cmake_build_installs_and_marks_the_commit(scratch, name):
     recorded = log.read_text()
     assert f"-DCMAKE_INSTALL_PREFIX={prefix}" in recorded
     assert "-DCMAKE_BUILD_TYPE=Release" in recorded
-    assert "--build . --target install" in recorded
+    assert "cmake .. -DCMAKE_BUILD_TYPE=Release" in recorded
+    assert "--build . --target install -- -j4" in recorded
     if name == "mkgrid":
         # PnetCDF is found from pnetcdf-config, and the pipeline's files are kept
         assert "PNETCDF=/opt/pnetcdf" in recorded
@@ -631,6 +669,8 @@ def test_pnetcdf_set_by_the_environment_is_not_replaced(scratch):
         ("mkgrid", "mpicc", {"cmake": "exit 0"}, "mpicc not found"),
         ("mkgrid", "pnetcdf-config", {"cmake": "exit 0", "mpicc": "exit 0"}, "PnetCDF not found"),
         ("sphtri_subdiv", "c++", {}, "c++ not found"),
+        ("mkgrid", "pnetcdf-config", {"cmake": "exit 0", "mpicc": "exit 0", "pnetcdf-config": "exit 3"}, "did not give the prefix of PnetCDF"),
+        ("mkgrid", "pnetcdf-config", {"cmake": "exit 0", "mpicc": "exit 0", "pnetcdf-config": "echo"}, "did not give the prefix of PnetCDF"),
     ],
 )  # fmt: skip
 def test_a_missing_tool_fails_clearly_and_keeps_an_existing_install(
@@ -671,3 +711,61 @@ def test_sphtri_subdiv_is_compiled_from_one_file(scratch):
     assert ran.stdout.strip() == "subdivided"
     assert behavior._installed_commit(behavior._sphtri_subdiv_prefix) == COMMIT
     assert not build.exists()
+
+
+@pytest.mark.parametrize("name", ["jigsaw", "sphtri_subdiv"])
+def test_a_compiler_with_a_wrapper_is_found_by_its_first_word(scratch, name):
+    tool = TOOLS[name]
+    compiler = shutil.which("c++") or shutil.which("g++")
+    if compiler is None:
+        pytest.skip("no C++ compiler is available")
+    behavior = _MeshBehavior(str(scratch / "work"))
+    sources(
+        behavior,
+        {"jigsaw": "jigsaw", "sphtri_subdiv": "mesh-tools"}[name],
+        {"sphtri_subdiv/sphtri_subdiv.cpp": "int main() { return 0; }\n"},
+    )
+    tools = fake_tools(
+        scratch,
+        cmake=FAKE_CMAKE,
+        # A wrapper that runs what it is given, as ccache does
+        ccache='exec "$@"',
+    )
+    log = scratch / "cmake.log"
+    script = getattr(_MeshBehavior, f"_build_{tool.task}").func(behavior)
+    path = f"{tools}:{os.path.dirname(compiler)}:/usr/bin:/bin"
+    done = run_script(
+        script,
+        tools,
+        PATH=path,
+        CXX=f"ccache {compiler}",
+        CMAKE_LOG=str(log),
+        PROGRAMS="jigsaw",
+    )
+    assert done.returncode == 0, done.stderr
+    assert behavior._installed_commit(getattr(behavior, tool.prefix)) == COMMIT
+    # A wrapper that is not there is named, not the compiler
+    missing = run_script(script, tools, PATH=path, CXX=f"nowrapper {compiler}")
+    assert missing.returncode == 1 and "nowrapper not found" in missing.stderr
+
+
+@pytest.mark.parametrize("failure", ["cmake", "files"])
+def test_a_failed_cmake_build_leaves_no_marker_and_keeps_the_sources(scratch, failure):
+    behavior = _MeshBehavior(str(scratch / "work"))
+    files = {} if failure == "files" else {"ICOS.msh": "i", "GEOM.msh": "g"}
+    build = sources(behavior, "mkgrid", files)
+    tools = fake_tools(
+        scratch,
+        cmake="exit 1" if failure == "cmake" else FAKE_CMAKE,
+        mpicc="exit 0",
+        **{"pnetcdf-config": "echo /opt/pnetcdf"},
+    )
+    script = _MeshBehavior._build_mkgrid.func(behavior)
+    done = run_script(
+        script, tools, CMAKE_LOG=str(scratch / "cmake.log"), PROGRAMS="mkgrid"
+    )
+    assert done.returncode != 0
+    assert not (behavior._mkgrid_prefix / ".installed").exists()
+    assert not behavior._mkgrid_usable()
+    # Kept to debug
+    assert (build / "src").is_dir() and (build / "commit").is_file()

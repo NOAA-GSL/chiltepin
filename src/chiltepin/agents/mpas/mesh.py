@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 _VERSION_RE = re.compile(r"[0-9][0-9a-zA-Z._-]*")
 
 # A branch, tag or full commit of a Git repository. It is passed to git fetch, so
-# it must not be able to look like an option, a range or a path out of its directory.
+# it must not be able to look like an option, a range or a path out of its
+# directory. It starts with a letter or digit, so no ref can be named ``.build``,
+# where the sources are fetched.
 _REF_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._/-]*")
 # What the tools that make global meshes are installed from, unless the agent is
 # given others. JIGSAW and sphtri_subdiv have no release to name, so they are the
@@ -304,6 +306,8 @@ class _MeshBehavior:
             and ".." not in ref
             and "//" not in ref
             and not ref.endswith(("/", ".", ".lock"))
+            # Named as a directory, with a limit of 255 bytes on each name
+            and len(ref.replace("/", "%2F")) <= 200
         )
 
     @staticmethod
@@ -1242,7 +1246,7 @@ class _MeshBehavior:
 
     @property
     def _mkgrid_prefix(self) -> Path:
-        """Directory mkgrid is installed into, with the files of its repository."""
+        """Directory mkgrid is installed into, with ICOS.msh and GEOM.msh."""
         return self.work_dir / "mkgrid" / self._ref_dir(self.mkgrid_version)
 
     @property
@@ -1454,7 +1458,7 @@ class _MeshBehavior:
     @bash_task
     def _download_jigsaw(self) -> str:
         """Download the requested revision of JIGSAW from GitHub."""
-        build = f"{self.work_dir}/jigsaw/build/{self._ref_dir(self.jigsaw_version)}"
+        build = f"{self.work_dir}/jigsaw/.build/{self._ref_dir(self.jigsaw_version)}"
         return self._fetch_ref(self.jigsaw_url, self.jigsaw_version, build)
 
     @bash_task
@@ -1462,7 +1466,7 @@ class _MeshBehavior:
         """Build JIGSAW, and install it to the prefix."""
         import textwrap
 
-        build = f"{self.work_dir}/jigsaw/build/{self._ref_dir(self.jigsaw_version)}"
+        build = f"{self.work_dir}/jigsaw/.build/{self._ref_dir(self.jigsaw_version)}"
         return textwrap.dedent(
             f"""\
             set -eu -o pipefail
@@ -1471,7 +1475,9 @@ class _MeshBehavior:
             build={self._q(build)}
             prefix={self._q(self._jigsaw_prefix)}
             # Fail clearly, before an existing install is touched
-            for tool in cmake "${{CXX:-c++}}"; do
+            # CXX may be a wrapper and a compiler, such as "ccache g++"
+            read -r -a cxx <<< "${{CXX:-c++}}"
+            for tool in cmake "${{cxx[0]}}"; do
                 if ! command -v "$tool" > /dev/null; then
                     echo "$tool not found. Load CMake and a C++ compiler in the environment of the compute resource." >&2
                     exit 1
@@ -1498,7 +1504,7 @@ class _MeshBehavior:
     @bash_task
     def _download_mkgrid(self) -> str:
         """Download the requested revision of the mpas_jigsaw fork from GitHub."""
-        build = f"{self.work_dir}/mkgrid/build/{self._ref_dir(self.mkgrid_version)}"
+        build = f"{self.work_dir}/mkgrid/.build/{self._ref_dir(self.mkgrid_version)}"
         return self._fetch_ref(self.mkgrid_url, self.mkgrid_version, build)
 
     @bash_task
@@ -1506,7 +1512,7 @@ class _MeshBehavior:
         """Build mkgrid with MPI and PnetCDF, and install it with ICOS.msh and GEOM.msh."""
         import textwrap
 
-        build = f"{self.work_dir}/mkgrid/build/{self._ref_dir(self.mkgrid_version)}"
+        build = f"{self.work_dir}/mkgrid/.build/{self._ref_dir(self.mkgrid_version)}"
         return textwrap.dedent(
             f"""\
             set -eu -o pipefail
@@ -1521,14 +1527,19 @@ class _MeshBehavior:
                     exit 1
                 fi
             done
-            # The build finds PnetCDF through this
+            # The build finds PnetCDF through this. The value is assigned before it
+            # is exported, since export would hide a failure of pnetcdf-config.
             if [ -z "${{PNETCDF:-}}" ]; then
                 if ! command -v pnetcdf-config > /dev/null; then
                     echo "PnetCDF not found. Load PnetCDF in the environment of the compute resource, or set PNETCDF to its prefix." >&2
                     exit 1
                 fi
-                export PNETCDF="$(pnetcdf-config --prefix)"
+                if ! PNETCDF="$(pnetcdf-config --prefix)" || [ -z "$PNETCDF" ]; then
+                    echo "pnetcdf-config did not give the prefix of PnetCDF. Set PNETCDF to it in the environment of the compute resource." >&2
+                    exit 1
+                fi
             fi
+            export PNETCDF
             commit="$(cat "$build/commit")"
             # Start from an empty prefix so a failed earlier install leaves nothing
             rm -rf "$prefix"
@@ -1553,9 +1564,7 @@ class _MeshBehavior:
     @bash_task
     def _download_sphtri_subdiv(self) -> str:
         """Download the requested revision of mesh_tools from GitHub."""
-        build = (
-            f"{self.work_dir}/mesh-tools/build/{self._ref_dir(self.mesh_tools_version)}"
-        )
+        build = f"{self.work_dir}/mesh-tools/.build/{self._ref_dir(self.mesh_tools_version)}"
         return self._fetch_ref(self.mesh_tools_url, self.mesh_tools_version, build)
 
     @bash_task
@@ -1563,9 +1572,7 @@ class _MeshBehavior:
         """Compile sphtri_subdiv, which is one source file, into the prefix."""
         import textwrap
 
-        build = (
-            f"{self.work_dir}/mesh-tools/build/{self._ref_dir(self.mesh_tools_version)}"
-        )
+        build = f"{self.work_dir}/mesh-tools/.build/{self._ref_dir(self.mesh_tools_version)}"
         return textwrap.dedent(
             f"""\
             set -eu -o pipefail
@@ -1573,17 +1580,18 @@ class _MeshBehavior:
             echo "Executing on $(hostname)"
             build={self._q(build)}
             prefix={self._q(self._sphtri_subdiv_prefix)}
-            cxx="${{CXX:-c++}}"
+            # CXX may be a wrapper and a compiler, such as "ccache g++"
+            read -r -a cxx <<< "${{CXX:-c++}}"
             # Fail clearly, before an existing install is touched
-            if ! command -v "$cxx" > /dev/null; then
-                echo "$cxx not found. Load a C++ compiler in the environment of the compute resource." >&2
+            if ! command -v "${{cxx[0]}}" > /dev/null; then
+                echo "${{cxx[0]}} not found. Load a C++ compiler in the environment of the compute resource." >&2
                 exit 1
             fi
             commit="$(cat "$build/commit")"
             # Start from an empty prefix so a failed earlier install leaves nothing
             rm -rf "$prefix"
             mkdir -p "$prefix/bin"
-            "$cxx" -O2 -std=c++11 -o "$prefix/bin/sphtri_subdiv" "$build/src/sphtri_subdiv/sphtri_subdiv.cpp"
+            "${{cxx[@]}}" -O2 -std=c++11 -o "$prefix/bin/sphtri_subdiv" "$build/src/sphtri_subdiv/sphtri_subdiv.cpp"
             # The sources are no longer needed. A failed build keeps them to debug.
             cd /
             # Failing to remove the sources must not fail a finished build
