@@ -2,12 +2,13 @@ MPAS Mesh Agent
 ===============
 
 ``chiltepin.agents.mpas.MeshAgent`` generates MPAS meshes for use in NWP
-workflows. It downloads precomputed global MPAS meshes from UCAR, generates
-regional meshes with the MPAS-Tools ``project_hexes`` program or cuts them from
-a global mesh with the MPAS-Limited-Area ``create_region`` program, can
-partition mesh graphs for MPI with Metis, can draw images of meshes, and can
-check a mesh's integrity and quality. It can also make a mesh from a prompt such as "a 15 km mesh over Texas", read by
-an LLM, as described in `Meshes from Prompts`_.
+workflows. It downloads precomputed global MPAS meshes from UCAR, or makes a
+global mesh at any resolution with JIGSAW, generates regional meshes with the
+MPAS-Tools ``project_hexes`` program or cuts them from a global mesh with the
+MPAS-Limited-Area ``create_region`` program, can partition mesh graphs for MPI
+with Metis, can draw images of meshes, and can check a mesh's integrity and
+quality. It can also make a mesh from a prompt such as "a 15 km mesh over
+Texas", read by an LLM, as described in `Meshes from Prompts`_.
 
 For the API reference, see :doc:`../api/agents/mpas_mesh`.
 
@@ -46,6 +47,9 @@ Requirements
   set through ``pnetcdf-config``, which PnetCDF's module puts on the ``PATH``. The
   ``mkgrid`` program is an MPI program, so the ``mpi`` resource must load the
   same MPI and PnetCDF as ``compute`` does.
+* To make a global mesh at a resolution that is not downloaded, those tools,
+  the ``mpi`` resource, and the ``mpas`` extra on ``compute``, which checks the
+  mesh once it is made. The tools' costs are in `Supported global resolutions`_.
 * For plotting, network access to Natural Earth on the ``service`` resource,
   to download the map layers the plots draw. cartopy publishes Linux wheels for
   Python 3.10 only for x86_64, so on an ARM machine with Python 3.10 the
@@ -110,6 +114,16 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
    tested. Anything but a plain branch, tag or commit name raises
    ``ValueError``. A name of any of these three is limited to 200 characters, with
    each ``/`` counting as three.
+``kwargs={"mkgrid_ranks": 4}``
+   Optional agent argument. The number of MPI ranks ``mkgrid`` runs on, on the
+   ``mpi`` resource, when a global mesh is made. Defaults to 4. It is a launch
+   argument and not part of a request, since it describes the site and not the
+   mesh. Anything but a positive integer raises ``ValueError``.
+``kwargs={"mkgrid_ranks_per_node": 4}``
+   Optional agent argument. The number of those ranks on each node, which sets
+   how many nodes ``mkgrid`` uses. By default all of them are on one node.
+   Anything but a positive integer, or one more than ``mkgrid_ranks``, raises
+   ``ValueError``.
 ``kwargs={"nominatim_contact": "you@example.org"}``
    Optional agent argument. The email address of whoever runs the agent, sent
    to OpenStreetMap's Nominatim service with each request when a prompt names
@@ -122,14 +136,16 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
 
 ``agent_workflow_config``
    Configuration dictionary defining the resources the agent will use to run
-   its tasks. Must define a ``service`` resource having internet access, and a
-   ``compute`` resource if meshes will be partitioned or regional, as described
+   its tasks. Must define a ``service`` resource having internet access, a
+   ``compute`` resource if meshes will be partitioned, regional or made with
+   JIGSAW, and an ``mpi`` resource if global meshes will be made, as described
    below.
 
 ``agent_workflow_include``
    Optional resource-label list restricting which configured resources are
-   loaded. If supplied, it must include ``"service"``, and ``"compute"`` if
-   meshes will be partitioned or regional.
+   loaded. If supplied, it must include ``"service"``, ``"compute"`` if
+   meshes will be partitioned, regional or made with JIGSAW, and ``"mpi"`` if
+   global meshes will be made.
 
 ``agent_workflow_run_dir``
    Optional directory for the agent's workflow runtime files. Use a unique
@@ -156,7 +172,16 @@ The agent workflow configuration must contain these resources:
    build and run the MPAS-Tools programs. It must have write access to
    ``work_dir`` and the mesh output directory at the same absolute paths as the
    agent. Requests that only download global meshes without partitioning do
-   not use it.
+   not use it. It also runs ``sphtri_subdiv`` and JIGSAW, which make a global
+   mesh, and checks the mesh once it is made, which needs the ``mpas`` extra.
+``mpi``
+   Runs ``mkgrid`` on the ranks the ``mkgrid_ranks`` and
+   ``mkgrid_ranks_per_node`` launch arguments give, when a global mesh is made.
+   It is a resource with ``mpi: True`` in its configuration, which launches the
+   program with the ``mpi_launcher`` it defines. It must load the same MPI and
+   PnetCDF as ``compute``, which built ``mkgrid``, and see ``work_dir`` and the
+   mesh output directory at the same absolute paths as the agent. Requests that
+   do not make a global mesh do not use it.
 
 For local execution:
 
@@ -217,9 +242,18 @@ Actions
      the mesh instead, as in `Meshes from Prompts`_.
    * ``mesh_data_dir``: Output directory shared by the agent and its tasks.
 
-   Without ``regional``, the request is for a global mesh, which is downloaded.
-   Its ``resolution`` must be one of the supported global resolutions listed
-   below.
+   Without ``regional``, the request is for a global mesh. At one of the 16
+   supported global resolutions listed below it is downloaded, and at any other
+   it is made with JIGSAW, as described under `Supported global resolutions`_.
+   A made mesh's result also has ``"generated"``, how it was made: the
+   ``requested_resolution_km``, the ``division`` of the icosahedron's edges, the
+   ``nominal_spacing_km`` of the mesh, its ``cells``, and the ``tools``, the
+   commit each tool was built from. It has ``"quality"`` too, the report of
+   ``check_mesh_quality``. Warnings, such as a quasi-uniform mesh that does not
+   have exactly 12 pentagons, are only reported. A mesh whose report has errors
+   is not kept, and the request raises ``RuntimeError`` naming them. A reused
+   made mesh's result has both too, with the report that was written next to
+   it.
 
    With ``regional``, a regional mesh is generated. ``regional`` must be a
    dictionary with exactly one key, ``project_hexes`` or ``create_region``,
@@ -355,9 +389,9 @@ Actions
 
    Before it creates anything or downloads anything, the action checks that the
    workflow defines the resources the request needs: ``service`` for a global
-   or ``create_region`` mesh, and ``compute`` for a regional mesh or if
-   partitions are requested. If one is missing it raises ``RuntimeError``
-   naming it. Installing a tool that
+   or ``create_region`` mesh, ``compute`` for a regional mesh, a made global
+   mesh, or if partitions are requested, and ``mpi`` for a made global mesh. If
+   one is missing it raises ``RuntimeError`` naming it. Installing a tool that
    is missing also needs both ``service`` and ``compute``, and checks for them
    when it runs.
 
@@ -365,7 +399,10 @@ Actions
    ``<name>.mesh.json`` in its subdirectory, written last. A request for a
    name that exists in ``mesh_data_dir`` reuses that mesh if it matches: the
    same ``resolution`` and ``regional`` block, and for a regional mesh the
-   same ``mpas_tools_version`` or ``limited_area_version`` that made it. The
+   same ``mpas_tools_version`` or ``limited_area_version`` that made it, and
+   for a made global mesh the same number of divisions and the same
+   ``jigsaw_version``, ``mkgrid_version`` and ``mesh_tools_version``, which are
+   compared as given, not as the commits they resolved to. The
    rank counts and ``plot`` do not count. Partitions the mesh lacks, or that
    another ``metis_version`` made, are made, a plot is drawn if the mesh has
    none, and the result also has ``"reused": True``. A request that does not
@@ -696,11 +733,57 @@ default, which preserves them. If you configure the exchange to use JSON,
 integer keys arrive as strings, a tuple sent as ``num_ranks`` arrives as a
 list, and a set cannot be sent. Use a list of integers to be safe.
 
-Supported global resolutions, for meshes without ``regional`` and for
-``create_region`` meshes, are ``480km``, ``384km``, ``240km``, ``120km``, ``60km``,
-``48km``, ``30km``, ``24km``, ``15km``, ``12km``, ``10km``, ``7.5km``, ``5km``,
-``4km``, ``3.75km``, and ``3km``.
+Supported global resolutions
+----------------------------
 
+A global mesh without ``regional`` can have any resolution from ``0.91km`` to
+``5120km``. These 16 are downloaded from UCAR: ``480km``, ``384km``, ``240km``,
+``120km``, ``60km``, ``48km``, ``30km``, ``24km``, ``15km``, ``12km``, ``10km``,
+``7.5km``, ``5km``, ``4km``, ``3.75km``, and ``3km``. Any other is made. Only
+the downloaded ones can be cut with ``create_region``, so a ``create_region``
+mesh needs one of them.
+
+A made mesh follows Duda's "Generating meshes for MPAS-Atmosphere". Each edge of
+an icosahedron is cut into ``N`` parts, with ``N`` the whole number nearest
+``7680 / resolution``, which gives ``10 N^2 + 2`` cells, and
+``sphtri_subdiv`` makes their points. JIGSAW meshes the sphere starting from
+those points with a constant mesh size, and ``mkgrid`` makes the MPAS mesh. The
+7680 is what the 16 downloaded meshes follow exactly, so ``N`` is 64 for
+``120km``. The mesh's ``nominal_spacing_km`` is ``7680 / N``, which is what
+``nominalMinDc`` holds, and may differ from the resolution asked for by up to
+half a part, such as 7.3004km for ``7.3km``. A mesh needs at least 2 parts,
+and at most 8460, since ``mkgrid`` numbers the mesh's edges with 32-bit integers,
+which is where ``0.91km`` and ``5120km`` come from. Nothing else limits the size.
+
+Starting JIGSAW from the divided icosahedron is what keeps the mesh quasi-uniform:
+it has exactly 12 pentagons and no other cell that is not a hexagon, where
+JIGSAW alone makes thousands of pentagon and heptagon pairs. The mesh's
+``mesh_config`` attribute and ``densityFunctionCode`` variable record how it was
+made, in the form the ``mpas_jigsaw`` repository writes them. The large files
+the steps pass along are removed once the mesh is complete, and the directory
+keeps ``GEOM.msh``, ``ICOS.msh``, ``MESH.jig``, JIGSAW's own ``MESH.log``, and
+the logs, which are
+``sphtri_subdiv.<id>.*``, ``jigsaw.<id>.*`` and ``mkgrid.<id>.*`` in
+``work_dir/logs``.
+
+The cost grows with the number of cells. These were measured on one machine with
+8 ranks for ``mkgrid`` and a JIGSAW that uses one core:
+
+========== =========== ================= ========================
+Resolution Cells       JIGSAW            ``mkgrid``, all ranks
+========== =========== ================= ========================
+30km       655,362     92 s, 1.0 GB      22 s
+15km       2,621,442   235 s, 4.1 GB     103-181 s, 11.9 GB
+10km       5,898,242   381 s, 8.8 GB     221-378 s, 16.9-18 GB
+========== =========== ================= ========================
+
+JIGSAW needs about 1.5 KB of memory per cell, which makes a 5km mesh about 35 GB
+and a 3km mesh about 100 GB, and ``mkgrid`` needs about 45 GB and 105 GB across
+its ranks. Those two are extrapolated, not measured. Give the ``compute``
+resource a node with that memory and enough walltime, and ``mpi`` enough ranks
+or nodes. The mesh directory holds several GB of files while the mesh is made, 5 GB
+or more at ``10km``. Nothing in the agent limits the size, so a request that asks for more
+than the resources have fails when the scheduler stops the task.
 
 Meshes from Prompts
 -------------------
@@ -748,8 +831,8 @@ A prompt is read with an LLM on the ``service`` resource:
    are normalized, and an answer that cannot be is sent back to the model with
    the reason, up to three times.
 2. The method follows from the answer. A prompt naming no places asks for a
-   global mesh, which is downloaded, so its resolution must be one of the
-   supported global resolutions. A circle, ellipse, polygon or channel is cut
+   global mesh, which is downloaded or made, at any resolution the tools can
+   make. A circle, ellipse, polygon or channel is cut
    from a global mesh with ``create_region``, so it needs a global resolution
    too. A rectangle, or a region of no shape, is made with ``project_hexes`` at
    any resolution, unless ``create_region`` is chosen, which then cuts a

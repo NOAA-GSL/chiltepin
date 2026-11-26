@@ -3719,6 +3719,15 @@ class _MeshBehavior:
             result["partitions"] = {
                 rank: moved(path) for rank, path in made["partitions"].items()
             }
+        if "generated" in made:
+            result["generated"] = made["generated"]
+        if "quality" in made:
+            # Its report was written in the directory that has since been renamed
+            result["quality"] = dict(made["quality"])
+            if result["quality"].get("report_file"):
+                result["quality"]["report_file"] = moved(
+                    result["quality"]["report_file"]
+                )
         return result
 
     @staticmethod

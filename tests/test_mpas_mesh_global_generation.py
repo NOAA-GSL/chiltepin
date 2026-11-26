@@ -135,7 +135,9 @@ class Pipeline:
 
         async def quality(path, resolution_km=None):
             self.calls.append(("quality", path, resolution_km))
-            return self.report
+            # The report is written next to the mesh, as the action writes it
+            report_file = _MeshBehavior._quality_path(Path(path))
+            return {**self.report, "report_file": str(report_file)}
 
         monkeypatch.setattr(behavior_, "_run_sphtri_subdiv", Mock(side_effect=sphtri))
         monkeypatch.setattr(behavior_, "_run_jigsaw", Mock(side_effect=jigsaw))
@@ -194,7 +196,10 @@ async def test_a_mesh_is_made_with_the_tools(behavior, pipeline, tmp_path):
     assert pipeline.calls[4][1:] == (str(mesh_dir / "mesh_7.3km.static.nc"), spacing)
     assert result["static"] == str(mesh_dir / "mesh_7.3km.static.nc")
     assert result["graph"] == str(mesh_dir / "mesh_7.3km.graph.info")
-    assert result["quality"] == REPORT
+    assert result["quality"] == {
+        **REPORT,
+        "report_file": str(mesh_dir / "mesh_7.3km.quality.json"),
+    }
     assert result["generated"] == {
         "requested_resolution_km": 7.3,
         "division": PARTS,
@@ -515,11 +520,32 @@ async def test_partitions_are_added_to_a_reused_mesh_and_keep_how_it_was_made(
 
 async def test_a_mesh_can_be_replaced(behavior, pipeline, tmp_path):
     meshes = str(tmp_path / "meshes")
-    await behavior.generate_mesh(CONFIG, meshes)
+    first = await behavior.generate_mesh(CONFIG, meshes)
     runs = pipeline.steps().count("jigsaw")
     result = await behavior.generate_mesh(CONFIG, meshes, overwrite=True)
     assert pipeline.steps().count("jigsaw") == runs + 1
     assert Path(result["static"]).is_file() and "reused" not in result
+    # How it was made and its report come back, with the report's path in the
+    # directory the mesh was moved to, not the one it was made in
+    assert result["generated"] == first["generated"]
+    assert result["quality"]["passed"]
+    assert result["quality"]["report_file"] == str(
+        Path(result["static"]).with_name("mesh_7.3km.quality.json")
+    )
+    assert ".new-" not in result["quality"]["report_file"]
+
+
+async def test_a_replaced_mesh_whose_report_could_not_be_written(
+    behavior, pipeline, tmp_path, monkeypatch
+):
+    async def quality(path, resolution_km=None):
+        return {**REPORT, "report_file": None}
+
+    monkeypatch.setattr(behavior, "check_mesh_quality", quality)
+    meshes = str(tmp_path / "meshes")
+    await behavior.generate_mesh(CONFIG, meshes)
+    result = await behavior.generate_mesh(CONFIG, meshes, overwrite=True)
+    assert result["quality"]["report_file"] is None
 
 
 # Requests
