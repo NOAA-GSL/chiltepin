@@ -19,7 +19,7 @@ numpy.
 """
 
 import math
-from itertools import islice
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -32,8 +32,8 @@ MIN_DIVISION = 2
 # sphtri_subdiv counts 20 N^2 triangles in 32 bits. The edges are the limit, at
 # about 0.91 km.
 MAX_DIVISION = 8460
-# Lines handled at once, so a large mesh is converted in pieces
-BLOCK = 2_000_000
+# Lines of density written at once
+DENSITY_CHUNK = 1_000_000
 
 # Names of the files the pipeline passes along, in the mesh directory
 GEOMETRY_FILE = "GEOM.msh"
@@ -152,7 +152,8 @@ def config_text(
         f"  division: {parts}",
         f"  nominal_spacing_km: {spacing_km!r}",
     ]
-    lines += [f"  {name}: {commit}" for name, commit in sorted(tools.items())]
+    # Quoted, since a commit of only digits would be read as a number
+    lines += [f"  {name}: '{commit}'" for name, commit in sorted(tools.items())]
     return "\n".join(lines) + "\n"
 
 
@@ -161,7 +162,7 @@ def convert_jigsaw(mesh_file: Path, directory: Path) -> Tuple[int, int]:
 
     ``SaveVertices`` gets the coordinates of each point and ``SaveTriangles``
     the indices of each triangle's points, one per line, as ``convert_jigsaw.py``
-    writes them, with JIGSAW's own digits. Large files are read in blocks.
+    writes them, with JIGSAW's own digits. The file is read a line at a time.
 
     Returns
     -------
@@ -175,42 +176,36 @@ def convert_jigsaw(mesh_file: Path, directory: Path) -> Tuple[int, int]:
         triangulation of a closed surface, which has ``2 P - 4`` triangles for
         ``P`` points.
     """
-    expected = {"POINT": 0, "TRIA3": 0}
+    declared = {"POINT": 0, "TRIA3": 0}
     written = {"POINT": 0, "TRIA3": 0}
-    with open(mesh_file) as source, open(directory / VERTICES_FILE, "w") as points:
-        with open(directory / TRIANGLES_FILE, "w") as triangles:
-            sinks = {"POINT": points, "TRIA3": triangles}
-            section, left = "", 0
-            while True:
-                lines = list(islice(source, BLOCK))
-                if not lines:
-                    break
-                pieces = []
-                for line in lines:
-                    if left > 0:
-                        # The last column is JIGSAW's marker, and is dropped
-                        pieces.append(line.rsplit(";", 1)[0].replace(";", " "))
-                        left -= 1
-                        written[section] += 1
-                        if left == 0:
-                            sinks[section].write("\n".join(pieces) + "\n")
-                            pieces = []
-                    elif line.startswith(("POINT=", "TRIA3=")):
-                        section = line.split("=")[0]
-                        left = expected[section] = int(line.split("=")[1])
-                if pieces:
-                    sinks[section].write("\n".join(pieces) + "\n")
-    for name, count in expected.items():
+    names = {"POINT": VERTICES_FILE, "TRIA3": TRIANGLES_FILE}
+    with ExitStack() as files:
+        source = files.enter_context(open(mesh_file))
+        sinks = {
+            section: files.enter_context(open(directory / name, "w"))
+            for section, name in names.items()
+        }
+        section, left = "", 0
+        for line in source:
+            if left > 0:
+                # The last column is JIGSAW's marker, and is dropped
+                sinks[section].write(line.rsplit(";", 1)[0].replace(";", " ") + "\n")
+                written[section] += 1
+                left -= 1
+            elif line.startswith(("POINT=", "TRIA3=")):
+                section, count = line.split("=")
+                left = declared[section] = int(count)
+    for name, count in declared.items():
         if count == 0:
             raise ValueError(f"{mesh_file} has no {name} section")
         if written[name] != count:
             raise ValueError(f"{mesh_file} has {written[name]} of {count} {name} lines")
-    if expected["TRIA3"] != 2 * expected["POINT"] - 4:
+    if declared["TRIA3"] != 2 * declared["POINT"] - 4:
         raise ValueError(
-            f"{mesh_file} has {expected['POINT']} points and {expected['TRIA3']} "
+            f"{mesh_file} has {declared['POINT']} points and {declared['TRIA3']} "
             "triangles, so it is not the triangulation of a sphere"
         )
-    return expected["POINT"], expected["TRIA3"]
+    return declared["POINT"], declared["TRIA3"]
 
 
 def write_density_files(
@@ -223,7 +218,7 @@ def write_density_files(
     with open(directory / DENSITY_FILE, "w") as density:
         remaining = points
         while remaining > 0:
-            count = min(remaining, BLOCK)
+            count = min(remaining, DENSITY_CHUNK)
             density.write("1.0\n" * count)
             remaining -= count
     (directory / CODE_FILE).write_text(density_code(spacing_km))

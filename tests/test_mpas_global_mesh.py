@@ -137,7 +137,8 @@ def test_the_density_source_is_the_uniform_function():
 
 
 def test_the_configuration_is_yaml_the_fork_reads():
-    tools = {"jigsaw": "a" * 40, "mkgrid": "b" * 40, "sphtri_subdiv": "c" * 40}
+    # The last is all digits, which YAML would read as a number if it were not quoted
+    tools = {"jigsaw": "a" * 40, "mkgrid": "1e5" + "0" * 37, "sphtri_subdiv": "7" * 40}
     text = global_mesh.config_text(7.3, 1052, 7.3003802281368824, tools)
     config = yaml.safe_load(text)
     # What mpas_jigsaw's mesh_quality.py reads
@@ -198,19 +199,6 @@ def test_the_conversion_matches_the_fork_script(tmp_path):
     ).read_bytes()
 
 
-@pytest.mark.parametrize("block", [1, 2, 3, 5, 6, 100])
-def test_the_conversion_works_in_blocks(tmp_path, monkeypatch, block):
-    """A section may start, continue and end in any block."""
-    mesh = tmp_path / "MESH.msh"
-    mesh.write_text(TETRAHEDRON)
-    global_mesh.convert_jigsaw(mesh, tmp_path)
-    whole = [(tmp_path / n).read_bytes() for n in ("SaveVertices", "SaveTriangles")]
-    monkeypatch.setattr(global_mesh, "BLOCK", block)
-    assert global_mesh.convert_jigsaw(mesh, tmp_path) == (4, 4)
-    again = [(tmp_path / n).read_bytes() for n in ("SaveVertices", "SaveTriangles")]
-    assert again == whole
-
-
 @pytest.mark.parametrize(
     "text, message",
     [
@@ -232,7 +220,7 @@ def test_a_jigsaw_mesh_that_is_not_a_sphere_is_refused(tmp_path, text, message):
 
 
 def test_the_density_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(global_mesh, "BLOCK", 3)
+    monkeypatch.setattr(global_mesh, "DENSITY_CHUNK", 3)
     global_mesh.write_density_files(tmp_path, 7, 12.5, "mesh:\n  resolution: 12.5\n")
     assert (tmp_path / "SaveDensity").read_text() == "1.0\n" * 7
     assert (tmp_path / "SaveCode").read_text() == global_mesh.density_code(12.5)
