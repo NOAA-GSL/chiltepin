@@ -269,8 +269,10 @@ def system_prompt(resolutions: Sequence[str]) -> str:
     return (
         "You turn a request for an MPAS weather model mesh into the fields of the "
         "MeshPromptResponse tool. Answer only by calling that tool.\n"
-        f"Global meshes are available at these resolutions: {', '.join(resolutions)}. "
-        "A regional mesh can have any resolution the user asks for.\n"
+        "A global mesh can have any resolution the user asks for. A rectangular "
+        "regional mesh can too. A circle, ellipse, polygon or channel is cut from "
+        "a global mesh that is already made, so it can have only one of these "
+        f"resolutions: {', '.join(resolutions)}.\n"
         "- resolution: the resolution the user asks for, such as '15km'. If they "
         "give none, use '60km'.\n"
         "- name: a short name for the mesh, made of letters, digits and "
@@ -504,9 +506,11 @@ def method_choices(
 ) -> List[Tuple[Optional[str], Optional[str]]]:
     """Return the methods and shapes to try to make a mesh with, in order.
 
-    A global mesh is downloaded, so it is made as ``(None, None)``. A circle,
-    an ellipse, a polygon and a channel are cut from a global mesh with
-    ``create_region``, so their resolution must be one of ``downloadable``. A
+    A global mesh is made as ``(None, None)``, at any resolution: it is
+    downloaded if its resolution is one of ``downloadable``, and made with
+    JIGSAW if not. A circle, an ellipse, a polygon and a channel are cut from a
+    global mesh with ``create_region``, so their resolution must be one of
+    ``downloadable``. A
     rectangle, or a region of no shape, is made with ``project_hexes`` unless
     ``create_region`` is chosen, which cuts a polygon around it.
 
@@ -548,12 +552,6 @@ def method_choices(
         if asked_shape or asked_method:
             raise ValueError(
                 "A shape or method is for a regional mesh, so name the places it covers"
-            )
-        if not downloaded:
-            raise ValueError(
-                f"Global meshes are available at {available}, not "
-                f"{answer.resolution}. Name a region to make a mesh at another "
-                "resolution."
             )
         return [(None, None)]
 

@@ -461,6 +461,17 @@ async def test_invalid_request_from_a_prompt_is_rejected(monkeypatch, behavior):
         await behavior.mesh_config_from_prompt("Texas", MODEL)
 
 
+async def test_a_global_request_from_a_prompt_may_have_any_resolution(
+    monkeypatch, behavior
+):
+    mark_prompting_installed(behavior)
+    request = {"resolution": "7km", "name": "global_7km"}
+    fake_read_prompt(monkeypatch, behavior, {"mesh_config": request})
+    assert (
+        await behavior.mesh_config_from_prompt("a global 7 km mesh", MODEL) == request
+    )
+
+
 async def test_request_from_a_prompt_with_a_prompt_is_rejected(monkeypatch, behavior):
     # It would pass as a request with a prompt, which would be read again
     mark_prompting_installed(behavior)
