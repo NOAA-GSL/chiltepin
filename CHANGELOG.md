@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     with MPAS-Limited-Area's `create_region`
   - Draws an image of a mesh with `plot_mesh`, or with `"plot": True` in a request, where a
     plot that fails does not fail the request
+  - Installs the tools that make global meshes, JIGSAW, `mkgrid` and `sphtri_subdiv`, on
+    demand, with `install_jigsaw`, `install_mkgrid`, `install_sphtri_subdiv` and
+    `install_global_mesh_tools`, each recording the commit it was built from
   - Checks a mesh with `check_mesh_quality`: errors for connectivity, Voronoi and area
     inconsistencies and the 12 pentagons a closed mesh needs, and warnings for red flags in
     cell shapes and size changes, which the user weighs. It writes `<name>.quality.json`

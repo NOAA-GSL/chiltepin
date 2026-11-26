@@ -39,6 +39,13 @@ Requirements
 * For ``create_region`` regional meshes, ``git`` on the ``service`` resource,
   to clone MPAS-Limited-Area, and the ``mpas`` extra on the ``compute``
   resource, whose Python runs the ``create_region`` program.
+* To install the tools that make global meshes, ``git`` on the ``service``
+  resource, and on the ``compute`` resource CMake, a C compiler, a C++ compiler,
+  MPI with its C compiler wrapper ``mpicc``, and the PnetCDF library. The build
+  finds PnetCDF through the ``PNETCDF`` environment variable, or if that is not
+  set through ``pnetcdf-config``, which PnetCDF's module puts on the ``PATH``. The
+  ``mkgrid`` program is an MPI program, so the ``mpi`` resource must load the
+  same MPI and PnetCDF as ``compute`` does.
 * For plotting, network access to Natural Earth on the ``service`` resource,
   to download the map layers the plots draw. cartopy publishes Linux wheels for
   Python 3.10 only for x86_64, so on an ARM machine with Python 3.10 the
@@ -82,6 +89,27 @@ Pass these arguments to ``manager.launch(MeshAgent, ...)``:
    leading ``v``, such as ``2.2``. Defaults to ``2.2``. Anything else raises
    ``ValueError``.
 
+``kwargs={"jigsaw_version": "3777fe7f00815295a94065cdcaca27bcb3c2106e"}``
+   Optional agent argument. The JIGSAW revision to install, a branch, a tag or
+   a commit given in full, from ``github.com/dengwirda/jigsaw``. JIGSAW has no
+   recent release to name, so this defaults to the commit that was tested.
+   Anything that is not a plain branch, tag or commit name raises
+   ``ValueError``.
+``kwargs={"mkgrid_version": "feature/nesting"}``
+   Optional agent argument. The revision of the ``mpas_jigsaw`` fork,
+   ``github.com/christopherwharrop-noaa/mpas_jigsaw``, to build ``mkgrid``
+   from, as a branch, tag or commit given in full. The fork has bug fixes the
+   original ``mkgrid`` lacks. It defaults to the branch ``feature/nesting``
+   until the fork has a tag, so the commit it resolves to when it is installed
+   is recorded. Anything but a plain branch, tag or commit name raises
+   ``ValueError``.
+``kwargs={"mesh_tools_version": "4967f0fbb278584c11b3057c3eb4396d199f030b"}``
+   Optional agent argument. The revision of ``github.com/mgduda/mesh_tools``,
+   which ``sphtri_subdiv`` is built from, as a branch, tag or commit given in
+   full. The repository has no tags, so this defaults to the commit that was
+   tested. Anything but a plain branch, tag or commit name raises
+   ``ValueError``. A name of any of these three is limited to 200 characters, with
+   each ``/`` counting as three.
 ``kwargs={"nominatim_contact": "you@example.org"}``
    Optional agent argument. The email address of whoever runs the agent, sent
    to OpenStreetMap's Nominatim service with each request when a prompt names
@@ -578,6 +606,37 @@ Actions
    a missing one before it starts any download. This runs automatically when a
    ``project_hexes`` request needs it, so calling it is optional.
 
+``install_jigsaw()``, ``install_mkgrid()`` and ``install_sphtri_subdiv()``
+   Download and build the tools that make global meshes in ``work_dir``, unless
+   a finished install is already there. JIGSAW makes the points and triangles
+   of a mesh, ``sphtri_subdiv`` divides an icosahedron into the points that start
+   a quasi-uniform mesh, and ``mkgrid`` makes an MPAS mesh from them.
+   ``install_mkgrid()`` also installs the ``ICOS.msh`` and ``GEOM.msh`` files of
+   the fork. Each revision is fetched on the ``service`` resource, and only that
+   revision is transferred, and built on the ``compute`` resource, as the
+   requirements above describe. The installs are in
+   ``work_dir/jigsaw/<jigsaw_version>``, ``work_dir/mkgrid/<mkgrid_version>`` and
+   ``work_dir/mesh-tools/<mesh_tools_version>``, where a ``/`` in a branch name is
+   written ``%2F``.
+   Like ``install_metis()``, a finished build leaves a ``.installed`` marker, and
+   an install counts only if the marker and its programs and files exist, which
+   is checked on every call, so a damaged install is rebuilt. The marker holds
+   the commit the install was built from, which differs from the version if that
+   is a branch or tag. A branch is fetched once: an install of a branch is not
+   compared with the repository again, so to build a newer commit of it, name
+   the commit, or remove the install directory. The sources are fetched in
+   ``.build`` next to the install directories, and a failed build keeps them. A build starts from an empty install directory, and its
+   sources are removed after a successful build. Requests that need a tool while
+   it is being installed wait for that install. If CMake, a compiler, ``mpicc``
+   or PnetCDF is missing on the ``compute`` resource, the build stops with a
+   message naming it and leaves an existing install alone. The logs are
+   ``<tool>_download.*`` and ``<tool>_build.*`` in ``work_dir/logs``, where
+   ``<tool>`` is ``jigsaw``, ``mkgrid`` or ``sphtri_subdiv``. Installing needs
+   the ``service`` and ``compute`` resources, and raises ``RuntimeError`` naming a
+   missing one before it starts any download.
+``install_global_mesh_tools()``
+   Installs JIGSAW, ``mkgrid`` and ``sphtri_subdiv`` in turn, leaving any that
+   is already installed alone, and stops at the first that fails.
 ``install_limited_area()``
    Installs MPAS-Limited-Area, whose ``create_region`` program is a Python
    script, in ``work_dir``, unless a finished install is already there. On the
