@@ -456,8 +456,8 @@ async def test_prompt_that_cannot_be_read(monkeypatch, behavior):
 async def test_invalid_request_from_a_prompt_is_rejected(monkeypatch, behavior):
     # The request is checked as any other is, whatever the task returned
     mark_prompting_installed(behavior)
-    fake_read_prompt(monkeypatch, behavior, {"mesh_config": {"resolution": "7km"}})
-    with pytest.raises(ValueError, match="not supported"):
+    fake_read_prompt(monkeypatch, behavior, {"mesh_config": {"resolution": "0.5km"}})
+    with pytest.raises(ValueError, match="parts per edge"):
         await behavior.mesh_config_from_prompt("Texas", MODEL)
 
 
