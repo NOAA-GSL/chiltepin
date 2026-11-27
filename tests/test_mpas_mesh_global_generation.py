@@ -811,7 +811,9 @@ async def test_a_tool_with_no_recorded_commit_is_an_error(
     )
     with pytest.raises(RuntimeError, match="install of mkgrid has no commit recorded"):
         await behavior.generate_mesh(CONFIG, str(tmp_path / "meshes"))
+    # Nothing was copied or run, and the name is free
     assert pipeline.calls == []
+    assert not (tmp_path / "meshes" / "mesh_7.3km").exists()
 
 
 async def test_a_jigsaw_mesh_of_another_size_is_made_and_reported(
@@ -867,3 +869,60 @@ def test_a_ucar_resolution_written_another_way_can_be_cut_too(behavior):
 def test_what_is_not_a_ucar_resolution_is_left_as_it_is(behavior):
     for resolution in ("7.3km", "abc", 5, None, ["10km"], "120"):
         assert behavior._canonical_resolution(resolution) == resolution
+
+
+HEXES = {
+    "project_hexes": {
+        "center_lat": 40.0,
+        "center_lon": -100.0,
+        "extent_x_km": 500,
+        "extent_y_km": 500,
+    }
+}
+
+
+def test_a_made_mesh_differs_from_a_downloaded_one(behavior):
+    made = {"resolution": "10km", "regional": None}
+    requested = behavior._mesh_identity({"resolution": "7.3km"})
+    differences = behavior._mesh_differences(made, requested)
+    # The resolutions are compared, since the downloaded mesh has no division
+    assert "it is 10km, not 7.3km" in differences
+    assert any("it was made with JIGSAW" in difference for difference in differences)
+
+
+def test_a_downloaded_mesh_differs_from_a_made_one_the_other_way(behavior):
+    made = behavior._mesh_identity({"resolution": "7.3km"})
+    requested = {"resolution": "10km", "regional": None}
+    assert behavior._mesh_differences(made, requested) == ["it is 7.3km, not 10km"]
+
+
+def test_a_made_mesh_differs_from_a_regional_one(behavior):
+    made = behavior._mesh_identity({"resolution": "7.3km"})
+    requested = behavior._mesh_identity({"resolution": "7.3km", "regional": HEXES})
+    assert "it is a global mesh, not a project_hexes mesh" in (
+        behavior._mesh_differences(made, requested)
+    )
+
+
+def test_the_division_decides_between_made_meshes(behavior):
+    made = behavior._mesh_identity({"resolution": "7.3km"})
+    same = behavior._mesh_identity({"resolution": "7.301km"})
+    other = behavior._mesh_identity({"resolution": "7.4km"})
+    assert behavior._mesh_differences(made, same) == []
+    assert behavior._mesh_differences(made, other) == [
+        f"it has {PARTS} divisions, not 1038"
+    ]
+
+
+async def test_a_project_hexes_mesh_keeps_its_resolution_as_written(
+    behavior, pipeline, tmp_path, monkeypatch
+):
+    """Only a mesh that is downloaded is named by the downloaded mesh's name."""
+    made = AsyncMock(return_value={"static": "/s", "graph": "/g"})
+    monkeypatch.setattr(behavior, "_generate_project_hexes_mesh", made)
+    monkeypatch.setattr(behavior, "install_mpas_tools", AsyncMock())
+    config = {"resolution": "15.0km", "regional": HEXES}
+    await behavior.generate_mesh(config, str(tmp_path / "meshes"))
+    # The name and the record are as they were before meshes could be made
+    assert (tmp_path / "meshes" / "mesh_15.0km").is_dir()
+    assert made.await_args.args[2] == "15.0km"

@@ -3585,8 +3585,10 @@ class _MeshBehavior:
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
-        # A downloaded mesh is asked for by its name, however it is written
-        if self._canonical_resolution(resolution) != resolution:
+        # A downloaded mesh is asked for by its name, however it is written. A
+        # project_hexes mesh is made at any resolution, so its name stands.
+        cut_or_global = regional is None or "create_region" in regional
+        if cut_or_global and self._canonical_resolution(resolution) != resolution:
             resolution = self._canonical_resolution(resolution)
             mesh_config = {**mesh_config, "resolution": resolution}
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
