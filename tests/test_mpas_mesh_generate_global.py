@@ -110,4 +110,13 @@ async def test_real_global_mesh(mesh_test_directory, launch_mesh_agent):
         assert "reused" not in replaced
         assert replaced["generated"]["cells"] == CELLS
         assert replaced["quality"]["passed"]
+        # The report is where the replaced mesh is, whether the request that
+        # replaced it or one that reuses it is asked, though it was written
+        # before the new mesh's directory was renamed
+        report_file = str(mesh_dir / "globe.quality.json")
+        assert replaced["quality"]["report_file"] == report_file
+        reused = await agent.generate_mesh(REQUEST, mesh_data_dir)
+        assert reused["reused"] is True
+        assert reused["quality"]["report_file"] == report_file
+        assert Path(report_file).is_file()
     assert len(list((work / "logs").glob("jigsaw.*.stderr"))) == runs + 1

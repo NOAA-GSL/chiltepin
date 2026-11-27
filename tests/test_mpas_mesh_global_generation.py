@@ -19,6 +19,7 @@ from netCDF4 import Dataset  # noqa: F401  (the mpas extra is needed to run thes
 from parsl.app.errors import BashExitFailure
 
 from chiltepin.agents.mpas import _global_mesh as global_mesh
+from chiltepin.agents.mpas import mesh as mesh_module
 from chiltepin.agents.mpas.mesh import _MeshBehavior
 
 COMMITS = {"jigsaw": "1" * 40, "mkgrid": "2" * 40, "sphtri_subdiv": "3" * 40}
@@ -137,7 +138,9 @@ class Pipeline:
             self.calls.append(("quality", path, resolution_km))
             # The report is written next to the mesh, as the action writes it
             report_file = _MeshBehavior._quality_path(Path(path))
-            return {**self.report, "report_file": str(report_file)}
+            report = {**self.report, "report_file": str(report_file)}
+            report_file.write_text(json.dumps(report))
+            return report
 
         monkeypatch.setattr(behavior_, "_run_sphtri_subdiv", Mock(side_effect=sphtri))
         monkeypatch.setattr(behavior_, "_run_jigsaw", Mock(side_effect=jigsaw))
@@ -205,6 +208,7 @@ async def test_a_mesh_is_made_with_the_tools(behavior, pipeline, tmp_path):
         "division": PARTS,
         "nominal_spacing_km": spacing,
         "cells": 11067042,
+        "expected_cells": 11067042,
         "tools": COMMITS,
     }
     assert "reused" not in result
@@ -221,6 +225,7 @@ async def test_the_directory_keeps_only_what_the_mesh_needs(
         "MESH.jig",
         "mesh_7.3km.graph.info",
         "mesh_7.3km.mesh.json",
+        "mesh_7.3km.quality.json",
         "mesh_7.3km.static.nc",
     ]
     # The sphere and the icosahedron are those the install keeps
@@ -445,15 +450,29 @@ async def test_a_finished_mesh_is_reused(behavior, pipeline, tmp_path):
     meshes = str(tmp_path / "meshes")
     first = await behavior.generate_mesh(CONFIG, meshes)
     calls = len(pipeline.calls)
-    # The report of the first run is the one written next to the mesh
-    Path(first["static"]).with_name("mesh_7.3km.quality.json").write_text(
-        json.dumps(REPORT)
-    )
     second = await behavior.generate_mesh(CONFIG, meshes)
     assert len(pipeline.calls) == calls
     assert second["reused"] is True
     assert second["generated"] == first["generated"]
-    assert second["quality"] == REPORT
+    # The report the first run wrote next to the mesh
+    assert second["quality"] == first["quality"]
+
+
+async def test_a_reused_replaced_mesh_names_where_its_report_is_now(
+    behavior, pipeline, tmp_path
+):
+    meshes = str(tmp_path / "meshes")
+    await behavior.generate_mesh(CONFIG, meshes)
+    await behavior.generate_mesh(CONFIG, meshes, overwrite=True)
+    again = await behavior.generate_mesh(CONFIG, meshes)
+    report_file = again["quality"]["report_file"]
+    # The stored report was written before the new mesh's directory was renamed
+    stored = json.loads(Path(report_file).read_text())
+    assert ".new-" in stored["report_file"]
+    assert report_file == str(
+        tmp_path / "meshes" / "mesh_7.3km" / "mesh_7.3km.quality.json"
+    )
+    assert Path(report_file).is_file()
 
 
 async def test_a_reused_mesh_has_no_report_if_there_is_none(
@@ -493,8 +512,20 @@ async def test_a_mesh_of_another_division_is_not_reused(behavior, pipeline, tmp_
     await behavior.generate_mesh({**CONFIG, "name": "m"}, meshes)
     with pytest.raises(FileExistsError) as info:
         await behavior.generate_mesh({"resolution": "7.4km", "name": "m"}, meshes)
-    assert "it is 7.3km, not 7.4km" in str(info.value)
     assert f"it has {PARTS} divisions, not 1038" in str(info.value)
+    # The mesh is the same however its resolution is written, so it is not said
+    assert "it is 7.3km" not in str(info.value)
+
+
+@pytest.mark.parametrize("written", ["7.30km", "7.3000km", "7.301km", "07.3km"])
+async def test_a_resolution_written_another_way_finds_the_same_mesh(
+    behavior, pipeline, tmp_path, written
+):
+    """7.301km is 1051.9 divisions, which is the 1052 of 7.3km."""
+    meshes = str(tmp_path / "meshes")
+    first = await behavior.generate_mesh({**CONFIG, "name": "m"}, meshes)
+    again = await behavior.generate_mesh({"resolution": written, "name": "m"}, meshes)
+    assert again["reused"] is True and again["generated"] == first["generated"]
 
 
 async def test_partitions_are_added_to_a_reused_mesh_and_keep_how_it_was_made(
@@ -767,3 +798,72 @@ def test_the_tools_commits_are_what_the_markers_hold(behavior):
     assert behavior._installed_commit(behavior._jigsaw_prefix) == COMMITS["jigsaw"]
     shutil.rmtree(behavior._jigsaw_prefix)
     assert behavior._installed_commit(behavior._jigsaw_prefix) is None
+
+
+async def test_a_tool_with_no_recorded_commit_is_an_error(
+    behavior, pipeline, tmp_path, monkeypatch
+):
+    original = behavior._installed_commit
+    monkeypatch.setattr(
+        behavior,
+        "_installed_commit",
+        lambda prefix: None if prefix == behavior._mkgrid_prefix else original(prefix),
+    )
+    with pytest.raises(RuntimeError, match="install of mkgrid has no commit recorded"):
+        await behavior.generate_mesh(CONFIG, str(tmp_path / "meshes"))
+    assert pipeline.calls == []
+
+
+async def test_a_jigsaw_mesh_of_another_size_is_made_and_reported(
+    behavior, pipeline, tmp_path, monkeypatch
+):
+    pipeline.prepared = {"points": 11067000, "triangles": 22133996}
+    logger = Mock()
+    monkeypatch.setattr(mesh_module, "logger", logger)
+    result = await behavior.generate_mesh(CONFIG, str(tmp_path / "meshes"))
+    assert result["generated"]["cells"] == 11067000
+    assert result["generated"]["expected_cells"] == 11067042
+    assert "JIGSAW made %d points" in logger.warning.call_args.args[0]
+    assert logger.warning.call_args.args[1:] == (11067000, 11067042)
+
+
+async def test_the_cells_are_the_ones_the_division_gives(behavior, pipeline, tmp_path):
+    result = await behavior.generate_mesh(CONFIG, str(tmp_path / "meshes"))
+    assert result["generated"]["cells"] == result["generated"]["expected_cells"]
+
+
+# A resolution written another way than a downloaded mesh's name
+
+
+@pytest.mark.parametrize("written", ["120.0km", "120.000km", "0120km"])
+async def test_a_ucar_resolution_is_downloaded_however_it_is_written(
+    behavior, pipeline, tmp_path, monkeypatch, written
+):
+    assert not behavior._is_generated_global({"resolution": written})
+    behavior._validate_mesh_config({"resolution": written})
+    download = AsyncMock(return_value={"static": "/s", "graph": "/g"})
+    monkeypatch.setattr(behavior, "download_global_mesh", download)
+    monkeypatch.setattr(Path, "symlink_to", lambda self, target: None)
+    result = await behavior.generate_mesh({"resolution": written}, str(tmp_path / "m"))
+    # Under the name of the mesh, as 120km is asked for
+    assert result["static"].endswith("/mesh_120km/mesh_120km.static.nc")
+    download.assert_awaited_once_with("120km", str(tmp_path / "m"))
+    assert pipeline.calls == []
+
+
+def test_a_ucar_resolution_written_another_way_can_be_cut_too(behavior):
+    behavior._validate_mesh_config(
+        {
+            "resolution": "10.0km",
+            "regional": {
+                "create_region": {
+                    "circle": {"center_lat": 39, "center_lon": -105, "radius_km": 400}
+                }
+            },
+        }
+    )
+
+
+def test_what_is_not_a_ucar_resolution_is_left_as_it_is(behavior):
+    for resolution in ("7.3km", "abc", 5, None, ["10km"], "120"):
+        assert behavior._canonical_resolution(resolution) == resolution

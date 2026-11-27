@@ -247,8 +247,10 @@ Actions
    it is made with JIGSAW, as described under `Supported global resolutions`_.
    A made mesh's result also has ``"generated"``, how it was made: the
    ``requested_resolution_km``, the ``division`` of the icosahedron's edges, the
-   ``nominal_spacing_km`` of the mesh, its ``cells``, and the ``tools``, the
-   commit each tool was built from. It has ``"quality"`` too, the report of
+   ``nominal_spacing_km`` of the mesh, its ``cells`` and the ``expected_cells``
+   the division gives, and the ``tools``, the commit each tool was built from. The
+   two counts differ only if JIGSAW changed the points it started from, which is
+   logged as a warning, and the quality report then warns too. It has ``"quality"`` too, the report of
    ``check_mesh_quality``. Warnings, such as a quasi-uniform mesh that does not
    have exactly 12 pentagons, are only reported. A mesh whose report has errors
    is not kept, and the request raises ``RuntimeError`` naming them. A reused
@@ -400,7 +402,8 @@ Actions
    name that exists in ``mesh_data_dir`` reuses that mesh if it matches: the
    same ``resolution`` and ``regional`` block, and for a regional mesh the
    same ``mpas_tools_version`` or ``limited_area_version`` that made it, and
-   for a made global mesh the same number of divisions and the same
+   for a made global mesh the same number of divisions, however the resolution is
+   written, so ``7.3km`` and ``7.30km`` are one mesh, and the same
    ``jigsaw_version``, ``mkgrid_version`` and ``mesh_tools_version``, which are
    compared as given, not as the commits they resolved to. The
    rank counts and ``plot`` do not count. Partitions the mesh lacks, or that
@@ -739,7 +742,8 @@ Supported global resolutions
 A global mesh without ``regional`` can have any resolution from ``0.91km`` to
 ``5120km``. These 16 are downloaded from UCAR: ``480km``, ``384km``, ``240km``,
 ``120km``, ``60km``, ``48km``, ``30km``, ``24km``, ``15km``, ``12km``, ``10km``,
-``7.5km``, ``5km``, ``4km``, ``3.75km``, and ``3km``. Any other is made. Only
+``7.5km``, ``5km``, ``4km``, ``3.75km``, and ``3km``, however they are written, so
+``120.0km`` is ``120km``. Any other is made. Only
 the downloaded ones can be cut with ``create_region``, so a ``create_region``
 mesh needs one of them.
 
@@ -757,7 +761,8 @@ which is where ``0.91km`` and ``5120km`` come from. Nothing else limits the size
 
 Starting JIGSAW from the divided icosahedron is what keeps the mesh quasi-uniform:
 it has exactly 12 pentagons and no other cell that is not a hexagon, where
-JIGSAW alone makes thousands of pentagon and heptagon pairs. The mesh's
+JIGSAW alone makes thousands of pentagon and heptagon pairs. If a mesh does not,
+its quality report warns, and the mesh is kept. The mesh's
 ``mesh_config`` attribute and ``densityFunctionCode`` variable record how it was
 made, in the form the ``mpas_jigsaw`` repository writes them. The large files
 the steps pass along are removed once the mesh is complete, and the directory

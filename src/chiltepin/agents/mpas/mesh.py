@@ -428,6 +428,19 @@ class _MeshBehavior:
             identity["mesh_tools_version"] = self.mesh_tools_version
         return identity
 
+    def _canonical_resolution(self, resolution: Any) -> Any:
+        """Return a downloaded mesh's resolution as it is named, however it is written.
+
+        ``"120.0km"`` is ``"120km"``. Anything else, including what is not a
+        resolution, is returned as it was.
+        """
+        if isinstance(resolution, str) and _RESOLUTION_KM_RE.fullmatch(resolution):
+            number = float(resolution[:-2])
+            for name in self.resolution_cells:
+                if float(name[:-2]) == number:
+                    return name
+        return resolution
+
     def _is_generated_global(self, mesh_config: Dict[str, Any]) -> bool:
         """Whether a validated request is for a global mesh that is made, not downloaded.
 
@@ -436,7 +449,8 @@ class _MeshBehavior:
         """
         return (
             mesh_config.get("regional") is None
-            and mesh_config.get("resolution", "120km") not in self.resolution_cells
+            and self._canonical_resolution(mesh_config.get("resolution", "120km"))
+            not in self.resolution_cells
         )
 
     @staticmethod
@@ -514,7 +528,10 @@ class _MeshBehavior:
             return "a project_hexes mesh"
 
         differences = []
-        if made.get("resolution") != requested["resolution"]:
+        # Made meshes are the same mesh at the same division, however the
+        # resolution is written, such as 7.3km and 7.30km
+        by_division = "division" in made and "division" in requested
+        if not by_division and made.get("resolution") != requested["resolution"]:
             differences.append(
                 f"it is {made.get('resolution')}, not {requested['resolution']}"
             )
@@ -593,7 +610,7 @@ class _MeshBehavior:
         regional = mesh_config.get("regional")
         if regional is not None:
             self._validate_regional(regional)
-        resolution = mesh_config.get("resolution", "120km")
+        resolution = self._canonical_resolution(mesh_config.get("resolution", "120km"))
         if regional is not None and "create_region" in regional:
             # create_region cuts a region from a downloaded global mesh, so only
             # the available resolutions can be used
@@ -3140,6 +3157,12 @@ class _MeshBehavior:
             "mkgrid": self._installed_commit(self._mkgrid_prefix),
             "sphtri_subdiv": self._installed_commit(self._sphtri_subdiv_prefix),
         }
+        unrecorded = [name for name, commit in tools.items() if commit is None]
+        if unrecorded:
+            raise RuntimeError(
+                f"The install of {', '.join(unrecorded)} has no commit recorded in "
+                "its .installed marker. Remove the install so it is made again."
+            )
         # The sphere and the icosahedron JIGSAW and sphtri_subdiv start from
         for source in (self._geometry_file, self._icosahedron_file):
             shutil.copyfile(source, mesh_dir / source.name)
@@ -3169,6 +3192,15 @@ class _MeshBehavior:
             raise RuntimeError(f"Preparing the inputs of mkgrid failed: {e}") from e
         if "error" in prepared:
             raise RuntimeError(f"JIGSAW's mesh cannot be used: {prepared['error']}")
+        expected_cells = _global_mesh.cell_count(parts)
+        if prepared["points"] != expected_cells:
+            # Not the divided icosahedron's mesh, so not quasi-uniform with 12
+            # pentagons, which the quality report says too
+            logger.warning(
+                "JIGSAW made %d points from the %d of the divided icosahedron",
+                prepared["points"],
+                expected_cells,
+            )
         ranks, per_node = self.mkgrid_ranks, self.mkgrid_ranks_per_node
         await self._run_program(
             self._run_mkgrid,
@@ -3207,6 +3239,7 @@ class _MeshBehavior:
                 "division": parts,
                 "nominal_spacing_km": spacing,
                 "cells": prepared["points"],
+                "expected_cells": expected_cells,
                 "tools": tools,
             },
         }
@@ -3552,6 +3585,10 @@ class _MeshBehavior:
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
+        # A downloaded mesh is asked for by its name, however it is written
+        if self._canonical_resolution(resolution) != resolution:
+            resolution = self._canonical_resolution(resolution)
+            mesh_config = {**mesh_config, "resolution": resolution}
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
 
         # Check resources before creating anything, so a request that cannot
@@ -3819,11 +3856,15 @@ class _MeshBehavior:
             result["partitions"] = {rank: f"{graph}.part.{rank}" for rank in ranks}
         if isinstance(record.get("generated"), dict):
             result["generated"] = record["generated"]
+            report_file = self._quality_path(static)
             try:
-                report = json.loads(self._quality_path(static).read_text())
+                report = json.loads(report_file.read_text())
             except (OSError, ValueError):
                 report = None
             if isinstance(report, dict):
+                # Where it is now, not where it was written: a replaced mesh's
+                # report was written before its directory was renamed
+                report["report_file"] = str(report_file)
                 result["quality"] = report
         result["reused"] = True
         return result

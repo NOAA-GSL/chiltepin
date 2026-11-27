@@ -27,7 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Makes global meshes at any resolution from 0.91km to 5120km, with `generate_mesh`, as Duda's
     "Generating meshes for MPAS-Atmosphere" describes: `sphtri_subdiv` divides an icosahedron,
     JIGSAW meshes the sphere from its points, and `mkgrid`, run on an `mpi` resource, makes the
-    MPAS mesh, with exactly 12 pentagons. The 16 UCAR resolutions are still downloaded. A made
+    MPAS mesh, which has 12 pentagons and otherwise hexagons, and a quality warning says if
+    it does not. The 16 UCAR resolutions are still downloaded. A made
     mesh's result has `generated`, how it was made, and `quality`, its quality report, and a
     mesh with errors in its report is not kept. A prompt can ask for one too. `create_region`
     still cuts only a downloaded mesh
