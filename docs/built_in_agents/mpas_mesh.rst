@@ -178,7 +178,10 @@ The agent workflow configuration must contain these resources:
    Runs ``mkgrid`` on the ranks the ``mkgrid_ranks`` and
    ``mkgrid_ranks_per_node`` launch arguments give, when a global mesh is made.
    It is a resource with ``mpi: True`` in its configuration, which launches the
-   program with the ``mpi_launcher`` it defines. It must load the same MPI and
+   program with the ``mpi_launcher`` it defines. Parsl runs MPI programs only
+   under a batch scheduler such as Slurm or PBS, so this resource cannot use the
+   ``localhost`` provider, which fails with "mpi_mode does not support
+   scheduler". The other resources can. It must load the same MPI and
    PnetCDF as ``compute``, which built ``mkgrid``, and see ``work_dir`` and the
    mesh output directory at the same absolute paths as the agent. Requests that
    do not make a global mesh do not use it.
@@ -191,6 +194,10 @@ For local execution:
        "service": {"provider": "localhost"},
        "compute": {"provider": "localhost"},
    }
+
+A local configuration like this one has no ``mpi`` resource, so it can download
+global meshes and make regional ones, but cannot make a global mesh at a
+resolution that is not downloaded.
 
 The ``environment`` setting of a resource lists the commands that run before its
 tasks, which is where to load modules. For regional meshes, the ``compute``
