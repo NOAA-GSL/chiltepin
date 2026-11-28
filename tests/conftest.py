@@ -38,6 +38,25 @@ def mesh_test_directory(config_file, request):
     yield path
     if request.session.testsfailed == failed_before:
         shutil.rmtree(path, ignore_errors=True)
+    else:
+        print_agent_logs(path / "work" / "logs")
+
+
+def print_agent_logs(logs, limit=4000):
+    """Print the end of each log the agent's programs wrote, for a failed test.
+
+    CI keeps only what a job prints, so this is how a program's own error, such as
+    JIGSAW's, reaches the job's log. Each log is cut to its last ``limit``
+    characters.
+    """
+    if not logs.is_dir():
+        return
+    for log in sorted(logs.iterdir()):
+        if not log.is_file() or log.stat().st_size == 0:
+            continue
+        text = log.read_text(errors="replace")
+        print(f"\n===== {log} ({log.stat().st_size} bytes) =====")
+        print(text[-limit:])
 
 
 @pytest.fixture(scope="module")
