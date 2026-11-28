@@ -405,7 +405,7 @@ async def test_generate_mesh_rejects_invalid_name(tmp_path, mesh_agent, name):
 @pytest.mark.asyncio(loop_scope="module")
 async def test_generate_mesh_rejects_unsupported_resolution(tmp_path, mesh_agent):
     output = tmp_path / "meshes"
-    with pytest.raises(ValueError, match="not supported"):
+    with pytest.raises(ValueError, match="is not valid"):
         await mesh_agent.generate_mesh({"resolution": "unknown"}, str(output))
     assert not output.exists()
 
@@ -658,8 +658,8 @@ def test_validate_mesh_config_rejects_invalid_ranks(behavior, key, value):
         (None, "must be a dict"),
         ([], "must be a dict"),
         ({"forecast_rank": 4}, "Unknown mesh_config keys: forecast_rank"),
-        ({"resolution": "1km"}, "not supported"),
-        ({"resolution": ["480km"]}, "not supported"),
+        ({"resolution": "0.5km"}, "parts per edge"),
+        ({"resolution": ["480km"]}, "is not valid"),
         ({"name": ""}, "valid file name"),
         ({"name": "a/b"}, "valid file name"),
         ({"name": 5}, "valid file name"),
@@ -781,9 +781,10 @@ def test_validate_mesh_config_accepts_regional_defaults_and_rotation(behavior):
     behavior._validate_mesh_config(regional_config(center_lon=270, center_lat=-80))
 
 
-def test_global_resolutions_stay_limited_to_the_available_meshes(behavior):
-    with pytest.raises(ValueError, match="not supported"):
-        behavior._validate_mesh_config({"resolution": "2km"})
+def test_global_resolutions_are_any_the_tools_can_make(behavior):
+    behavior._validate_mesh_config({"resolution": "2km"})
+    with pytest.raises(ValueError, match="parts per edge"):
+        behavior._validate_mesh_config({"resolution": "0.5km"})
 
 
 @pytest.mark.parametrize(
@@ -3502,7 +3503,7 @@ async def test_failed_request_removes_the_whole_mesh_directory(
         ({"forecast_ranks": 0}, "forecast_ranks must be a positive integer"),
         ({"name": "x1.2562.graph.info"}, "downloaded global mesh file"),
         ({"name": "x1.40962.static.nc"}, "downloaded global mesh file"),
-        ({"resolution": ["480km"]}, "not supported"),
+        ({"resolution": ["480km"]}, "is not valid"),
     ],
 )
 async def test_generate_mesh_rejects_bad_config_before_any_work(
@@ -3696,7 +3697,7 @@ def test_build_script_survives_a_failed_source_cleanup():
 
 
 @pytest.mark.parametrize(
-    "config", [{"name": "a/b", "forecast_ranks": 4}, {"resolution": "1km"}]
+    "config", [{"name": "a/b", "forecast_ranks": 4}, {"resolution": "0.5km"}]
 )
 async def test_ensure_tools_installed_validates_the_config(
     monkeypatch, behavior, config

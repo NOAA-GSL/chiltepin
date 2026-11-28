@@ -212,9 +212,12 @@ def test_latitudes_without_a_channel_are_dropped():
     assert (answer.upper_lat, answer.lower_lat) == (None, None)
 
 
-def test_system_prompt_lists_the_resolutions():
+def test_system_prompt_says_which_resolutions_each_mesh_can_have():
     text = prompt.system_prompt(RESOLUTIONS)
-    assert "480km, 120km, 60km, 15km" in text
+    assert "A global mesh can have any resolution the user asks for" in text
+    # Only cuts need one of the downloaded resolutions
+    cuts = text.split("A circle, ellipse, polygon or channel is cut from")[1]
+    assert "can have only one of these resolutions: 480km, 120km, 60km, 15km" in cuts
     assert "MeshPromptResponse" in text
     assert "'Europe' does not include Russia" in text
     assert "'Georgia (country)'" in text
@@ -402,8 +405,10 @@ CUT_RECTANGLE = ("create_region", "rectangle")
 @pytest.mark.parametrize(
     ("fields", "choices"),
     [
-        # A global mesh is downloaded
+        # A global mesh is downloaded, or made at a resolution that cannot be
         ({"region_names": []}, [(None, None)]),
+        ({"region_names": [], "resolution": "7km"}, [(None, None)]),
+        ({"region_names": [], "resolution": "0.5km"}, [(None, None)]),
         # A region of no shape is a project_hexes rectangle first, with the
         # create_region shapes after
         ({}, [PH, POLYGON, CIRCLE, ELLIPSE, CUT_RECTANGLE]),
@@ -526,11 +531,6 @@ def test_method_choices_keep_what_the_prompt_asks_for(text, fields, choices):
     ("text", "fields", "message"),
     [
         # Nothing can be made as asked for
-        (
-            "a global 7 km mesh",
-            {"region_names": [], "resolution": "7km"},
-            "Global meshes are available at",
-        ),
         (
             "a global circle mesh",
             {"region_names": [], "shape": "circle"},

@@ -38,6 +38,25 @@ def mesh_test_directory(config_file, request):
     yield path
     if request.session.testsfailed == failed_before:
         shutil.rmtree(path, ignore_errors=True)
+    else:
+        print_agent_logs(path / "work" / "logs")
+
+
+def print_agent_logs(logs, limit=4000):
+    """Print the end of each log the agent's programs wrote, for a failed test.
+
+    CI keeps only what a job prints, so this is how a program's own error, such as
+    JIGSAW's, reaches the job's log. Each log is cut to its last ``limit``
+    characters.
+    """
+    if not logs.is_dir():
+        return
+    for log in sorted(logs.iterdir()):
+        if not log.is_file() or log.stat().st_size == 0:
+            continue
+        text = log.read_text(errors="replace")
+        print(f"\n===== {log} ({log.stat().st_size} bytes) =====")
+        print(text[-limit:])
 
 
 @pytest.fixture(scope="module")
@@ -49,8 +68,9 @@ def launch_mesh_agent(config_file, mesh_test_directory):
     its ``tag``, and all launches in a module share ``work`` in
     ``mesh_test_directory``, so a later one finds what an earlier one installed.
     ``service_environment`` adds commands to the ``service`` resource's
-    environment, such as reading a model's credentials. Extra keyword arguments
-    are passed to the agent, such as tool versions.
+    environment, such as reading a model's credentials. ``with_mpi`` adds the
+    platform's ``mpi`` resource, which global meshes need. Extra keyword
+    arguments are passed to the agent, such as tool versions.
     """
     import chiltepin.configure
     from chiltepin import AgentRuntime, Workflow
@@ -59,11 +79,13 @@ def launch_mesh_agent(config_file, mesh_test_directory):
     directory = mesh_test_directory
 
     @asynccontextmanager
-    async def launch(tag, service_environment=(), **agent_kwargs):
+    async def launch(tag, service_environment=(), with_mpi=False, **agent_kwargs):
         platform = chiltepin.configure.parse_file(config_file)
         src = Path(__file__).parent.parent.resolve() / "src"
         agent_config = {}
-        for name in ("service", "compute"):
+        # The mpi resource is only for tests that run MPI programs, since it
+        # starts a block of nodes
+        for name in ("service", "compute", *(("mpi",) if with_mpi else ())):
             resource = dict(platform[name])
             resource["environment"] = list(resource.get("environment", [])) + [
                 f"export PYTHONPATH={src}${{PYTHONPATH:+:$PYTHONPATH}}"

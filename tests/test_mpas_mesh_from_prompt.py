@@ -129,10 +129,12 @@ async def test_real_meshes_from_prompts(mesh_test_directory, launch_mesh_agent):
         assert result["static"] == str(mesh_dir / "west.static.nc")
         assert Path(result["static"]).stat().st_size > 0
         assert Path(result["plot"]).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
-        # A global mesh at a resolution that cannot be downloaded is refused,
-        # saying which can, and so is a region too small for its cells
-        with pytest.raises(ValueError, match="Global meshes are available at"):
-            await agent.mesh_config_from_prompt("a global 7 km mesh", MODEL, **options)
+        # A global mesh at a resolution that cannot be downloaded is made, so it
+        # is asked for as it is, and a region too small for its cells is refused
+        config = await agent.mesh_config_from_prompt(
+            "a global 7 km mesh", MODEL, **options
+        )
+        assert config["resolution"] == "7km" and "regional" not in config
         with pytest.raises(ValueError, match="Ask for smaller cells"):
             await agent.mesh_config_from_prompt(
                 "a 480 km limited area circle mesh around Colorado", MODEL, **options

@@ -20,6 +20,7 @@ from parsl.app.errors import BashExitFailure
 from parsl.errors import NoDataFlowKernelError
 
 from chiltepin.agents import agent_action, chiltepin_agent
+from chiltepin.agents.mpas import _global_mesh
 from chiltepin.agents.mpas._geo_lookup import BOUNDARY_LAYERS
 from chiltepin.agents.mpas._mesh_quality import format_lines
 from chiltepin.agents.mpas._plot_mesh import (
@@ -151,6 +152,8 @@ class _MeshBehavior:
         jigsaw_version: str = _JIGSAW_COMMIT,
         mkgrid_version: str = _MKGRID_REF,
         mesh_tools_version: str = _MESH_TOOLS_COMMIT,
+        mkgrid_ranks: int = 4,
+        mkgrid_ranks_per_node: Optional[int] = None,
     ):
         """Initialize the mesh behavior.
 
@@ -181,6 +184,11 @@ class _MeshBehavior:
             Branch, tag or full commit of ``mgduda/mesh_tools``, which
             ``sphtri_subdiv`` is built from, by default the commit tested,
             ``4967f0fbb278584c11b3057c3eb4396d199f030b``.
+        mkgrid_ranks : int, optional
+            Number of MPI ranks ``mkgrid`` runs on, on the ``mpi`` resource, by
+            default 4.
+        mkgrid_ranks_per_node : int, optional
+            Ranks of ``mkgrid`` on each node, by default all of them on one node.
 
         Raises
         ------
@@ -188,8 +196,10 @@ class _MeshBehavior:
             If ``metis_version``, ``mpas_tools_version`` or
             ``limited_area_version`` is not a plain version string,
             ``jigsaw_version``, ``mkgrid_version`` or ``mesh_tools_version`` is not
-            a branch, tag or commit name, or ``nominatim_contact`` is not an
-            email address.
+            a branch, tag or commit name, ``mkgrid_ranks`` or
+            ``mkgrid_ranks_per_node`` is not a positive integer, or
+            ``mkgrid_ranks_per_node`` is more than ``mkgrid_ranks``, or
+            ``nominatim_contact`` is not an email address.
         """
         for name, version in (
             ("metis_version", metis_version),
@@ -205,6 +215,19 @@ class _MeshBehavior:
         ):
             if not self._valid_ref(ref):
                 raise ValueError(f"Invalid {name}: {ref!r}")
+        for name, count in (
+            ("mkgrid_ranks", mkgrid_ranks),
+            ("mkgrid_ranks_per_node", mkgrid_ranks_per_node),
+        ):
+            if count is not None and (
+                isinstance(count, bool) or not isinstance(count, int) or count < 1
+            ):
+                raise ValueError(f"{name} must be a positive integer, got {count!r}")
+        if mkgrid_ranks_per_node is not None and mkgrid_ranks_per_node > mkgrid_ranks:
+            raise ValueError(
+                f"mkgrid_ranks_per_node ({mkgrid_ranks_per_node}) must not be more "
+                f"than mkgrid_ranks ({mkgrid_ranks})"
+            )
         if nominatim_contact is not None and (
             not isinstance(nominatim_contact, str)
             or len(nominatim_contact) > 254
@@ -240,6 +263,8 @@ class _MeshBehavior:
         self.mesh_tools_version = mesh_tools_version
         self.sphtri_subdiv_built = False
         self.mesh_tools_url = "https://github.com/mgduda/mesh_tools.git"
+        self.mkgrid_ranks = mkgrid_ranks
+        self.mkgrid_ranks_per_node = mkgrid_ranks_per_node or mkgrid_ranks
         # Plotting state (the map layers plots use)
         self.plotting_built = False
 
@@ -365,7 +390,9 @@ class _MeshBehavior:
         """Return what makes a validated request's mesh: what an existing one must match.
 
         That is the resolution, the ``regional`` block, and the version of the
-        tool that makes a regional mesh. Rank counts and ``plot`` are not part
+        tool that makes a regional mesh. A global mesh that is made, not
+        downloaded, also has its number of divisions and the versions of the three
+        tools that make it. Rank counts and ``plot`` are not part
         of it, since they add to a mesh without changing it. Optional numbers
         are filled in with their defaults, and an ellipse's orientation is
         written within one turn, as the mesh is made with them, so a request
@@ -389,7 +416,42 @@ class _MeshBehavior:
             identity["mpas_tools_version"] = self.mpas_tools_version
         if regional is not None and "create_region" in regional:
             identity["limited_area_version"] = self.limited_area_version
+        if self._is_generated_global(mesh_config):
+            # Made by JIGSAW, so the tools that make it are part of it. Refs are
+            # compared, not the commits they resolved to, so a request needs no
+            # install to find its mesh. The commits are in the record.
+            identity["division"] = _global_mesh.division(
+                self._parse_resolution_km(identity["resolution"])
+            )
+            identity["jigsaw_version"] = self.jigsaw_version
+            identity["mkgrid_version"] = self.mkgrid_version
+            identity["mesh_tools_version"] = self.mesh_tools_version
         return identity
+
+    def _canonical_resolution(self, resolution: Any) -> Any:
+        """Return a downloaded mesh's resolution as it is named, however it is written.
+
+        ``"120.0km"`` is ``"120km"``. Anything else, including what is not a
+        resolution, is returned as it was.
+        """
+        if isinstance(resolution, str) and _RESOLUTION_KM_RE.fullmatch(resolution):
+            number = float(resolution[:-2])
+            for name in self.resolution_cells:
+                if float(name[:-2]) == number:
+                    return name
+        return resolution
+
+    def _is_generated_global(self, mesh_config: Dict[str, Any]) -> bool:
+        """Whether a validated request is for a global mesh that is made, not downloaded.
+
+        A global mesh is downloaded if its resolution is one of the UCAR meshes,
+        and made with JIGSAW at any other.
+        """
+        return (
+            mesh_config.get("regional") is None
+            and self._canonical_resolution(mesh_config.get("resolution", "120km"))
+            not in self.resolution_cells
+        )
 
     @staticmethod
     def _mesh_record_path(mesh_dir: Path, mesh_name: str) -> Path:
@@ -403,16 +465,20 @@ class _MeshBehavior:
         mesh_name: str,
         identity: Dict[str, Any],
         partitions: Dict[int, str],
+        generated: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Write a mesh's record, with the Metis version of each partition.
 
-        It is written to a temporary file and renamed, so a record is never
-        partly written.
+        A mesh made with JIGSAW also has ``generated``, how it was made, such as
+        the commits of the tools. It is written to a temporary file and renamed,
+        so a record is never partly written.
         """
-        record = {
+        record: Dict[str, Any] = {
             "mesh": identity,
             "partitions": {str(rank): version for rank, version in partitions.items()},
         }
+        if generated is not None:
+            record["generated"] = generated
         path = cls._mesh_record_path(mesh_dir, mesh_name)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}")
         try:
@@ -462,7 +528,10 @@ class _MeshBehavior:
             return "a project_hexes mesh"
 
         differences = []
-        if made.get("resolution") != requested["resolution"]:
+        # Made meshes are the same mesh at the same division, however the
+        # resolution is written, such as 7.3km and 7.30km
+        by_division = "division" in made and "division" in requested
+        if not by_division and made.get("resolution") != requested["resolution"]:
             differences.append(
                 f"it is {made.get('resolution')}, not {requested['resolution']}"
             )
@@ -485,9 +554,16 @@ class _MeshBehavior:
                 if keys
                 else "its region differs"
             )
+        if "division" in requested and made.get("division") != requested["division"]:
+            differences.append(
+                f"it has {made.get('division')} divisions, not {requested['division']}"
+            )
         tools = (
             ("mpas_tools_version", "MPAS-Tools"),
             ("limited_area_version", "MPAS-Limited-Area"),
+            ("jigsaw_version", "JIGSAW"),
+            ("mkgrid_version", "mkgrid"),
+            ("mesh_tools_version", "mesh_tools"),
         )
         for key, tool in tools:
             if key in requested and made.get(key) != requested[key]:
@@ -534,10 +610,10 @@ class _MeshBehavior:
         regional = mesh_config.get("regional")
         if regional is not None:
             self._validate_regional(regional)
-        resolution = mesh_config.get("resolution", "120km")
-        if regional is None or "create_region" in regional:
-            # A global mesh is downloaded, and create_region cuts a region from
-            # one, so only the available resolutions can be used
+        resolution = self._canonical_resolution(mesh_config.get("resolution", "120km"))
+        if regional is not None and "create_region" in regional:
+            # create_region cuts a region from a downloaded global mesh, so only
+            # the available resolutions can be used
             if (
                 not isinstance(resolution, str)
                 or resolution not in self.resolution_cells
@@ -546,6 +622,14 @@ class _MeshBehavior:
                     f"Resolution {resolution!r} not supported. "
                     f"Available: {list(self.resolution_cells.keys())}"
                 )
+        elif regional is None:
+            # A global mesh is downloaded at one of the available resolutions,
+            # and made with JIGSAW at any other
+            if (
+                not isinstance(resolution, str)
+                or resolution not in self.resolution_cells
+            ):
+                self._check_global_division(resolution)
         else:
             spacing = self._parse_resolution_km(resolution)
             self._check_project_hexes_reach(regional["project_hexes"], spacing)
@@ -656,6 +740,27 @@ class _MeshBehavior:
             f"Resolution {resolution!r} is not valid. Use a positive number of "
             f"kilometers such as '15km' or '7.5km'"
         )
+
+    @classmethod
+    def _check_global_division(cls, resolution: Any) -> None:
+        """Check that a global mesh can be made at a resolution that is not downloaded.
+
+        Raises
+        ------
+        ValueError
+            If it is not a number of kilometers, or the icosahedron's edges
+            would be divided into fewer or more parts than the tools can make a
+            mesh of.
+        """
+        parts = _global_mesh.division(cls._parse_resolution_km(resolution))
+        if not _global_mesh.division_valid(parts):
+            coarsest = _global_mesh.DIVISION_FACTOR / (_global_mesh.MIN_DIVISION - 0.5)
+            finest = _global_mesh.DIVISION_FACTOR / (_global_mesh.MAX_DIVISION + 0.5)
+            raise ValueError(
+                f"Resolution {resolution!r} would divide the icosahedron into "
+                f"{parts} parts per edge. A global mesh can be made at "
+                f"{finest:.2f}km to {coarsest:.0f}km"
+            )
 
     @classmethod
     def _number(cls, config: Dict[str, Any], key: str, where: str) -> float:
@@ -1884,6 +1989,89 @@ class _MeshBehavior:
         )
 
     @bash_task
+    def _run_sphtri_subdiv(self, mesh_dir: str, parts: int) -> str:
+        """Divide the icosahedron in a mesh directory into the points that start a mesh.
+
+        ``ICOS.msh`` becomes ``INIT.msh``, with each edge cut into ``parts + 1``
+        parts, which is the ``parts`` cuts ``sphtri_subdiv`` is given.
+        """
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started sphtri_subdiv at $(date)"
+            echo "Executing on $(hostname)"
+            cd {self._q(mesh_dir)}
+            {self._q(self._sphtri_subdiv)} {_global_mesh.ICOSAHEDRON_FILE} {_global_mesh.INITIAL_FILE} {int(parts)}
+            echo "Completed sphtri_subdiv at $(date)"
+            """
+        )
+
+    @bash_task
+    def _run_jigsaw(self, mesh_dir: str) -> str:
+        """Run JIGSAW in a mesh directory holding its configuration and inputs."""
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started jigsaw at $(date)"
+            echo "Executing on $(hostname)"
+            cd {self._q(mesh_dir)}
+            {self._q(self._jigsaw)} {_global_mesh.JIG_FILE}
+            echo "Completed jigsaw at $(date)"
+            """
+        )
+
+    @python_task
+    def _prepare_mkgrid_inputs(
+        self,
+        mesh_dir: str,
+        requested_km: float,
+        parts: int,
+        spacing_km: float,
+        tools: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Convert JIGSAW's mesh into the files mkgrid reads, and write the density.
+
+        Runs on ``compute``, which reads and writes the mesh directory. A mesh
+        that is not the triangulation of a sphere comes back as ``{"error":
+        ...}``, since the exception does not cross the executor as it is raised.
+        """
+        directory = Path(mesh_dir)
+        try:
+            points, triangles = _global_mesh.convert_jigsaw(
+                directory / _global_mesh.MESH_FILE, directory
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+        config = _global_mesh.config_text(requested_km, parts, spacing_km, tools)
+        _global_mesh.write_density_files(directory, points, spacing_km, config)
+        return {"points": points, "triangles": triangles}
+
+    @bash_task
+    def _run_mkgrid(self, mesh_dir: str, spacing_m: float) -> str:
+        """Run mkgrid on the ``mpi`` resource, in a mesh directory holding its inputs.
+
+        mkgrid reads ``SaveVertices``, ``SaveTriangles`` and ``SaveDensity``, and
+        the optional ``SaveCode`` and ``SaveConfig``, and writes ``grid.nc`` and
+        ``graph.info``. It is given the nominal spacing in meters.
+        """
+        import textwrap
+
+        return textwrap.dedent(
+            f"""\
+            set -eu -o pipefail
+            echo "Started mkgrid at $(date)"
+            echo "Executing on $(hostname)"
+            cd {self._q(mesh_dir)}
+            $PARSL_MPI_PREFIX {self._q(self._mkgrid)} {float(spacing_m)!r}
+            echo "Completed mkgrid at $(date)"
+            """
+        )
+
+    @bash_task
     def _partition_mesh(self, mesh_path: str, num_ranks: int) -> str:
         """Run gpmetis to partition a mesh graph file."""
         import textwrap
@@ -2857,6 +3045,8 @@ class _MeshBehavior:
             await self.install_prompting()
         if self._partition_ranks(mesh_config):
             await self.install_metis()
+        if self._is_generated_global(mesh_config):
+            await self.install_global_mesh_tools()
         regional = mesh_config.get("regional") or {}
         if "project_hexes" in regional:
             await self.install_mpas_tools()
@@ -2870,12 +3060,19 @@ class _MeshBehavior:
     # -------------------------------------------------------------------------
 
     async def _run_program(
-        self, task: Callable[..., Any], program: str, call_id: str, *args: str
+        self,
+        task: Callable[..., Any],
+        program: str,
+        call_id: str,
+        *args: Any,
+        executor: str = "compute",
+        geometry: Optional[Dict[str, int]] = None,
     ) -> None:
-        """Run a program on ``compute`` and report a failure with its log names.
+        """Run a program, on ``compute`` unless ``executor`` says, and report a failure.
 
         Both logs are named, since some programs, such as create_region, print
-        their errors to standard output.
+        their errors to standard output. ``geometry`` is the ranks and nodes of a
+        program that runs on the ``mpi`` resource.
 
         Raises
         ------
@@ -2883,11 +3080,13 @@ class _MeshBehavior:
             If the program fails. The message names the log files.
         """
         log = self.log_dir / f"{program}.{call_id}"
+        extra = {} if geometry is None else {"chiltepin_task_geometry": geometry}
         future = task(
             *args,
-            executor=["compute"],
+            executor=[executor],
             stdout=f"{log}.stdout",
             stderr=f"{log}.stderr",
+            **extra,
         )
         try:
             await asyncio.wrap_future(future)
@@ -2913,6 +3112,137 @@ class _MeshBehavior:
                 f"{program} did not write {path.name}, "
                 f"see {log}.stdout and {log}.stderr"
             )
+
+    async def _generate_global_mesh(
+        self, mesh_dir: Path, mesh_name: str, resolution: str
+    ) -> Dict[str, Any]:
+        """Make a global mesh at a resolution that is not downloaded.
+
+        It is made as Duda's "Generating meshes for MPAS-Atmosphere" describes:
+        ``sphtri_subdiv`` divides an icosahedron into the starting points,
+        JIGSAW meshes the sphere from them, and ``mkgrid`` makes the MPAS mesh.
+        Everything is written in ``mesh_dir``, which the caller created and
+        removes if this fails. The mesh and graph end up named after the mesh,
+        and the files only the steps needed are removed.
+
+        Parameters
+        ----------
+        mesh_dir : Path
+            Absolute path of the new mesh directory
+        mesh_name : str
+            Name of the mesh
+        resolution : str
+            Cell spacing such as ``"7.3km"``
+
+        Returns
+        -------
+        dict
+            ``{"static": path, "graph": path, "quality": report, "generated":
+            how it was made}``
+
+        Raises
+        ------
+        RuntimeError
+            If the tools cannot be installed, a program fails or does not write
+            its files, JIGSAW's mesh is not a sphere, or the mesh made has
+            errors in its quality report.
+        """
+        await self.install_global_mesh_tools()
+        call_id = uuid.uuid4().hex[:8]
+        requested = self._parse_resolution_km(resolution)
+        parts = _global_mesh.division(requested)
+        spacing = _global_mesh.nominal_spacing_km(parts)
+        tools = {
+            "jigsaw": self._installed_commit(self._jigsaw_prefix),
+            "mkgrid": self._installed_commit(self._mkgrid_prefix),
+            "sphtri_subdiv": self._installed_commit(self._sphtri_subdiv_prefix),
+        }
+        unrecorded = [name for name, commit in tools.items() if commit is None]
+        if unrecorded:
+            raise RuntimeError(
+                f"The install of {', '.join(unrecorded)} has no commit recorded in "
+                "its .installed marker. Remove the install so it is made again."
+            )
+        # The sphere and the icosahedron JIGSAW and sphtri_subdiv start from
+        for source in (self._geometry_file, self._icosahedron_file):
+            shutil.copyfile(source, mesh_dir / source.name)
+        (mesh_dir / _global_mesh.HFUN_FILE).write_text(_global_mesh.hfun_text(spacing))
+        (mesh_dir / _global_mesh.JIG_FILE).write_text(_global_mesh.jig_text())
+        # sphtri_subdiv is given the cuts, one fewer than the parts they make
+        await self._run_program(
+            self._run_sphtri_subdiv, "sphtri_subdiv", call_id, str(mesh_dir), parts - 1
+        )
+        self._require_output(
+            mesh_dir / _global_mesh.INITIAL_FILE, "sphtri_subdiv", call_id
+        )
+        await self._run_program(self._run_jigsaw, "jigsaw", call_id, str(mesh_dir))
+        self._require_output(mesh_dir / _global_mesh.MESH_FILE, "jigsaw", call_id)
+        try:
+            prepared = await asyncio.wrap_future(
+                self._prepare_mkgrid_inputs(
+                    str(mesh_dir),
+                    requested,
+                    parts,
+                    spacing,
+                    tools,
+                    executor=["compute"],
+                )
+            )
+        except Exception as e:
+            raise RuntimeError(f"Preparing the inputs of mkgrid failed: {e}") from e
+        if "error" in prepared:
+            raise RuntimeError(f"JIGSAW's mesh cannot be used: {prepared['error']}")
+        expected_cells = _global_mesh.cell_count(parts)
+        if prepared["points"] != expected_cells:
+            # Not the divided icosahedron's mesh, so not quasi-uniform with 12
+            # pentagons, which the quality report says too
+            logger.warning(
+                "JIGSAW made %d points from the %d of the divided icosahedron",
+                prepared["points"],
+                expected_cells,
+            )
+        ranks, per_node = self.mkgrid_ranks, self.mkgrid_ranks_per_node
+        await self._run_program(
+            self._run_mkgrid,
+            "mkgrid",
+            call_id,
+            str(mesh_dir),
+            spacing * 1000.0,
+            executor="mpi",
+            geometry={
+                "num_nodes": -(-ranks // per_node),
+                "num_ranks": ranks,
+                "ranks_per_node": per_node,
+            },
+        )
+        for name in ("grid.nc", "graph.info"):
+            self._require_output(mesh_dir / name, "mkgrid", call_id)
+        static = mesh_dir / f"{mesh_name}.static.nc"
+        graph = mesh_dir / f"{mesh_name}.graph.info"
+        (mesh_dir / "grid.nc").replace(static)
+        (mesh_dir / "graph.info").replace(graph)
+        for name in _global_mesh.INTERMEDIATE_FILES:
+            (mesh_dir / name).unlink(missing_ok=True)
+        report = await self.check_mesh_quality(str(static), resolution_km=spacing)
+        if not report["passed"]:
+            raise RuntimeError(
+                f"The mesh made at {resolution} has errors: "
+                f"{'; '.join(report['errors'])}. Its logs are {self.log_dir}/"
+                f"*.{call_id}.*"
+            )
+        return {
+            "static": str(static),
+            "graph": str(graph),
+            "quality": report,
+            "generated": {
+                "requested_resolution_km": requested,
+                "division": parts,
+                "nominal_spacing_km": spacing,
+                "cells": prepared["points"],
+                "expected_cells": expected_cells,
+                "tools": tools,
+            },
+        }
 
     async def _generate_project_hexes_mesh(
         self,
@@ -3255,15 +3585,26 @@ class _MeshBehavior:
         ranks = self._partition_ranks(mesh_config)
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
+        # A downloaded mesh is asked for by its name, however it is written. A
+        # project_hexes mesh is made at any resolution, so its name stands.
+        cut_or_global = regional is None or "create_region" in regional
+        if cut_or_global and self._canonical_resolution(resolution) != resolution:
+            resolution = self._canonical_resolution(resolution)
+            mesh_config = {**mesh_config, "resolution": resolution}
         mesh_name = mesh_config.get("name", f"mesh_{resolution}")
 
         # Check resources before creating anything, so a request that cannot
         # finish downloads nothing and leaves nothing behind. Installing a tool
         # that is missing checks that it has the resources it needs.
+        generated = self._is_generated_global(mesh_config)
+        # Tools are installed from the service resource, and made global meshes
+        # are made on compute and mkgrid runs on mpi
         downloads = regional is None or "create_region" in regional
         needed = ["service"] if downloads else []
-        if regional is not None or ranks:
+        if regional is not None or ranks or generated:
             needed.append("compute")
+        if generated:
+            needed.append("mpi")
         self._require_resources("This mesh request", *needed)
         request_mesh_data_dir = self._resolve_mesh_data_dir(mesh_data_dir)
         mesh_dir = request_mesh_data_dir / mesh_name
@@ -3320,11 +3661,18 @@ class _MeshBehavior:
         regional = mesh_config.get("regional")
         resolution = mesh_config.get("resolution", "120km")
         result: Dict[str, Any] = {}
+        generated: Optional[Dict[str, Any]] = None
         complete = False
         try:
             # Install tools before downloading so a failure wastes no download
             await self._install_tools(mesh_config, plotting=False)
-            if regional is None:
+            if regional is None and resolution not in self.resolution_cells:
+                # Global mesh at a resolution UCAR does not have, made with JIGSAW
+                result = await self._generate_global_mesh(
+                    mesh_dir, mesh_name, resolution
+                )
+                generated = result["generated"]
+            elif regional is None:
                 # Global mesh, downloaded precomputed from UCAR
                 paths = await self.download_global_mesh(resolution, str(mesh_data_dir))
                 for key, suffix in (("static", "static.nc"), ("graph", "graph.info")):
@@ -3351,6 +3699,7 @@ class _MeshBehavior:
                 mesh_name,
                 identity,
                 {rank: self.metis_version for rank in ranks},
+                generated,
             )
             complete = True
         finally:
@@ -3409,6 +3758,15 @@ class _MeshBehavior:
             result["partitions"] = {
                 rank: moved(path) for rank, path in made["partitions"].items()
             }
+        if "generated" in made:
+            result["generated"] = made["generated"]
+        if "quality" in made:
+            # Its report was written in the directory that has since been renamed
+            result["quality"] = dict(made["quality"])
+            if result["quality"].get("report_file"):
+                result["quality"]["report_file"] = moved(
+                    result["quality"]["report_file"]
+                )
         return result
 
     @staticmethod
@@ -3488,11 +3846,28 @@ class _MeshBehavior:
             ]
             if needed:
                 kept = {rank: v for rank, v in made.items() if rank not in needed}
-                self._write_mesh_record(mesh_dir, mesh_name, record["mesh"], kept)
+                generated = record.get("generated")
+                self._write_mesh_record(
+                    mesh_dir, mesh_name, record["mesh"], kept, generated
+                )
                 await self.partition_mesh(str(graph), needed)
                 kept.update({rank: self.metis_version for rank in needed})
-                self._write_mesh_record(mesh_dir, mesh_name, record["mesh"], kept)
+                self._write_mesh_record(
+                    mesh_dir, mesh_name, record["mesh"], kept, generated
+                )
             result["partitions"] = {rank: f"{graph}.part.{rank}" for rank in ranks}
+        if isinstance(record.get("generated"), dict):
+            result["generated"] = record["generated"]
+            report_file = self._quality_path(static)
+            try:
+                report = json.loads(report_file.read_text())
+            except (OSError, ValueError):
+                report = None
+            if isinstance(report, dict):
+                # Where it is now, not where it was written: a replaced mesh's
+                # report was written before its directory was renamed
+                report["report_file"] = str(report_file)
+                result["quality"] = report
         result["reused"] = True
         return result
 
